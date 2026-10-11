@@ -67,6 +67,22 @@ const CHURN_WINDOW: Duration = Duration::from_secs(60);
 const CHURN_REPORT_AT: u32 = 3;
 /// 报过之后每隔多少次再喊一声，免得变成日志洪水。
 const CHURN_REPEAT_EVERY: u32 = 5;
+/// 判出「槽位 ASK 被毒化」后，这段时间里把 `has_ask_already` 一律答成「没有 ASK」，
+/// 逼 App 重跑「生成 ASK → 上报腾讯」这一步。
+///
+/// 为什么这么修（2026-10-11 实测 nubia NX721J / 微信 uid 10489）：App 的注册流程是
+/// 「ASK 不存在才上报腾讯」，槽位上一旦有别的时候铸下的 ASK，它就永远跳过上报 → 建
+/// AuthKey → 腾讯不认 → 自删自建，死循环；而它自己的救命手段是 `remove_all_uid_key`
+/// （uid 级、会连坐同槽位别的账号），服务端又专门挡了这一手，于是**没有任何自动出路**。
+/// 现在改成只在回答层面说真话：App 以为没有 ASK，就会重新生成并上报，循环就解开了，
+/// 不需要我们动别的账号的任何钥匙。
+///
+/// 10 分钟：App 的重试间隔在分钟级，够它跑一轮上报；没跑通就再延一轮（只要它还在自删
+/// 自建，`note_slot_churn` 每看见一次就把窗口续上）。
+const ASK_POISON_TTL: Duration = Duration::from_secs(600);
+/// B 那台对「这把 ASK 不在」的答复码（实测 Trustonic AIDL：清掉 ASK 后 hasAskAlready 回
+/// `fffffffb`）。App 看到它就会去生成 + 上报。
+const ASK_MISSING_CODE: i64 = -5;
 
 enum Kind {
     Read,
@@ -111,6 +127,8 @@ pub struct SoterGate {
     writes: Mutex<HashMap<String, (Value, Instant)>>,
     /// 槽位「自删自建」计数：`设备|uid|别名` -> (窗口里删了几次, 上次时间)。
     churn: Mutex<HashMap<String, (u32, Instant)>>,
+    /// 判出 ASK 被毒化的槽位：`设备|uid` -> 判出时刻。见 [`SoterGate::poison_ask_answer`]。
+    poisoned_asks: Mutex<HashMap<String, Instant>>,
     hits: AtomicU64,
     stores: AtomicU64,
     writes_invalidated: AtomicU64,
@@ -139,6 +157,7 @@ impl SoterGate {
             reads: Mutex::new(HashMap::new()),
             writes: Mutex::new(HashMap::new()),
             churn: Mutex::new(HashMap::new()),
+            poisoned_asks: Mutex::new(HashMap::new()),
             hits: AtomicU64::new(0),
             stores: AtomicU64::new(0),
             writes_invalidated: AtomicU64::new(0),
@@ -256,6 +275,9 @@ impl SoterGate {
         let alias_text = alias.unwrap_or("-").to_string();
         let key = format!("{device}|{uid_text}|{alias_text}");
         let now = Instant::now();
+        // 只要还在自删自建，就把「ASK 毒化」的窗口续上（不只在报的时候）：窗口跟着
+        // 现象走，循环一停它自然过期。
+        self.mark_ask_poisoned(device, uid);
         let mut guard = self
             .churn
             .lock()
@@ -275,12 +297,82 @@ impl SoterGate {
         Some(format!(
             "soter: 槽位 {device}|{uid_text}|{alias_text} 在 {} 秒里第 {count} 次删 AuthKey —— \
              App 在自删自建（腾讯那边没认这批材料）。先确认那台 B 开了 \
-             OMMEGA_RELAY_SOTER_MUTATION（没开的话 generate_* 全被它自己拒成 -5）；\
-             闸门是开的就说明这个槽位上的 ASK 被别的时候铸过、App 跳过了「生成 ASK → \
-             上报腾讯」那一步，得把该槽位的 ASK 清掉（remove_all_uid_key）让 App 从零走\
-             一遍（uid 级全清会连坐同槽位别的账号，清之前先看清台账）",
-            CHURN_WINDOW.as_secs()
+             OMMEGA_RELAY_SOTER_MUTATION（没开的话 generate_* 全被它自己拒成 -5）。\
+             闸门是开的就说明这个槽位上的 ASK 被别的时候铸过、App 跳过了「生成 ASK → 上报腾讯」\
+             那一步 —— 服务端**已自动把该槽位的 `has_ask_already` 答成「没有 ASK」{} 秒**，\
+             逼 App 重新生成并上报，不用人工动槽位；若过了这个窗口它还在自删自建，\
+             再手工清 (remove_all_uid_key，uid 级会连坐同槽位别的账号，先看清台账)",
+            CHURN_WINDOW.as_secs(),
+            ASK_POISON_TTL.as_secs()
         ))
+    }
+
+    /// 毒化标记的键：ASK 是 uid 级的，所以只看 `设备|uid`，不看别名。
+    fn ask_slot(device: &str, uid: Option<i32>) -> String {
+        let uid = uid
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        format!("{device}|{uid}")
+    }
+
+    /// 把这个槽位标成「ASK 被毒化」。
+    ///
+    /// 每次看到自删自建就重标一次（不是只在报日志那一下），所以窗口跟着现象走：
+    /// 循环一停，它过了 TTL 自然过期。
+    fn mark_ask_poisoned(&self, device: &str, uid: Option<i32>) {
+        let key = Self::ask_slot(device, uid);
+        let mut guard = self
+            .poisoned_asks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.retain(|_, at| at.elapsed() <= ASK_POISON_TTL);
+        guard.insert(key, Instant::now());
+    }
+
+    fn ask_is_poisoned(&self, device: &str, uid: Option<i32>) -> bool {
+        let key = Self::ask_slot(device, uid);
+        let mut guard = self
+            .poisoned_asks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.retain(|_, at| at.elapsed() <= ASK_POISON_TTL);
+        guard.contains_key(&key)
+    }
+
+    /// 这一轮终于真签出来了（`finish_sign` 成功）：撤掉标记，别再骗 App。
+    pub fn clear_ask_poison(&self, device: &str, uid: Option<i32>) {
+        let key = Self::ask_slot(device, uid);
+        let mut guard = self
+            .poisoned_asks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.remove(&key);
+    }
+
+    /// 槽位 ASK 被毒化时，把 `has_ask_already` 的答案改写成「没有 ASK」。
+    ///
+    /// 返回 `true` 表示真改写了（调用方记一条日志）。只碰 `has_ask_already` 这一个 op，
+    /// 而且只改「有 ASK」那种答案：`has_auth_key` / `export_*` 那些是真话，一个字都不能编。
+    pub fn poison_ask_answer(
+        &self,
+        device: &str,
+        op: &str,
+        uid: Option<i32>,
+        value: &mut Value,
+    ) -> bool {
+        if op != "has_ask_already" || !self.ask_is_poisoned(device, uid) {
+            return false;
+        }
+        if value.get("error_code").and_then(Value::as_i64) == Some(ASK_MISSING_CODE) {
+            return false;
+        }
+        match value.as_object_mut() {
+            Some(obj) => {
+                obj.insert("error_code".to_owned(), Value::from(ASK_MISSING_CODE));
+                true
+            }
+            None => false,
+        }
     }
 
     /// 记下一笔写操作时，把同一 uid 上**别的**写去重记录丢掉：那些答案是「上一种
@@ -659,6 +751,71 @@ mod tests {
                 &json!({}),
             )
             .is_none());
+    }
+
+    /// 判出「自删自建」之后，这个槽位的 `has_ask_already` 要答成「没有 ASK」，
+    /// 逼 App 重走「生成 ASK → 上报腾讯」。
+    #[test]
+    fn a_churning_slot_gets_its_ask_answer_turned_into_missing() {
+        let gate = gate();
+        let mut before = json!({ "error_code": 0, "layer": "b" });
+        assert!(
+            !gate.poison_ask_answer("dev", "has_ask_already", Some(10489), &mut before),
+            "还没判出自删自建之前一个字都不改"
+        );
+        assert_eq!(before["error_code"], json!(0));
+
+        for _ in 0..CHURN_REPORT_AT {
+            gate.record(
+                "dev",
+                "remove_auth_key",
+                Some(10489),
+                Some("A"),
+                true,
+                &json!({}),
+            );
+        }
+        let mut answer = json!({ "error_code": 0, "layer": "b" });
+        assert!(gate.poison_ask_answer("dev", "has_ask_already", Some(10489), &mut answer));
+        assert_eq!(answer["error_code"], json!(ASK_MISSING_CODE));
+        assert_eq!(answer["layer"], json!("b"), "只改错误码，别的字段不动");
+
+        // 已经是「没有」的答案不算改写。
+        let mut absent = json!({ "error_code": ASK_MISSING_CODE });
+        assert!(!gate.poison_ask_answer("dev", "has_ask_already", Some(10489), &mut absent));
+        // 别的 op 不能编（`has_auth_key` 那种是真话）。
+        let mut other = json!({ "error_code": 0 });
+        assert!(!gate.poison_ask_answer("dev", "has_auth_key", Some(10489), &mut other));
+        assert_eq!(other["error_code"], json!(0));
+        // 别的槽位不受影响。
+        let mut neighbour = json!({ "error_code": 0 });
+        assert!(!gate.poison_ask_answer("dev", "has_ask_already", Some(10490), &mut neighbour));
+        assert_eq!(neighbour["error_code"], json!(0));
+    }
+
+    /// 真签出来（`finish_sign` 成功）就把毒化标记撤掉：这轮已经走通了，别再骗 App。
+    #[test]
+    fn a_real_signature_clears_the_poison() {
+        let gate = gate();
+        for _ in 0..CHURN_REPORT_AT {
+            gate.record(
+                "dev",
+                "remove_auth_key",
+                Some(10489),
+                Some("A"),
+                true,
+                &json!({}),
+            );
+        }
+        let mut answer = json!({ "error_code": 0 });
+        assert!(gate.poison_ask_answer("dev", "has_ask_already", Some(10489), &mut answer));
+
+        gate.clear_ask_poison("dev", Some(10489));
+        let mut answer = json!({ "error_code": 0 });
+        assert!(
+            !gate.poison_ask_answer("dev", "has_ask_already", Some(10489), &mut answer),
+            "清理之后要回到「说真话」"
+        );
     }
 
     #[test]

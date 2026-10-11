@@ -1246,7 +1246,17 @@ async fn run_soter_task_inner(state: &AppState, body: &Value) -> Response {
     // 会被 App 的 SOTER 初始化循环反复问，几秒内答案不会变；重建类 op 也会被反复重放。
     // 命中的前提是上一次**真由这台设备答出来**（见 `soter_gate`），而且窗口极短，
     // 设备一旦恢复下一笔就问得着。
-    if let Some(hit) = state.soter_gate.lookup(requested, op, gate_uid, alias_arg) {
+    if let Some(mut hit) = state.soter_gate.lookup(requested, op, gate_uid, alias_arg) {
+        // 命中短 TTL 缓存的也要过一遍「ASK 毒化」改写：不然 App 在这 5 秒窗口里
+        // 仍旧被告知「ASK 已存在」，白等一轮。
+        if state
+            .soter_gate
+            .poison_ask_answer(requested, op, gate_uid, &mut hit)
+        {
+            tracing::info!(
+                "soter: op={op} uid={probe_uid} 槽位 ASK 被毒化，这笔（命中缓存）改成「没有 ASK」"
+            );
+        }
         tracing::info!(
             "soter: op={op} uid={probe_uid} alias={} coalesced (short-TTL window)",
             alias_arg.unwrap_or("-")
@@ -1663,7 +1673,7 @@ async fn run_soter_task_inner(state: &AppState, body: &Value) -> Response {
                 }
                 return Json(v).into_response();
             }
-            Some(v) if v.get("error").is_none() => {
+            Some(mut v) if v.get("error").is_none() => {
                 // 服务端这两层的钥匙各是各的（`soter_mint` 的 `Store::auth` 按
                 // `{device}|{uid}|{alias}` 存），槽位建在 B 上的钥匙它们手里没有，于是
                 // 「用已有钥匙」的 op 会回 -5/-6/-8。那不是「做成了」，是「这层没这把
@@ -1680,6 +1690,21 @@ async fn run_soter_task_inner(state: &AppState, body: &Value) -> Response {
                 }
                 let code = v.get("error_code").and_then(Value::as_i64).unwrap_or(0);
                 tracing::info!("soter: op={op} layer={layer} ok error_code={code}");
+                // 这个槽位的 ASK 被毒化（App 在自删自建）：把「有 ASK」改写成「没有」，
+                // 逼 App 重新生成并上报腾讯。只动这一种答案，别的 op 不碰。
+                if state
+                    .soter_gate
+                    .poison_ask_answer(requested, op, gate_uid, &mut v)
+                {
+                    tracing::warn!(
+                        "soter: op={op} uid={probe_uid} 槽位 ASK 被别的时候铸过（App 在自删自建），\
+                         这笔答案改成「没有 ASK」，逼 App 重新走一遍「生成 ASK → 上报腾讯」"
+                    );
+                }
+                // 真签出来了才算这轮走通：撤掉标记，别再骗它。
+                if op == "finish_sign" && code == 0 {
+                    state.soter_gate.clear_ask_poison(requested, gate_uid);
+                }
                 if let Some(note) =
                     state
                         .soter_gate
