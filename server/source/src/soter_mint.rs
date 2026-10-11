@@ -690,7 +690,16 @@ pub fn run(layer: &str, device_id: &str, body: &Value, key_pem: Option<&str>) ->
             }
             "export_attk_public_key" => Ok(data_result(op, OK, key.attk_pem.as_bytes())),
             "export_ask_public_key" => ask_result(op, layer, &key, &product, uid_of(body)?),
-            "has_ask_already" => Ok(code_result(op, OK)),
+            // 兜底层**不许声称「ASK 已存在」**（2026-10-11 实测的毒化根源）。
+            //
+            // 应用只在「没有 ASK」时才把 ASK 上报腾讯；而这两层现造的 ASK 腾讯那边永远
+            // 不会认。以前这里照答 OK（= 有），应用于是跳过上报、拿着假 ASK 去建 AuthKey，
+            // 被腾讯拒了再自删重试 —— B 不在线时兜一次底就永久毒化该槽位。现在答
+            // `NOT_FOUND`（「没有」）：应用会老实地重新生成并**上报**，真机一回来就能
+            // 走通；就算这轮跟腾讯过不去，也**不会留下假的「已存在」状态**。
+            //
+            // `verify_attk_key_pair` 不动：那笔不参与「上报不上报」的判定。
+            "has_ask_already" => Ok(code_result(op, NOT_FOUND)),
             "verify_attk_key_pair" => Ok(code_result(op, OK)),
             "has_auth_key" => Ok(code_result(
                 op,
@@ -1240,17 +1249,33 @@ mod tests {
     }
 
     #[test]
-    fn has_ask_already_and_verify_are_successful() {
-        for op in ["has_ask_already", "verify_attk_key_pair"] {
+    fn has_ask_already_is_reported_missing_by_the_fallback_layers() {
+        // 兜底层现造的 ASK 腾讯永远不认，所以它不能声称「已存在」——那会让应用跳过上报
+        // 并把假 ASK 当真（2026-10-11 实测的毒化）。
+        for layer in ["self_signed", "builtin"] {
             let value = run(
-                "self_signed",
+                layer,
                 "device-a-test",
-                &json!({ "op": op, "uid": 10373 }),
+                &json!({ "op": "has_ask_already", "uid": 10373 }),
                 None,
             )
             .expect("handled");
-            assert_eq!(value["error_code"], json!(0), "{op} should report success");
+            assert_eq!(
+                value["error_code"],
+                json!(NOT_FOUND),
+                "{layer} should report missing"
+            );
         }
+
+        // `verify_attk_key_pair` 照旧成功：那笔不参与「上报不上报」的判定。
+        let value = run(
+            "self_signed",
+            "device-a-test",
+            &json!({ "op": "verify_attk_key_pair", "uid": 10373 }),
+            None,
+        )
+        .expect("handled");
+        assert_eq!(value["error_code"], json!(OK));
     }
 
     #[test]
@@ -1703,7 +1728,7 @@ mod tests {
 
         assert_eq!(
             call(json!({"op": "has_ask_already", "uid": uid}))["error_code"],
-            json!(0)
+            json!(NOT_FOUND)
         );
         // 没建过的钥匙就是没建过，跟真机同一个码。
         assert_eq!(
