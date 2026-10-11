@@ -62,9 +62,14 @@ const DEFAULT_READ_TTL_MS: u64 = 5_000;
 const DEFAULT_WRITE_WINDOW_MS: u64 = 2_000;
 
 /// 「自删自建」的统计窗口与上报节拍。
-const CHURN_WINDOW: Duration = Duration::from_secs(60);
-/// 窗口里第几次删开始报（健康的开通流程最多删一两次）。
-const CHURN_REPORT_AT: u32 = 3;
+///
+/// 窗口故意压得很短（实测死循环里两次删是**秒级**的：19:59:20 / 19:59:22），而健康的
+/// 开通流程即使重试也是分钟级。所以「短窗口里 2 次」就够把卡死的循环跟正常重试分开：
+/// 比旧的「60 秒 3 次」早一个量级看见，又不会因为用户取消一次就误判。
+/// 想调就改 `OMMEGA_SOTER_CHURN_WINDOW_MS` / `OMMEGA_SOTER_CHURN_REPORT_AT`。
+const CHURN_WINDOW: Duration = Duration::from_secs(30);
+/// 窗口里第几次删开始报（健康的开通流程最多删一两次，但两次之间不会只隔几秒）。
+const CHURN_REPORT_AT: u32 = 2;
 /// 报过之后每隔多少次再喊一声，免得变成日志洪水。
 const CHURN_REPEAT_EVERY: u32 = 5;
 /// 判出「槽位 ASK 被毒化」后，这段时间里把 `has_ask_already` 一律答成「没有 ASK」，
@@ -123,6 +128,9 @@ fn uid_prefix(device: &str, uid: Option<i32>) -> String {
 pub struct SoterGate {
     read_ttl: Duration,
     write_window: Duration,
+    /// 「自删自建」的统计窗口与触发次数（默认为上面两个常量，可用环境变量调）。
+    churn_window: Duration,
+    churn_report_at: u32,
     reads: Mutex<HashMap<String, (Value, Instant)>>,
     writes: Mutex<HashMap<String, (Value, Instant)>>,
     /// 槽位「自删自建」计数：`设备|uid|别名` -> (窗口里删了几次, 上次时间)。
@@ -144,16 +152,37 @@ impl SoterGate {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(DEFAULT_WRITE_WINDOW_MS);
-        Self::with_windows(
-            Duration::from_millis(read_ttl),
-            Duration::from_millis(write_window),
-        )
+        let churn_window = std::env::var("OMMEGA_SOTER_CHURN_WINDOW_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .map(Duration::from_millis)
+            .unwrap_or(CHURN_WINDOW);
+        let churn_report_at = std::env::var("OMMEGA_SOTER_CHURN_REPORT_AT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(CHURN_REPORT_AT);
+        Self {
+            read_ttl: Duration::from_millis(read_ttl),
+            write_window: Duration::from_millis(write_window),
+            churn_window,
+            churn_report_at,
+            reads: Mutex::new(HashMap::new()),
+            writes: Mutex::new(HashMap::new()),
+            churn: Mutex::new(HashMap::new()),
+            poisoned_asks: Mutex::new(HashMap::new()),
+            hits: AtomicU64::new(0),
+            stores: AtomicU64::new(0),
+            writes_invalidated: AtomicU64::new(0),
+        }
     }
 
     pub fn with_windows(read_ttl: Duration, write_window: Duration) -> Self {
         Self {
             read_ttl,
             write_window,
+            churn_window: CHURN_WINDOW,
+            churn_report_at: CHURN_REPORT_AT,
             reads: Mutex::new(HashMap::new()),
             writes: Mutex::new(HashMap::new()),
             churn: Mutex::new(HashMap::new()),
@@ -282,15 +311,15 @@ impl SoterGate {
             .churn
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        guard.retain(|_, (_, at)| now.duration_since(*at) <= CHURN_WINDOW);
+        guard.retain(|_, (_, at)| now.duration_since(*at) <= self.churn_window);
         let entry = guard.entry(key).or_insert((0, now));
         entry.0 += 1;
         entry.1 = now;
         let count = entry.0;
         drop(guard);
-        let due = count == CHURN_REPORT_AT
-            || (count > CHURN_REPORT_AT
-                && (count - CHURN_REPORT_AT).is_multiple_of(CHURN_REPEAT_EVERY));
+        let report_at = self.churn_report_at;
+        let due = count == report_at
+            || (count > report_at && (count - report_at).is_multiple_of(CHURN_REPEAT_EVERY));
         if !due {
             return None;
         }
@@ -302,7 +331,7 @@ impl SoterGate {
              那一步 —— 服务端**已自动把该槽位的 `has_ask_already` 答成「没有 ASK」{} 秒**，\
              逼 App 重新生成并上报，不用人工动槽位；若过了这个窗口它还在自删自建，\
              再手工清 (remove_all_uid_key，uid 级会连坐同槽位别的账号，先看清台账)",
-            CHURN_WINDOW.as_secs(),
+            self.churn_window.as_secs(),
             ASK_POISON_TTL.as_secs()
         ))
     }
@@ -704,7 +733,8 @@ mod tests {
     #[test]
     fn repeated_auth_key_deletions_are_reported_once_the_slot_looks_stuck() {
         let gate = SoterGate::with_windows(Duration::from_millis(120), Duration::from_millis(120));
-        for i in 1..=2 {
+        // 阈值之前一直不该报（阈值现在默认是 2，可用环境变量调）。
+        for i in 1..CHURN_REPORT_AT {
             assert!(
                 gate.record(
                     "dev",
@@ -727,7 +757,7 @@ mod tests {
                 true,
                 &json!({ "error_code": 0 }),
             )
-            .expect("第三次该报一声");
+            .unwrap_or_else(|| panic!("第 {CHURN_REPORT_AT} 次该报一声"));
         assert!(note.contains("自删自建"), "{note}");
         assert!(note.contains("OMMEGA_RELAY_SOTER_MUTATION"), "{note}");
         // 别的槽位/别的 op 不受影响。
