@@ -535,12 +535,14 @@ pub(crate) fn answer(call: &soter::SoterCall) -> Option<Answer> {
             code: OK,
             data: Some(device_id().into_bytes()),
         }),
-        // hasAskAlready(uid) —— 我们这把一直"有"。
-        9 => Some(Answer::Code(if call.uid.is_some() {
-            OK
-        } else {
-            NOT_FOUND
-        })),
+        // hasAskAlready(uid) —— 兜底层**必须**答「没有」。
+        //
+        // 我们这把 ASK 是本地自签的，腾讯那边永远不认；而应用只在「没有 ASK」时才把它
+        // 上报腾讯。以前这里答 OK（= 有），应用于是跳过上报、拿着假 ASK 去建 AuthKey，
+        // 被腾讯拒了再自删重试 —— 一次本地兜底就把这个槽位毒化了（2026-10-11 实测；
+        // 服务端 `soter_mint` 那两层同一个毛病，已一并改掉）。
+        // 答 NOT_FOUND 之后应用会老实重新生成并上报；真机那条路一回来就能走通。
+        9 => Some(Answer::Code(NOT_FOUND)),
         // hasAuthKey(uid, alias)
         10 => {
             let (uid, alias) = (call.uid?, call.alias.as_deref()?);
