@@ -304,6 +304,24 @@ restart_soter_host() {
   return 0
 }
 
+# 本地签名自检：给面板一个「加载就有的结论」—— 用当前生效的 ASK 签一段固定文本
+# 再验一遍。纯本地密码学（微秒级），**不碰网络也不碰 TEE**，所以不会挡任何签名
+# 路径。跑不动（超时/报错/找不到二进制）就当没结论，一声不吐；下次循环再试。
+run_soter_selftest() {
+  sog_bin=${TARGET_INJECTOR:-}
+  [ -n "$sog_bin" ] || sog_bin=$(find_module_injector 2>/dev/null)
+  [ -n "$sog_bin" ] && [ -x "$sog_bin" ] || return 0
+  sog_out=$(timeout 3 "$sog_bin" --soter-selftest 2>/dev/null | head -n1)
+  [ "$sog_out" = "ok" ] || return 0
+  sog_now=$(date +%s 2>/dev/null)
+  case "$sog_now" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  printf '%s\tselftest\t0\t-\n' "$sog_now" >> "$SIGN_OK_FILE" 2>/dev/null
+  sog_once=1
+  log "[injector-daemon] local soter selftest ok (signed and verified locally)"
+}
+
 # SOTER 宿主是 bind-only 的服务：没人要就不起来，所以开关开着时得替客户端先喊一声。
 # 拉不起来只记一行、不死循环重试（启动失败通常是系统那边的问题，本模块管不了）。
 start_soter_service() {
@@ -435,6 +453,7 @@ restart_keystore() {
 mkdir -p "$STATE_DIR"
 LOG_ON=0
 soter_ask_changed=0
+sog_once=0
 pending_restart=0
 last_attempt_pid=
 last_attempt_at=0
@@ -485,6 +504,11 @@ while true; do
   sync_soter_cpu_id
   if [ "$soter_ask_changed" = "1" ]; then
     restart_soter_host
+    run_soter_selftest
+  fi
+
+  if [ "$sog_once" = "0" ]; then
+    run_soter_selftest
   fi
 
   if ! prepare_injector; then

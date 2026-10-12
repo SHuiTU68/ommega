@@ -39,9 +39,10 @@ use std::sync::{Mutex, OnceLock};
 
 use rsa::pkcs8::{DecodePrivateKey, EncodePublicKey};
 use rsa::pss::SigningKey as PssSigningKey;
+use rsa::pss::VerifyingKey as PssVerifyingKey;
 use rsa::rand_core::OsRng;
 use rsa::sha2::Sha256 as PssSha256;
-use rsa::signature::{RandomizedSigner, SignatureEncoding};
+use rsa::signature::{RandomizedSigner, SignatureEncoding, Verifier};
 use rsa::RsaPrivateKey;
 
 use crate::hook::soter;
@@ -101,6 +102,26 @@ impl Key {
         let mut rng = OsRng;
         Some(signing.sign_with_rng(&mut rng, message).to_bytes().to_vec())
     }
+}
+
+/// 本地签名自检：拿当前生效的 ASK 签一段固定文本，再用它的公钥验一遍。
+///
+/// 这是给面板「加载即得结论」用的 —— 只走本地密码学，微秒级返回，**不碰网络也
+/// 不碰 TEE**，所以不会阻塞任何签名路径。失败只说明「这次没成」，不当成「这台机器
+/// 不能签」（跟 `SignState` 那套一个口径）。
+pub(crate) fn selftest() -> anyhow::Result<()> {
+    let state = state().ok_or_else(|| anyhow::anyhow!("soter local state unavailable"))?;
+    let message: &[u8] = b"ommega-soter-selftest";
+    let raw = state
+        .ask
+        .sign(message)
+        .ok_or_else(|| anyhow::anyhow!("the local ASK could not sign"))?;
+    let signature = rsa::pss::Signature::try_from(raw.as_slice())
+        .map_err(|error| anyhow::anyhow!("malformed signature: {error}"))?;
+    let public = rsa::RsaPublicKey::from(&state.ask.private);
+    PssVerifyingKey::<PssSha256>::new(public)
+        .verify(message, &signature)
+        .map_err(|error| anyhow::anyhow!("the signature did not verify: {error}"))
 }
 
 /// 一次 initSign 挂起来的会话。

@@ -189,6 +189,20 @@ fn log_runtime_identity(role: &str) {
 }
 
 fn main() {
+    /* 自检模式：给面板一个「加载就有的结论」—— 用当前生效的 ASK 签一段固定文本
+    再验一遍。纯本地密码学（微秒级，不碰网络也不碰 TEE），所以不会挡任何签名路径。 */
+    if std::env::args().any(|arg| arg == "--soter-selftest") {
+        match crate::hook::soter_local::selftest() {
+            Ok(()) => {
+                println!("ok");
+                std::process::exit(0);
+            }
+            Err(error) => {
+                eprintln!("selftest failed: {error:#}");
+                std::process::exit(1);
+            }
+        }
+    }
     logging::init_logger_fallback(LevelFilter::Debug);
     let config = config::get();
     if config::parse_level_filter(&config.main.log_level).is_none() {
