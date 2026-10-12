@@ -395,6 +395,15 @@ impl SoterGate {
         if value.get("error_code").and_then(Value::as_i64) == Some(ASK_MISSING_CODE) {
             return false;
         }
+        // **只允许改写我们自己兜底层（builtin / self_signed）的答复。**
+        // 设备（B）的答复是真话，一个字都不能动 —— 一旦改写成「没有 ASK」，
+        // App 就会现铸一个新的，跟腾讯那边记的对不上，于是自删自建死循环。
+        // （2026-10-13 实证：B 的 TEE 里 hasAskAlready = 0（有），我们却告诉 App 没有，
+        //   结果 generate/export/remove 反复循环，永远走不到 init_sign。）
+        let layer = value.get("layer").and_then(Value::as_str).unwrap_or("");
+        if layer != "builtin" && layer != "self_signed" {
+            return false;
+        }
         match value.as_object_mut() {
             Some(obj) => {
                 obj.insert("error_code".to_owned(), Value::from(ASK_MISSING_CODE));
@@ -805,10 +814,23 @@ mod tests {
                 &json!({}),
             );
         }
-        let mut answer = json!({ "error_code": 0, "layer": "b" });
-        assert!(gate.poison_ask_answer("dev", "has_ask_already", Some(10489), &mut answer));
-        assert_eq!(answer["error_code"], json!(ASK_MISSING_CODE));
-        assert_eq!(answer["layer"], json!("b"), "只改错误码，别的字段不动");
+        // 设备（B）的答复是真话，一个字都不许编。
+        let mut from_device = json!({ "error_code": 0, "layer": "b" });
+        assert!(
+            !gate.poison_ask_answer("dev", "has_ask_already", Some(10489), &mut from_device),
+            "设备答复不许被改写"
+        );
+        assert_eq!(from_device["error_code"], json!(0));
+
+        // 只有我们自己的兜底层才允许被改写成「没有 ASK」。
+        let mut from_builtin = json!({ "error_code": 0, "layer": "builtin" });
+        assert!(gate.poison_ask_answer("dev", "has_ask_already", Some(10489), &mut from_builtin));
+        assert_eq!(from_builtin["error_code"], json!(ASK_MISSING_CODE));
+        assert_eq!(
+            from_builtin["layer"],
+            json!("builtin"),
+            "只改错误码，别的字段不动"
+        );
 
         // 已经是「没有」的答案不算改写。
         let mut absent = json!({ "error_code": ASK_MISSING_CODE });
@@ -837,7 +859,7 @@ mod tests {
                 &json!({}),
             );
         }
-        let mut answer = json!({ "error_code": 0 });
+        let mut answer = json!({ "error_code": 0, "layer": "builtin" });
         assert!(gate.poison_ask_answer("dev", "has_ask_already", Some(10489), &mut answer));
 
         gate.clear_ask_poison("dev", Some(10489));
