@@ -135,4 +135,37 @@ a.addEventListener('click',function(ev){ev.preventDefault();
     init();
   }
 })();
+
+/* 面板里有几处是把 resetprop **直接跑一下**（比如「立即设置安全补丁」里的
+   `resetprop -n ro.build.version.security_patch "${d}"`）：原样跑会从 PATH 里
+   找到 root 管理器自带的那份，而不是模块自己带的那个静态二进制。
+   这里把 `resetprop -n ` 这种直接执行换成我们那份（那份不在就退回 PATH）。
+   只换带 `-n` 的：bundle 里其余 35 处都是 sed/echo/grep 在改写 post-fs-data.sh，
+   不能动 —— 那些是开机时由 post-fs-data.sh 里的同名函数接管的。 */
+(function(){
+  var RESETPROP = "/data/adb/ommega/resetprop";
+  var RUN = '(R=' + RESETPROP + '; [ -x "$R" ] || R=resetprop; "$R")';
+
+  function patch(){
+    if (typeof ksu === "undefined" || typeof ksu.exec !== "function") return false;
+    if (ksu.exec.adbrPatched) return true;
+    var orig = ksu.exec;
+    var wrapped = function(cmd, opts, cb){
+      if (typeof cmd === "string" && cmd.indexOf("resetprop -n ") >= 0){
+        cmd = cmd.replace(/resetprop -n /g, RUN + " -n ");
+      }
+      return orig.call(ksu, cmd, opts, cb);
+    };
+    wrapped.adbrPatched = true;
+    try { ksu.exec = wrapped; return true; } catch (e){ return false; }
+  }
+
+  // 管理器是异步往 window 上挂 ksu 的，没挂上就等一会儿再试。
+  if (!patch()){
+    var tries = 0;
+    var timer = setInterval(function(){
+      if (patch() || ++tries > 20) clearInterval(timer);
+    }, 250);
+  }
+})();
 </script></body></html>

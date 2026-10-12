@@ -104,13 +104,10 @@ pub fn bootstrap_privileged_helper() -> Result<()> {
         return Ok(());
     }
 
-    let command = match find_resetprop_command() {
-        Ok(command) => Some(command),
-        Err(error) => {
-            log::warn!("resetprop unavailable to privileged helper: {error:#}");
-            None
-        }
-    };
+    let commands = resetprop_candidates();
+    if commands.is_empty() {
+        log::warn!("resetprop unavailable to privileged helper: no usable binary found");
+    }
 
     let (parent, child) = UnixStream::pair().context("failed to create resetprop socketpair")?;
     let pid = unsafe { libc::fork() };
@@ -119,7 +116,7 @@ pub fn bootstrap_privileged_helper() -> Result<()> {
     }
     if pid == 0 {
         drop(parent);
-        let exit_code = match helper_loop(child, command) {
+        let exit_code = match helper_loop(child, commands) {
             Ok(()) => 0,
             Err(error) => {
                 eprintln!("resetprop helper exiting after fatal error: {error:#}");
@@ -190,8 +187,25 @@ fn with_helper<T>(call: impl FnOnce(&mut ResetpropHelperClient) -> Result<T>) ->
 }
 
 pub fn direct_write_and_verify_property(property: &str, value: &str) -> Result<()> {
-    let command = find_resetprop_command()?;
-    execute_write_and_verify(&command, property, value)
+    let candidates = resetprop_candidates();
+    if candidates.is_empty() {
+        return Err(anyhow!("no usable resetprop binary found"));
+    }
+
+    let mut last_error = None;
+    for command in &candidates {
+        match execute_write_and_verify(command, property, value) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                // 第一个没成最常见的原因就是这个域 exec 不了那个路径（SELinux），
+                // 或者那一份自己不吃饭。换下一个接着试，别一条路走死。
+                log::debug!("resetprop {} 没成: {error:#}", command.program);
+                last_error = Some(error);
+            }
+        }
+    }
+
+    Err(last_error.expect("candidates is not empty"))
 }
 
 pub fn read_string_property(name: &str) -> Option<String> {
@@ -201,10 +215,17 @@ pub fn read_string_property(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-pub fn find_resetprop_command() -> Result<ResetpropCommand> {
-    // 自己的那份优先，别让管理器 PATH 里的版本抢了先。
+/// 所有可用的 resetprop，按优先级排。
+///
+/// **自己的那份排最前**（管理器的不是每家都有、行为也不一致），但不能只认它：
+/// 调用方可能是 keystore 里的那个 forked helper，而 keystore 域未必有权限 exec
+/// /data/adb 下的文件（域的转换归 SELinux 管，`sepolicy.rule` 里只给 keystore
+/// 放开了 `system_file`）。所以调用方拿到的是个**列表**：第一个 exec 不通就顺着往下试。
+pub fn resetprop_candidates() -> Vec<ResetpropCommand> {
+    let mut out = Vec::new();
+
     if Path::new(RESETPROP_BUNDLED).exists() {
-        return Ok(ResetpropCommand {
+        out.push(ResetpropCommand {
             program: RESETPROP_BUNDLED.to_string(),
             prepend_arg: None,
         });
@@ -216,7 +237,7 @@ pub fn find_resetprop_command() -> Result<ResetpropCommand> {
             .find(|candidate| candidate.exists())
             .map(|candidate| candidate.to_string_lossy().into_owned())
     }) {
-        return Ok(ResetpropCommand {
+        out.push(ResetpropCommand {
             program,
             prepend_arg: None,
         });
@@ -224,14 +245,14 @@ pub fn find_resetprop_command() -> Result<ResetpropCommand> {
 
     for (program, prepend_arg) in RESETPROP_FALLBACKS {
         if Path::new(program).exists() {
-            return Ok(ResetpropCommand {
+            out.push(ResetpropCommand {
                 program: program.to_string(),
                 prepend_arg: prepend_arg.map(str::to_string),
             });
         }
     }
 
-    Err(anyhow!("no usable resetprop binary found"))
+    out
 }
 
 fn execute_write_and_verify(command: &ResetpropCommand, property: &str, value: &str) -> Result<()> {
@@ -505,7 +526,7 @@ fn helper_error_response(error: &anyhow::Error) -> String {
     }
 }
 
-fn helper_loop(stream: UnixStream, command: Option<ResetpropCommand>) -> Result<()> {
+fn helper_loop(stream: UnixStream, commands: Vec<ResetpropCommand>) -> Result<()> {
     let reader_stream = stream
         .try_clone()
         .context("failed to clone resetprop helper socket")?;
@@ -540,13 +561,28 @@ fn helper_loop(stream: UnixStream, command: Option<ResetpropCommand>) -> Result<
             }
         } else {
             match parse_request(&line) {
-                Ok((property, value)) => match command.as_ref() {
-                    Some(command) => match execute_write_and_verify(command, &property, &value) {
-                        Ok(()) => "OK\n".to_string(),
-                        Err(error) => helper_error_response(&error),
-                    },
-                    None => "ERR\tresetprop is unavailable\n".to_string(),
-                },
+                Ok((property, value)) => {
+                    // 挨个试：第一个多是 exec 不通（这个域没权限），换下一个。
+                    let mut last_error = None;
+                    let mut done = false;
+                    for command in &commands {
+                        match execute_write_and_verify(command, &property, &value) {
+                            Ok(()) => {
+                                done = true;
+                                break;
+                            }
+                            Err(error) => last_error = Some(error),
+                        }
+                    }
+                    if done {
+                        "OK\n".to_string()
+                    } else {
+                        match last_error {
+                            Some(error) => helper_error_response(&error),
+                            None => "ERR\tresetprop is unavailable\n".to_string(),
+                        }
+                    }
+                }
                 Err(error) => format!("ERR\t{error:#}\n"),
             }
         };
