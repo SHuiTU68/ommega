@@ -104,9 +104,11 @@ def get_version() -> str:
 
 
 # 同版本号重发（热修）的时候 versionCode 必须继续往上走，模块管理器才认得出更新。
-# （历史上 1.6.1~1.6.8 攒了一串偏移，这次换版本号了，归零重算。）
-# 换版本号就归零，同版本号再重发就往上加（0 -> 1 -> 2 …）。注意跟 a-side 各算各的。
-VERSION_CODE_OFFSET = 0
+#
+# 别归零：公式是 major*1e6 + minor*1e3 + patch，patch 只值 1，历史偏移早超过 10，
+# 归零后 1.6.9 算出来（1006009）比线上那颗 1006022 还小 —— 管理器当降级，推不下去。
+# 接着往上加：14 刚好到 1006023。跟 a-side 各算各的，别顺手对齐。
+VERSION_CODE_OFFSET = 14
 
 
 def version_code(version: str) -> str:
