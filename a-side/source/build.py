@@ -458,6 +458,8 @@ def build_package_for_abi(
                 abi,
                 stage_dir,
             )
+        # resetprop 不在 BINARY_SPECS 里（它是独立 crate），得单独拷。
+        copy_binary(built_binaries["resetprop"], "resetprop", abi, stage_dir)
         if abi == ADBRD_ABI:
             copy_adbrd(stage_dir)
 
@@ -551,6 +553,8 @@ def build_combined_package(
                     abi,
                     stage_dir,
                 )
+            # resetprop 不在 BINARY_SPECS 里（它是独立 crate），得单独拷。
+            copy_binary(built[abi]["resetprop"], "resetprop", abi, stage_dir)
         if ADBRD_ABI in abis:
             copy_adbrd(stage_dir)
 
