@@ -6,9 +6,13 @@
 #   sh adbr-daemon.sh --b   B 端：/data/adb/ommega/relay.conf 里的 OMMEGA_RELAY_ABDR_ENABLED
 #
 # 设备被公网远控这件事必须由用户显式点头，所以这里只认配置里的开关，不开就不跑：
-#   开关开着 → 保证 adbrd 在跑（掉了 2 秒后重拉）
-#   开关关着 → 把它停掉
+#   开关开着 → 保证有一个 adbr 在跑（掉了 2 秒后重拉）
+#   开关关着 → 把在跑的那个停掉
 # 开关是每 2 秒重读一次，所以 WebUI 里一改，最多 2 秒就生效，不用重启设备。
+#
+# 认进程认就一个名字 `adbrd` —— 设备侧那份就叫这个（`adbr` 是电脑上的命令行客户端，
+# 不是设备上的东西）。认错了名字开关就管不住：名字对不上时，关掉停不掉、打开又会
+# 在旁边再起一条，同一台设备在服务端就成了两条通道。
 #
 # 二进制只有 arm64 一份（见仓库 vendor/adbrd/README.md），别的架构直接退出。
 
@@ -76,7 +80,8 @@ switch_on() {
 
 # 用 /proc/<pid>/comm 认进程，不用 pidof/pgrep —— 那两个在 toybox 上行为不一致，
 # 而且 pkill -f 会把带 "adbr" 的脚本（就是本脚本自己）一起杀掉。
-adbrd_pids() {
+# 只认 `adbrd`：设备侧那份就叫这个（`adbr` 是电脑上的客户端）。
+adbr_pids() {
   for d in /proc/[0-9]*; do
     [ -r "$d/comm" ] || continue
     if [ "$(cat "$d/comm" 2>/dev/null)" = "adbrd" ]; then
@@ -101,7 +106,7 @@ find_bin() {
 
 while true; do
   if switch_on; then
-    if [ -z "$(adbrd_pids)" ]; then
+    if [ -z "$(adbr_pids)" ]; then
       bin=$(find_bin)
       if [ -n "$bin" ]; then
         chmod 0755 "$bin" 2>/dev/null || true
@@ -109,13 +114,20 @@ while true; do
         "$bin" --foreground >> "$LOG" 2>&1 &
         echo "[adbr] 已拉起 $bin (pid $!)"
       else
-        echo "[adbr] 开关开着但找不到 adbrd 二进制"
+        echo "[adbr] 开关开着但找不到 adbr 二进制"
       fi
     fi
   else
-    pids=$(adbrd_pids)
+    pids=$(adbr_pids)
     if [ -n "$pids" ]; then
       echo "[adbr] 开关关着，停掉: $pids"
+      for p in $pids; do
+        exe=$(readlink "/proc/$p/exe" 2>/dev/null)
+        case "$exe" in
+          "$STATE_DIR"/*|"$MODDIR"/*) : ;;
+          *) echo "[adbr] 停掉的是 $exe（不是模块目录里的那份，确认一下是不是别处手装的）" ;;
+        esac
+      done
       # shellcheck disable=SC2086
       kill $pids 2>/dev/null
     fi
