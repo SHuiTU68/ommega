@@ -183,10 +183,15 @@ var PROP  = "/data/adb/modules/ommega-b/module.prop";
 
 var LEVELS = ["off", "error", "warn", "info", "debug", "trace"];
 
-/* 表单定义：key 即 relay.conf 里的键名，group 决定渲染到哪张卡。 */
+/* 表单定义：key 是面板上的短名，env 是 relay.conf 里的键（前缀 OMMEGA_RELAY_ 之外的部分）。
+   不写 env 就默认取 key —— 但有两类名字跟短名不一致，写错就等于这个开关根本不起作用：
+     ABDR        -> ABDR_ENABLED
+     MUTATION    -> SOTER_MUTATION
+     CONCURRENCY -> SOTER_CONCURRENCY
+   （2026-10-13 实测：MUTATION / ABDR 都是这个原因「显示关、实际开」，保存还会写进 relay 不认的键。） */
 var FIELDS = [
   {key:"ENABLED",     type:"bool", group:"remote"},
-  {key:"ABDR",        type:"bool", group:"remote"},
+  {key:"ABDR",        env:"ABDR_ENABLED",   type:"bool", group:"remote"},
   {key:"SERVER",      type:"text", group:"server"},
   {key:"DEVICE_ID",   type:"text", group:"server"},
   {key:"MACHINE_ID",  type:"text", group:"server"},
@@ -195,20 +200,21 @@ var FIELDS = [
   {key:"LOG_LEVEL",   type:"enum", group:"log", options:LEVELS},
   {key:"LOGCAT_ENABLED", type:"bool", group:"log"},
   {key:"LOGCAT_LEVEL",   type:"enum", group:"log", options:LEVELS},
-  {key:"MUTATION",    type:"bool", group:"soter"},
-  {key:"CONCURRENCY", type:"num",  group:"soter"},
+  {key:"MUTATION",    env:"SOTER_MUTATION",    type:"bool", group:"soter"},
+  {key:"CONCURRENCY", env:"SOTER_CONCURRENCY", type:"num",  group:"soter"},
   {key:"BIND_IFACE",  type:"text", group:"net"},
   {key:"PATH_PROBE",  type:"bool", group:"net"},
   {key:"WAKELOCK",    type:"bool", group:"net"}
 ];
 /* relay.conf 里的完整键名是 OMMEGA_RELAY_<KEY>，只有这几项例外。 */
 var PREFIX = "OMMEGA_RELAY_";
+function envOf(f){ return PREFIX + (f.env || f.key); }
 var DEFAULTS = {
   ENABLED: true, ABDR: false, MUTATION: false, LOG_ENABLED: true, LOG_LEVEL: "info",
   LOGCAT_ENABLED: true, LOGCAT_LEVEL: "info", CONCURRENCY: "2",
   BIND_IFACE: "auto", PATH_PROBE: true, WAKELOCK: true
 };
-var MANAGED = FIELDS.map(function(f){ return PREFIX + f.key; });
+var MANAGED = FIELDS.map(envOf);
 var REQUIRED = ["SERVER", "DEVICE_ID", "TOKEN"];
 
 var curText = "";
@@ -287,7 +293,7 @@ function render(){
     var hintKey = "f." + f.key + ".hint";
     if (I18N["zh-CN"][hintKey]) name.appendChild(el("small", null, t(hintKey)));
     row.appendChild(name);
-    var full = PREFIX + f.key;
+    var full = envOf(f);
     var raw = (full in curMap) ? curMap[full] : (DEFAULTS[f.key] !== undefined ? DEFAULTS[f.key] : "");
     if (f.type === "bool"){
       var sw = el("button", "sw");
@@ -337,7 +343,7 @@ function collect(keepEmpty){
       v = document.querySelector('input[data-key="' + f.key + '"]').value.trim();
     }
     if (v === "" && !keepEmpty) return;   // 空的文本项默认不收，merge 会保留原行
-    vals[PREFIX + f.key] = v;
+    vals[envOf(f)] = v;
   });
   return vals;
 }
@@ -377,8 +383,9 @@ async function save(){
   var vals = collect();
   var missing = REQUIRED.filter(function(k){ return !((PREFIX + k) in vals); });
   if (missing.length){ toast(t("toast.saveFail", {msg: missing.map(function(k){ return t("f." + k); }).join(", ")}), true); return; }
-  var n = parseInt(vals[PREFIX + "CONCURRENCY"], 10);
-  if ((PREFIX + "CONCURRENCY") in vals && !(n >= 1 && n <= 4)){ toast(t("toast.concurrencyBad"), true); return; }
+  var conc = envOf(FIELDS.filter(function(f){ return f.key === "CONCURRENCY"; })[0]);
+  var n = parseInt(vals[conc], 10);
+  if (conc in vals && !(n >= 1 && n <= 4)){ toast(t("toast.concurrencyBad"), true); return; }
   var text = merge(curText, vals);
   var r = await exec("mkdir -p " + STATE + " && printf '%s' '" + b64(text) + "' | base64 -d > " + CONF +
                      " && chmod 0600 " + CONF + " && touch " + STATE + "/restart.all");
