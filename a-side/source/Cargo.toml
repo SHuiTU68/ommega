@@ -13,11 +13,6 @@ path = "src/main.rs"
 name = "webui"
 path = "src/bin/webui.rs"
 
-# 模块自带的系统属性工具（不依赖 root 管理器提供 resetprop）。见 src/bin/resetprop.rs。
-[[bin]]
-name = "resetprop"
-path = "src/bin/resetprop.rs"
-
 [dependencies]
 syscalls = "0.8.1"
 kmr-derive = { path = "derive" }
@@ -79,6 +74,7 @@ members = [
   "wire",
   "watchdog",
   "ommega-injector",
+  "resetprop",
 ]
 
 [patch.crates-io]

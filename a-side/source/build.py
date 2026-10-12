@@ -60,14 +60,15 @@ ABI_TO_MODULE_ARCHES = {
 BINARY_SPECS = (
     {"package": None, "bin": "keymint", "output_name": "keymint"},
     {"package": "ommega-injector", "bin": "ommega-inject", "output_name": "ommega-inject"},
-    # resetprop 走**完全静态链接**：它要直接引用 libc.a 里的 `__system_property_*`
-    # （那几个符号不在动态 stub 里），而且静态二进制不再受平台 libc++ / liblog 那套
-    # 符号错配的牵连。代价是没有 dlopen —— 它也不需要。见 src/bin/resetprop.rs。
-    {"package": None, "bin": "resetprop", "output_name": "resetprop", "static": True},
 )
 
-# 静态构建要额外给的 rustflags。`-lc++abi` 是 Android 目标的常规项（见 .cargo/config.toml
-# 里那条），走静态链接时 clang 不会自己带上，得显式写。
+# resetprop 单列：它是独立 crate（`resetprop/`），有自己的 target 目录和 rustflags。
+# 为什么要拆开见那边 Cargo.toml —— 它要**完全静态**（`+crt-static`），而 ommega 那几个
+# bin 不能加同一个 flag（keymint 是被 dlopen 进 keystore2 的 PIE 载荷）。同一个 package、
+# 同一个 target 目录里混两种 rustflags，会让 cargo 每次因为指纹变化而全量重编。
+RESETPROP_PACKAGE = "ommega-resetprop"
+RESETPROP_BIN = "resetprop"
+RESETPROP_TARGET_DIR = TARGET_ROOT / "static"
 STATIC_RUSTFLAGS = "-C target-feature=+crt-static -C link-arg=-lc++abi"
 
 REQUIRED_TEMPLATE_FILES = (
@@ -194,10 +195,9 @@ def build_binary(
     release: bool,
     package: str | None,
     bin_name: str,
-    static: bool = False,
 ) -> Path:
     build_type = "release" if release else "debug"
-    print(f"Building {bin_name} for {abi} ({target}, {build_type}{', static' if static else ''})...")
+    print(f"Building {bin_name} for {abi} ({target}, {build_type})...")
 
     cmd = ["cargo", "build", "--target", target]
     if package:
@@ -207,15 +207,7 @@ def build_binary(
     if release:
         cmd.append("--release")
 
-    env = None
-    if static:
-        # 只给这一个 bin 加：整包不能都静态（keymint 是被 dlopen 进 keystore2 的
-        # PIE 载荷，静态二进制没法被加载）。
-        env = os.environ.copy()
-        key = f"CARGO_TARGET_{target.upper().replace('-', '_')}_RUSTFLAGS"
-        env[key] = f"{env.get(key, '')} {STATIC_RUSTFLAGS}".strip()
-
-    run(cmd, env=env)
+    run(cmd)
 
     binary_path = TARGET_ROOT / target / build_type / bin_name
     if not binary_path.exists():
@@ -229,6 +221,36 @@ def copy_binary(binary: Path, output_name: str, abi: str, stage_dir: Path) -> No
     dest_path = dest_dir / output_name
     shutil.copy2(binary, dest_path)
     print(f"Copied {binary} to {dest_path}")
+
+
+def build_resetprop(*, abi: str, target: str, release: bool) -> Path:
+    """编一个完全静态的 resetprop（模块自带，不依赖 root 管理器提供）。"""
+    build_type = "release" if release else "debug"
+    print(f"Building resetprop for {abi} ({target}, {build_type}, static)...")
+
+    env = os.environ.copy()
+    env["CARGO_TARGET_DIR"] = os.fspath(RESETPROP_TARGET_DIR)
+    key = f"CARGO_TARGET_{target.upper().replace('-', '_')}_RUSTFLAGS"
+    env[key] = f"{env.get(key, '')} {STATIC_RUSTFLAGS}".strip()
+
+    cmd = [
+        "cargo",
+        "build",
+        "-p",
+        RESETPROP_PACKAGE,
+        "--bin",
+        RESETPROP_BIN,
+        "--target",
+        target,
+    ]
+    if release:
+        cmd.append("--release")
+    run(cmd, env=env)
+
+    binary_path = RESETPROP_TARGET_DIR / target / build_type / RESETPROP_BIN
+    if not binary_path.exists():
+        raise FileNotFoundError(f"Built binary not found at {binary_path}")
+    return binary_path
 
 
 def copy_adbrd(stage_dir: Path) -> None:
@@ -421,8 +443,8 @@ def build_package_for_abi(
                 release=release,
                 package=spec["package"],
                 bin_name=spec["bin"],
-                static=bool(spec.get("static")),
             )
+        built_binaries["resetprop"] = build_resetprop(abi=abi, target=target, release=release)
 
         if abi in ("arm64-v8a", "arm64"):
             verify_pathmask_kos()
@@ -491,8 +513,12 @@ def build_combined_package(
                     release=release,
                     package=spec["package"],
                     bin_name=spec["bin"],
-                    static=bool(spec.get("static")),
                 )
+            compiled["resetprop"] = build_resetprop(
+                abi=abi,
+                target=ABI_TO_TARGET[abi],
+                release=release,
+            )
             return abi, compiled
 
         # Different ABIs land in disjoint target/<triple>/ directories with their

@@ -62,7 +62,7 @@ const RESETPROP_FALLBACKS: &[(&str, Option<&str>)] = &[
     ("/data/adb/ksud", Some("resetprop")),
 ];
 
-/// 模块自己带的那份（完全静态，源码在 `src/bin/resetprop.rs`，安装时
+/// 模块自己带的那份（完全静态，源码在 `resetprop/src/main.rs`，安装时
 /// customize.sh 把与设备 ABI 匹配的那份拷到这里）。它排在最前面：管理器的
 /// resetprop 不是每家都有、行为也不一致，不再依赖它们。
 const RESETPROP_BUNDLED: &str = "/data/adb/ommega/resetprop";

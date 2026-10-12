@@ -1,0 +1,18 @@
+[package]
+name = "ommega-resetprop"
+authors = ["jiyin004"]
+version = "1.6.9"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+
+# 单独一个 crate，是因为它要**完全静态**链接（`-C target-feature=+crt-static`），
+# 而 ommega 那几个 bin 不能加这个 flag（keymint 是被 dlopen 进 keystore2 的 PIE 载荷，
+# 静态二进制根本装载不了）。同一个 package 里混两种 rustflags 会让 cargo 来回全量重编，
+# 所以拆开：这个 crate 只依赖 libc，冷编只要几秒。
+
+[[bin]]
+name = "resetprop"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2.189"

@@ -14,7 +14,7 @@ STATE_DIR=/data/adb/ommega
 # $TARGET_DIR, so the UI and the keystore process (uid 1017) share one copy).
 CLIENTA_DIR=/data/adb/ommega
 
-# 系统属性伪装用模块**自己带**的 resetprop（完全静态，源码 src/bin/resetprop.rs；
+# 系统属性伪装用模块**自己带**的 resetprop（完全静态，源码在 resetprop/src/main.rs；
 # customize.sh 安装时会把与设备 ABI 匹配的那份拷到状态目录）。以前靠管理器提供：
 # Magisk 自带、APatch/KSU 走 busybox/ksud，不是每家都有、行为也不一致，所以不再依赖。
 # 定成同名函数，下面那一串调用一字不用改；实在找不到自己的才退回 PATH 里那个。
