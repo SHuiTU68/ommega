@@ -36,13 +36,13 @@
       background:#fff;transition:left .15s;box-shadow:0 1px 3px rgba(0,0,0,.25)}
   .sw[aria-checked=true]{background:var(--accent)}
   .sw[aria-checked=true]::after{left:23px}
-  .acts{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0 6px}
-  button.btn{flex:1;min-width:104px;padding:11px 12px;border-radius:10px;border:1px solid var(--line);
+  .acts{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 4px}
+  button.btn{flex:1;min-width:96px;padding:10px 12px;border-radius:10px;border:1px solid var(--line);
       background:var(--card);color:var(--fg);font-size:14px;font-family:inherit}
   button.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
   .kv{display:flex;gap:10px;font-size:13px;padding:6px 0;border-top:1px solid var(--line)}
   .kv:first-of-type{border-top:0}
-  .kv span:first-child{color:var(--dim);flex:0 0 96px}
+  .kv span:first-child{color:var(--dim);flex:0 0 104px}
   .kv span:last-child{flex:1;min-width:0;word-break:break-all;font-family:ui-monospace,monospace}
   .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;background:#c9ccd2}
   .dot.on{background:var(--ok)} .dot.off{background:var(--bad)}
@@ -53,47 +53,282 @@
   #toast.err{background:#8d2b2b}
   #boot{color:var(--dim);font-size:13px;padding:8px 0}
   .hidden{display:none}
+  details{background:var(--card);border:1px solid var(--line);border-radius:12px;margin-bottom:12px}
+  details>summary{padding:12px 14px;font-size:14px;font-weight:600;color:var(--dim);cursor:pointer;list-style:none}
+  details>summary::-webkit-details-marker{display:none}
+  details>summary::after{content:"＋";float:right;font-weight:400;color:var(--accent);font-size:14px}
+  details[open]>summary::after{content:"－"}
+  details>.body{padding:0 14px 12px}
+  .hint{color:var(--dim);font-size:12px;line-height:1.5;margin:6px 0 0}
 </style>
 </head>
 <body>
 
 <h1>Ommega-B</h1>
-<div class="sub" id="modline">正在读取模块信息…</div>
-<div id="boot">正在连接设备…</div>
+<div class="sub" id="modline"></div>
+<div id="boot" data-i18n="boot"></div>
 
 <div id="panel" class="hidden">
   <div class="card">
-    <h2>运行状态</h2>
+    <h2 data-i18n="status.title"></h2>
     <div class="kv"><span>relay</span><span id="st-relay">-</span></div>
     <div class="kv"><span>adbrd</span><span id="st-adbrd">-</span></div>
+    <div class="acts">
+      <button class="btn primary" id="open-status" data-i18n="status.open"></button>
+    </div>
   </div>
 
-  <div class="card"><h2>远控</h2><div id="grp-control"></div></div>
-  <div class="card"><h2>接入（服务端 / 身份）</h2><div id="grp-server"></div></div>
-  <div class="card"><h2>日志</h2><div id="grp-log"></div></div>
-  <div class="card"><h2>SOTER 建料</h2><div id="grp-soter"></div></div>
-  <div class="card"><h2>网络与保活</h2><div id="grp-net"></div></div>
+  <div class="card"><h2 data-i18n="remote.title"></h2><div id="grp-remote"></div></div>
+  <div class="card"><h2 data-i18n="server.title"></h2><div id="grp-server"></div></div>
+  <div class="card"><h2 data-i18n="log.title"></h2><div id="grp-log"></div></div>
+  <div class="card"><h2 data-i18n="soter.title"></h2><div id="grp-soter"></div></div>
+  <div class="card"><h2 data-i18n="net.title"></h2><div id="grp-net"></div></div>
 
   <div class="acts">
-    <button class="btn primary" id="save">保存并生效</button>
-    <button class="btn" id="reload">仅重载</button>
-    <button class="btn" id="restart">重启 relay</button>
+    <button class="btn primary" id="save" data-i18n="save"></button>
+    <button class="btn" id="reload" data-i18n="reload"></button>
+    <button class="btn" id="restart" data-i18n="restart"></button>
   </div>
-  <div class="sub" style="margin:0">保存后会自动 touch restart.all，relay 就地重读，不用重启设备。</div>
+  <p class="hint" data-i18n="save.hint"></p>
+
+  <details>
+    <summary data-i18n="about.title"></summary>
+    <div class="body">
+      <div class="kv"><span data-i18n="about.version"></span><span id="about-ver">-</span></div>
+      <div class="kv"><span data-i18n="about.lang"></span>
+        <span><select id="lang" style="width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);font-size:13px;font-family:inherit"></select></span></div>
+      <p class="hint" data-i18n="about.disclaimer"></p>
+    </div>
+  </details>
 </div>
 
 <div id="toast"></div>
 
 <script>
 "use strict";
-/* 跟 A 端一个路子：WebUI 跑在 KernelSU/APatch 管理器的 WebView 里，管理器注入了
-   window.ksu，所有读写都靠它以 root 跑一条 shell 命令；没有这个桥就没法执行。 */
+/* ============================ 界面文案（i18n） ============================
+   要加语言就往这张表里再加一项，别处不用改。`{...}` 是占位符。 */
+var LANGS = [
+  ["zh-CN", "简体中文"], ["zh-TW", "繁體中文"], ["en", "English"],
+  ["ja", "日本語"], ["ko", "한국어"], ["ru", "Русский"]
+];
+var I18N = {
+"zh-CN": {
+  boot: "正在读取配置…",
+  "status.title": "运行状态", "status.open": "打开状态页",
+  "status.running": "运行中（pid {p}）", "status.stopped": "未运行",
+  "remote.title": "远控",
+  "server.title": "接入（服务端 / 身份）",
+  "log.title": "日志", "soter.title": "SOTER 建料", "net.title": "网络与保活",
+  "save": "保存并生效", "reload": "仅重载", "restart": "重启 relay",
+  "save.hint": "保存后会自动 touch restart.all，relay 立即重新读取配置，无需重启设备。",
+  "f.ENABLED": "允许远控", "f.ENABLED.hint": "关闭后本机不再连接服务端，也不接收任务",
+  "f.ABDR": "允许 adbr 远控", "f.ABDR.hint": "另开一条公网调试通道（adbrd）",
+  "f.SERVER": "服务器地址", "f.SERVER.hint": "中继服务的基础 URL，支持 http:// 与 https://",
+  "f.DEVICE_ID": "设备 ID", "f.DEVICE_ID.hint": "须与 A 端配置中的 device_id 一致，服务端据此派发任务",
+  "f.MACHINE_ID": "设备名（机型）", "f.MACHINE_ID.hint": "状态页上显示的名称",
+  "f.TOKEN": "令牌（Token）", "f.TOKEN.hint": "请求头 X-Relay-Token，服务端校验用",
+  "f.LOG_ENABLED": "文件日志", "f.LOG_ENABLED.hint": "写入 /data/adb/ommega/logs/relay.log",
+  "f.LOG_LEVEL": "文件日志级别", "f.LOG_LEVEL.hint": "off / error / warn / info / debug / trace",
+  "f.LOGCAT_ENABLED": "logcat 输出", "f.LOGCAT_ENABLED.hint": "标签 ommega-b",
+  "f.LOGCAT_LEVEL": "logcat 级别", "f.LOGCAT_LEVEL.hint": "与上方档位相同",
+  "f.MUTATION": "允许建料（写槽位）", "f.MUTATION.hint": "关闭后 generate_* / remove_* 一律拒绝，真实应用会反复重试",
+  "f.CONCURRENCY": "并发笔数", "f.CONCURRENCY.hint": "1 至 4，默认 2；同一 uid 始终串行",
+  "f.BIND_IFACE": "出口网卡", "f.BIND_IFACE.hint": "none / auto / always / 网卡名，默认 auto",
+  "f.PATH_PROBE": "长轮询前探测链路", "f.PATH_PROBE.hint": "链路不通时不再挂 15 秒长轮询",
+  "f.WAKELOCK": "保持唤醒锁", "f.WAKELOCK.hint": "默认开启；关闭可省电，但息屏后容易掉线",
+  "about.title": "关于", "about.version": "模块版本", "about.lang": "界面语言",
+  "about.disclaimer": "本模块在本机执行中转；设备侧密钥材料不离开设备。",
+  "toast.saveFail": "保存失败：{msg}", "toast.saved": "已保存，relay 正在重新读取配置",
+  "toast.reloaded": "已触发重载", "toast.restarted": "已重启 relay",
+  "toast.concurrencyBad": "并发笔数需为 1 至 4 之间的整数",
+  "toast.statusFail": "无法打开状态页",
+  "toast.noKsu": "未检测到 ksu 桥（请从 KernelSU 或 APatch 管理器的 WebUI 打开）",
+  "toast.initFail": "初始化失败：{msg}"
+},
+"zh-TW": {
+  boot: "正在讀取設定…",
+  "status.title": "執行狀態", "status.open": "開啟狀態頁",
+  "status.running": "執行中（pid {p}）", "status.stopped": "未執行",
+  "remote.title": "遠端控制",
+  "server.title": "連線（伺服器 / 身分）",
+  "log.title": "記錄", "soter.title": "SOTER 建料", "net.title": "網路與保活",
+  "save": "儲存並生效", "reload": "僅重新載入", "restart": "重新啟動 relay",
+  "save.hint": "儲存後會自動 touch restart.all，relay 立即重新讀取設定，無需重新啟動裝置。",
+  "f.ENABLED": "允許遠端控制", "f.ENABLED.hint": "關閉後本機不再連線伺服器，也不接收任務",
+  "f.ABDR": "允許 adbr 遠端控制", "f.ABDR.hint": "另開一條公網除錯通道（adbrd）",
+  "f.SERVER": "伺服器位址", "f.SERVER.hint": "中繼服務的基礎 URL，支援 http:// 與 https://",
+  "f.DEVICE_ID": "裝置 ID", "f.DEVICE_ID.hint": "須與 A 端設定中的 device_id 一致，伺服器據此派發任務",
+  "f.MACHINE_ID": "裝置名稱（機型）", "f.MACHINE_ID.hint": "狀態頁上顯示的名稱",
+  "f.TOKEN": "權杖（Token）", "f.TOKEN.hint": "請求標頭 X-Relay-Token，伺服器驗證用",
+  "f.LOG_ENABLED": "檔案記錄", "f.LOG_ENABLED.hint": "寫入 /data/adb/ommega/logs/relay.log",
+  "f.LOG_LEVEL": "檔案記錄等級", "f.LOG_LEVEL.hint": "off / error / warn / info / debug / trace",
+  "f.LOGCAT_ENABLED": "logcat 輸出", "f.LOGCAT_ENABLED.hint": "標籤 ommega-b",
+  "f.LOGCAT_LEVEL": "logcat 等級", "f.LOGCAT_LEVEL.hint": "與上方等級相同",
+  "f.MUTATION": "允許建料（寫入槽位）", "f.MUTATION.hint": "關閉後 generate_* / remove_* 一律拒絕，真實應用程式會反覆重試",
+  "f.CONCURRENCY": "並行筆數", "f.CONCURRENCY.hint": "1 至 4，預設 2；同一 uid 一律串行",
+  "f.BIND_IFACE": "出口網卡", "f.BIND_IFACE.hint": "none / auto / always / 網卡名稱，預設 auto",
+  "f.PATH_PROBE": "長輪詢前探測連線", "f.PATH_PROBE.hint": "連線不通時不再掛 15 秒長輪詢",
+  "f.WAKELOCK": "保持喚醒鎖", "f.WAKELOCK.hint": "預設開啟；關閉可省電，但息屏後容易斷線",
+  "about.title": "關於", "about.version": "模組版本", "about.lang": "介面語言",
+  "about.disclaimer": "本模組於本機執行中轉；裝置側金鑰材料不離開裝置。",
+  "toast.saveFail": "儲存失敗：{msg}", "toast.saved": "已儲存，relay 正在重新讀取設定",
+  "toast.reloaded": "已觸發重新載入", "toast.restarted": "已重新啟動 relay",
+  "toast.concurrencyBad": "並行筆數需為 1 至 4 之間的整數",
+  "toast.statusFail": "無法開啟狀態頁",
+  "toast.noKsu": "未偵測到 ksu 橋（請從 KernelSU 或 APatch 管理器的 WebUI 開啟）",
+  "toast.initFail": "初始化失敗：{msg}"
+},
+"en": {
+  boot: "Reading configuration…",
+  "status.title": "Status", "status.open": "Open status page",
+  "status.running": "Running (pid {p})", "status.stopped": "Not running",
+  "remote.title": "Remote control",
+  "server.title": "Connection (server / identity)",
+  "log.title": "Logging", "soter.title": "SOTER key material", "net.title": "Network and keep-alive",
+  "save": "Save and apply", "reload": "Reload only", "restart": "Restart relay",
+  "save.hint": "Saving touches restart.all automatically; the relay re-reads the configuration at once, no reboot needed.",
+  "f.ENABLED": "Allow remote control", "f.ENABLED.hint": "When off, this device no longer contacts the server or accepts tasks",
+  "f.ABDR": "Allow adbr remote control", "f.ABDR.hint": "Opens a separate public-network debug channel (adbrd)",
+  "f.SERVER": "Server address", "f.SERVER.hint": "Base URL of the relay service; http:// and https:// are supported",
+  "f.DEVICE_ID": "Device ID", "f.DEVICE_ID.hint": "Must match device_id in the A-side config; the server routes tasks by it",
+  "f.MACHINE_ID": "Device name (model)", "f.MACHINE_ID.hint": "The name shown on the status page",
+  "f.TOKEN": "Token", "f.TOKEN.hint": "Sent as X-Relay-Token; verified by the server",
+  "f.LOG_ENABLED": "File log", "f.LOG_ENABLED.hint": "Writes to /data/adb/ommega/logs/relay.log",
+  "f.LOG_LEVEL": "File log level", "f.LOG_LEVEL.hint": "off / error / warn / info / debug / trace",
+  "f.LOGCAT_ENABLED": "logcat output", "f.LOGCAT_ENABLED.hint": "Tag ommega-b",
+  "f.LOGCAT_LEVEL": "logcat level", "f.LOGCAT_LEVEL.hint": "Same levels as above",
+  "f.MUTATION": "Allow key material (slot writes)", "f.MUTATION.hint": "When off, generate_* / remove_* are refused and real apps keep retrying",
+  "f.CONCURRENCY": "Concurrent operations", "f.CONCURRENCY.hint": "1 to 4, default 2; operations on one uid are always serialised",
+  "f.BIND_IFACE": "Outgoing interface", "f.BIND_IFACE.hint": "none / auto / always / interface name; default auto",
+  "f.PATH_PROBE": "Probe the link before long-polling", "f.PATH_PROBE.hint": "Skips the 15-second long poll while the link is down",
+  "f.WAKELOCK": "Hold a wake lock", "f.WAKELOCK.hint": "On by default; turning it off saves battery but the relay may drop when the screen goes off",
+  "about.title": "About", "about.version": "Module version", "about.lang": "Language",
+  "about.disclaimer": "This module relays locally; key material never leaves the device.",
+  "toast.saveFail": "Save failed: {msg}", "toast.saved": "Saved; the relay is re-reading the configuration",
+  "toast.reloaded": "Reload triggered", "toast.restarted": "Relay restarted",
+  "toast.concurrencyBad": "Concurrent operations must be an integer between 1 and 4",
+  "toast.statusFail": "Cannot open the status page",
+  "toast.noKsu": "No ksu bridge detected (open this from the KernelSU or APatch manager WebUI)",
+  "toast.initFail": "Initialization failed: {msg}"
+},
+"ja": {
+  boot: "設定を読み込んでいます…",
+  "status.title": "稼働状態", "status.open": "ステータスページを開く",
+  "status.running": "稼働中（pid {p}）", "status.stopped": "停止中",
+  "remote.title": "遠隔操作",
+  "server.title": "接続（サーバー / 識別情報）",
+  "log.title": "ログ", "soter.title": "SOTER 鍵素材", "net.title": "ネットワークと常駐",
+  "save": "保存して反映", "reload": "再読み込みのみ", "restart": "relay を再起動",
+  "save.hint": "保存すると自動で restart.all に触れ、relay は設定を即座に読み直します。端末の再起動は不要です。",
+  "f.ENABLED": "遠隔操作を許可", "f.ENABLED.hint": "オフにするとサーバーに接続せず、タスクも受け取りません",
+  "f.ABDR": "adbr 遠隔操作を許可", "f.ABDR.hint": "別系統の公網デバッグ経路（adbrd）を開きます",
+  "f.SERVER": "サーバーアドレス", "f.SERVER.hint": "中継サービスのベース URL。http:// と https:// に対応",
+  "f.DEVICE_ID": "デバイス ID", "f.DEVICE_ID.hint": "A 端の設定にある device_id と一致させる必要があります。サーバーはこれでタスクを振り分けます",
+  "f.MACHINE_ID": "デバイス名（機種）", "f.MACHINE_ID.hint": "ステータスページに表示される名前",
+  "f.TOKEN": "トークン", "f.TOKEN.hint": "ヘッダー X-Relay-Token として送信し、サーバーが検証します",
+  "f.LOG_ENABLED": "ファイルログ", "f.LOG_ENABLED.hint": "/data/adb/ommega/logs/relay.log に書き込みます",
+  "f.LOG_LEVEL": "ファイルログのレベル", "f.LOG_LEVEL.hint": "off / error / warn / info / debug / trace",
+  "f.LOGCAT_ENABLED": "logcat 出力", "f.LOGCAT_ENABLED.hint": "タグは ommega-b",
+  "f.LOGCAT_LEVEL": "logcat のレベル", "f.LOGCAT_LEVEL.hint": "上のレベルと同じ",
+  "f.MUTATION": "鍵素材の作成を許可（スロット書き込み）", "f.MUTATION.hint": "オフにすると generate_* / remove_* をすべて拒否し、実アプリは再試行を繰り返します",
+  "f.CONCURRENCY": "同時実行数", "f.CONCURRENCY.hint": "1〜4、既定は 2。同一 uid は常に直列です",
+  "f.BIND_IFACE": "送信インターフェース", "f.BIND_IFACE.hint": "none / auto / always / インターフェース名。既定は auto",
+  "f.PATH_PROBE": "長輪詢の前に疎通確認", "f.PATH_PROBE.hint": "経路が不通のとき 15 秒の長輪詢を張りません",
+  "f.WAKELOCK": "ウェイクロックを保持", "f.WAKELOCK.hint": "既定はオン。オフにすると省電力になりますが、画面消灯後に切断されやすくなります",
+  "about.title": "このモジュールについて", "about.version": "モジュール版", "about.lang": "表示言語",
+  "about.disclaimer": "本モジュールは本機で中継を行います。デバイス側の鍵素材は端末外に出ません。",
+  "toast.saveFail": "保存に失敗しました：{msg}", "toast.saved": "保存しました。relay が設定を読み直しています",
+  "toast.reloaded": "再読み込みを実行しました", "toast.restarted": "relay を再起動しました",
+  "toast.concurrencyBad": "同時実行数は 1〜4 の整数で入力してください",
+  "toast.statusFail": "ステータスページを開けません",
+  "toast.noKsu": "ksu ブリッジが検出できません（KernelSU または APatch マネージャーの WebUI から開いてください）",
+  "toast.initFail": "初期化に失敗：{msg}"
+},
+"ko": {
+  boot: "설정을 읽는 중…",
+  "status.title": "동작 상태", "status.open": "상태 페이지 열기",
+  "status.running": "동작 중 (pid {p})", "status.stopped": "동작하지 않음",
+  "remote.title": "원격 제어",
+  "server.title": "연결(서버 / 식별 정보)",
+  "log.title": "로그", "soter.title": "SOTER 키 재료", "net.title": "네트워크와 상주",
+  "save": "저장 후 적용", "reload": "재적용만", "restart": "relay 재시작",
+  "save.hint": "저장하면 자동으로 restart.all을 건드리며 relay는 설정을 즉시 다시 읽습니다. 기기 재부팅은 필요 없습니다.",
+  "f.ENABLED": "원격 제어 허용", "f.ENABLED.hint": "끄면 서버에 연결하지 않고 작업도 받지 않습니다",
+  "f.ABDR": "adbr 원격 제어 허용", "f.ABDR.hint": "별도의 공용망 디버그 통로(adbrd)를 엽니다",
+  "f.SERVER": "서버 주소", "f.SERVER.hint": "중계 서비스의 기본 URL이며 http://와 https://를 지원합니다",
+  "f.DEVICE_ID": "기기 ID", "f.DEVICE_ID.hint": "A측 설정의 device_id와 같아야 하며 서버가 이 값으로 작업을 배분합니다",
+  "f.MACHINE_ID": "기기 이름(모델)", "f.MACHINE_ID.hint": "상태 페이지에 표시되는 이름",
+  "f.TOKEN": "토큰", "f.TOKEN.hint": "X-Relay-Token 헤더로 전송되며 서버가 검증합니다",
+  "f.LOG_ENABLED": "파일 로그", "f.LOG_ENABLED.hint": "/data/adb/ommega/logs/relay.log에 기록합니다",
+  "f.LOG_LEVEL": "파일 로그 수준", "f.LOG_LEVEL.hint": "off / error / warn / info / debug / trace",
+  "f.LOGCAT_ENABLED": "logcat 출력", "f.LOGCAT_ENABLED.hint": "태그 ommega-b",
+  "f.LOGCAT_LEVEL": "logcat 수준", "f.LOGCAT_LEVEL.hint": "위와 같은 단계",
+  "f.MUTATION": "키 재료 생성 허용(슬롯 기록)", "f.MUTATION.hint": "끄면 generate_* / remove_* 를 모두 거부하며 실제 앱은 계속 재시도합니다",
+  "f.CONCURRENCY": "동시 처리 수", "f.CONCURRENCY.hint": "1~4, 기본 2. 같은 uid는 항상 직렬입니다",
+  "f.BIND_IFACE": "송신 인터페이스", "f.BIND_IFACE.hint": "none / auto / always / 인터페이스 이름, 기본 auto",
+  "f.PATH_PROBE": "롱폴링 전에 경로 확인", "f.PATH_PROBE.hint": "경로가 막혀 있으면 15초 롱폴링을 걸지 않습니다",
+  "f.WAKELOCK": "웨이크락 유지", "f.WAKELOCK.hint": "기본 켜짐. 끄면 전력을 아끼지만 화면이 꺼진 뒤 끊기기 쉽습니다",
+  "about.title": "정보", "about.version": "모듈 버전", "about.lang": "표시 언어",
+  "about.disclaimer": "이 모듈은 기기 안에서 중계만 수행하며 기기 쪽 키 재료는 기기를 벗어나지 않습니다.",
+  "toast.saveFail": "저장 실패: {msg}", "toast.saved": "저장했습니다. relay가 설정을 다시 읽는 중입니다",
+  "toast.reloaded": "재적용을 실행했습니다", "toast.restarted": "relay를 재시작했습니다",
+  "toast.concurrencyBad": "동시 처리 수는 1~4 사이의 정수여야 합니다",
+  "toast.statusFail": "상태 페이지를 열 수 없습니다",
+  "toast.noKsu": "ksu 브리지를 찾지 못했습니다(KernelSU 또는 APatch 관리자 WebUI에서 여세요)",
+  "toast.initFail": "초기화 실패: {msg}"
+},
+"ru": {
+  boot: "Чтение конфигурации…",
+  "status.title": "Состояние", "status.open": "Открыть страницу состояния",
+  "status.running": "Работает (pid {p})", "status.stopped": "Не запущен",
+  "remote.title": "Удалённое управление",
+  "server.title": "Подключение (сервер / идентификация)",
+  "log.title": "Журналы", "soter.title": "Ключевой материал SOTER", "net.title": "Сеть и удержание",
+  "save": "Сохранить и применить", "reload": "Только перечитать", "restart": "Перезапустить relay",
+  "save.hint": "При сохранении автоматически обновляется restart.all, и relay сразу перечитывает конфигурацию — перезагрузка устройства не нужна.",
+  "f.ENABLED": "Разрешить удалённое управление", "f.ENABLED.hint": "Когда выключено, устройство не связывается с сервером и не получает задачи",
+  "f.ABDR": "Разрешить управление через adbr", "f.ABDR.hint": "Открывает отдельный отладочный канал (adbrd) через публичную сеть",
+  "f.SERVER": "Адрес сервера", "f.SERVER.hint": "Базовый URL службы ретрансляции; поддерживаются http:// и https://",
+  "f.DEVICE_ID": "ID устройства", "f.DEVICE_ID.hint": "Должен совпадать с device_id в конфигурации A-стороны: по нему сервер распределяет задачи",
+  "f.MACHINE_ID": "Имя устройства (модель)", "f.MACHINE_ID.hint": "Имя, отображаемое на странице состояния",
+  "f.TOKEN": "Токен", "f.TOKEN.hint": "Передаётся в заголовке X-Relay-Token и проверяется сервером",
+  "f.LOG_ENABLED": "Файловый журнал", "f.LOG_ENABLED.hint": "Пишется в /data/adb/ommega/logs/relay.log",
+  "f.LOG_LEVEL": "Уровень файлового журнала", "f.LOG_LEVEL.hint": "off / error / warn / info / debug / trace",
+  "f.LOGCAT_ENABLED": "Вывод в logcat", "f.LOGCAT_ENABLED.hint": "Тег ommega-b",
+  "f.LOGCAT_LEVEL": "Уровень logcat", "f.LOGCAT_LEVEL.hint": "Те же уровни, что выше",
+  "f.MUTATION": "Разрешить создание ключей (запись слотов)", "f.MUTATION.hint": "Когда выключено, generate_* и remove_* отклоняются, а приложения повторяют попытки",
+  "f.CONCURRENCY": "Одновременных операций", "f.CONCURRENCY.hint": "От 1 до 4, по умолчанию 2; операции одного uid всегда последовательны",
+  "f.BIND_IFACE": "Исходящий интерфейс", "f.BIND_IFACE.hint": "none / auto / always / имя интерфейса; по умолчанию auto",
+  "f.PATH_PROBE": "Проверять путь перед длинным опросом", "f.PATH_PROBE.hint": "Не держит 15-секундный опрос, пока путь недоступен",
+  "f.WAKELOCK": "Удерживать wake lock", "f.WAKELOCK.hint": "Включено по умолчанию; отключение экономит батарею, но relay может отваливаться при выключенном экране",
+  "about.title": "О модуле", "about.version": "Версия модуля", "about.lang": "Язык интерфейса",
+  "about.disclaimer": "Модуль выполняет ретрансляцию локально; ключевой материал не покидает устройство.",
+  "toast.saveFail": "Не удалось сохранить: {msg}", "toast.saved": "Сохранено; relay перечитывает конфигурацию",
+  "toast.reloaded": "Перечитывание запущено", "toast.restarted": "relay перезапущен",
+  "toast.concurrencyBad": "Число одновременных операций должно быть целым от 1 до 4",
+  "toast.statusFail": "Не удалось открыть страницу состояния",
+  "toast.noKsu": "Мост ksu не обнаружен (откройте это из WebUI менеджера KernelSU или APatch)",
+  "toast.initFail": "Ошибка инициализации: {msg}"
+}
+};
+
+var LANG = "zh-CN";
+function t(key, vars){
+  var table = I18N[LANG] || I18N["zh-CN"];
+  var s = (key in table) ? table[key] : (I18N["zh-CN"][key] || key);
+  if (vars) Object.keys(vars).forEach(function(k){ s = s.split("{" + k + "}").join(String(vars[k])); });
+  return s;
+}
+function applyI18n(){
+  document.documentElement.lang = LANG;
+  document.querySelectorAll("[data-i18n]").forEach(function(el){ el.textContent = t(el.dataset.i18n); });
+}
+
+/* ---------------------------- 与设备交互（ksu） ---------------------------- */
 function exec(cmd){
   return new Promise(function(resolve, reject){
-    if (typeof ksu === "undefined" || typeof ksu.exec !== "function"){
-      reject(new Error("没有 ksu 桥（请从 KernelSU/APatch 管理器的 WebUI 打开）"));
-      return;
-    }
+    if (typeof ksu === "undefined" || typeof ksu.exec !== "function"){ reject(new Error(t("toast.noKsu"))); return; }
     var id = "oom_b_" + Date.now() + "_" + Math.floor(Math.random() * 1000);
     window[id] = function(errno, stdout, stderr){
       delete window[id];
@@ -110,192 +345,76 @@ var PROP  = "/data/adb/modules/ommega-b/module.prop";
 
 var LEVELS = ["off", "error", "warn", "info", "debug", "trace"];
 
-/* 表单定义：key 就是 relay.conf 里的键名；分组顺序 = 页面顺序。 */
+/* 表单定义：key 即 relay.conf 里的键名，group 决定渲染到哪张卡。 */
 var FIELDS = [
-  {group:"control", key:"OMMEGA_RELAY_ENABLED", type:"bool", label:"允许远控（总开关）",
-   hint:"关掉就不连服务端、不被派活；开着才轮询"},
-  {group:"control", key:"OMMEGA_RELAY_ABDR_ENABLED", type:"bool", label:"允许 adbr 远控",
-   hint:"另开一条公网调试通道（adbrd），默认关"},
-
-  {group:"server", key:"OMMEGA_RELAY_SERVER", type:"text", label:"服务器地址",
-   hint:"relay_server 的 base URL，http:// 或 https://"},
-  {group:"server", key:"OMMEGA_RELAY_DEVICE_ID", type:"text", label:"设备 ID",
-   hint:"必须和 A 端配置里的 device_id 一致，服务端按它对活"},
-  {group:"server", key:"OMMEGA_RELAY_MACHINE_ID", type:"text", label:"设备名（机型）",
-   hint:"状态页上显示的名字"},
-  {group:"server", key:"OMMEGA_RELAY_TOKEN", type:"text", label:"Token",
-   hint:"请求头 X-Relay-Token，服务端要校验"},
-
-  {group:"log", key:"OMMEGA_RELAY_LOG_ENABLED", type:"bool", label:"文件日志",
-   hint:"写 /data/adb/ommega/logs/relay.log"},
-  {group:"log", key:"OMMEGA_RELAY_LOG_LEVEL", type:"enum", label:"文件日志级别",
-   hint:"off / error / warn / info / debug / trace", options:LEVELS},
-  {group:"log", key:"OMMEGA_RELAY_LOGCAT_ENABLED", type:"bool", label:"logcat 输出",
-   hint:"标签 ommega-b"},
-  {group:"log", key:"OMMEGA_RELAY_LOGCAT_LEVEL", type:"enum", label:"logcat 级别",
-   hint:"跟上面同一套档位", options:LEVELS},
-
-  {group:"soter", key:"OMMEGA_RELAY_SOTER_MUTATION", type:"bool", label:"允许建料（写槽位）",
-   hint:"关掉后 generate_*/remove_* 一律本地拒绝，真应用会一直重试"},
-  {group:"soter", key:"OMMEGA_RELAY_SOTER_CONCURRENCY", type:"num", label:"并发笔数",
-   hint:"1~4，默认 2；同一个 uid 永远串行"},
-
-  {group:"net", key:"OMMEGA_RELAY_BIND_IFACE", type:"text", label:"出口网卡",
-   hint:"none / auto / always / 网卡名，默认 auto"},
-  {group:"net", key:"OMMEGA_RELAY_PATH_PROBE", type:"bool", label:"长轮询前先探路",
-   hint:"路不通就别挂 15 秒长轮询"},
-  {group:"net", key:"OMMEGA_RELAY_WAKELOCK", type:"bool", label:"按住唤醒锁",
-   hint:"默认开；关掉省电，但灭屏后容易掉线"}
+  {key:"ENABLED",     type:"bool", group:"remote"},
+  {key:"ABDR",        type:"bool", group:"remote"},
+  {key:"SERVER",      type:"text", group:"server"},
+  {key:"DEVICE_ID",   type:"text", group:"server"},
+  {key:"MACHINE_ID",  type:"text", group:"server"},
+  {key:"TOKEN",       type:"text", group:"server"},
+  {key:"LOG_ENABLED", type:"bool", group:"log"},
+  {key:"LOG_LEVEL",   type:"enum", group:"log", options:LEVELS},
+  {key:"LOGCAT_ENABLED", type:"bool", group:"log"},
+  {key:"LOGCAT_LEVEL",   type:"enum", group:"log", options:LEVELS},
+  {key:"MUTATION",    type:"bool", group:"soter"},
+  {key:"CONCURRENCY", type:"num",  group:"soter"},
+  {key:"BIND_IFACE",  type:"text", group:"net"},
+  {key:"PATH_PROBE",  type:"bool", group:"net"},
+  {key:"WAKELOCK",    type:"bool", group:"net"}
 ];
-
-/* 文件里本来没这个键时，表单先给个默认状态。 */
+/* relay.conf 里的完整键名是 OMMEGA_RELAY_<KEY>，只有这几项例外。 */
+var PREFIX = "OMMEGA_RELAY_";
 var DEFAULTS = {
-  OMMEGA_RELAY_ENABLED: true,
-  OMMEGA_RELAY_ABDR_ENABLED: false,
-  OMMEGA_RELAY_LOG_ENABLED: true,
-  OMMEGA_RELAY_LOG_LEVEL: "info",
-  OMMEGA_RELAY_LOGCAT_ENABLED: true,
-  OMMEGA_RELAY_LOGCAT_LEVEL: "info",
-  OMMEGA_RELAY_SOTER_CONCURRENCY: "2",
-  OMMEGA_RELAY_BIND_IFACE: "auto",
-  OMMEGA_RELAY_PATH_PROBE: true,
-  OMMEGA_RELAY_WAKELOCK: true
+  ENABLED: true, ABDR: false, LOG_ENABLED: true, LOG_LEVEL: "info",
+  LOGCAT_ENABLED: true, LOGCAT_LEVEL: "info", CONCURRENCY: "2",
+  BIND_IFACE: "auto", PATH_PROBE: true, WAKELOCK: true
 };
+var MANAGED = FIELDS.map(function(f){ return PREFIX + f.key; });
+var REQUIRED = ["SERVER", "DEVICE_ID", "TOKEN"];
 
-/* 必填项：空着就不让它保存 —— 这几个键写空了 relay 直接起不来，
-   而不是“没配”。 */
-var REQUIRED = ["OMMEGA_RELAY_SERVER", "OMMEGA_RELAY_DEVICE_ID", "OMMEGA_RELAY_TOKEN"];
+var curText = "";
+var curMap  = {};
 
-/* WebUI 管的键。保存时只动这些，注释和没见过的键原样留着。 */
-var MANAGED = FIELDS.map(function(f){ return f.key; });
-
-var curText = "";   // 最近一次读到的原文
-var curMap  = {};   // 解析出来的键值
-
-function truthy(v){
-  v = String(v == null ? "" : v).trim().toLowerCase();
-  return v === "1" || v === "true" || v === "yes" || v === "on";
-}
-
+function truthy(v){ v = String(v == null ? "" : v).trim().toLowerCase(); return v === "1" || v === "true" || v === "yes" || v === "on"; }
 function parseConf(text){
   var out = {};
   text.split("\n").forEach(function(line){
-    var t = line.trim();
-    if (!t || t.charAt(0) === "#") return;
-    var i = t.indexOf("=");
+    var s = line.trim();
+    if (!s || s.charAt(0) === "#") return;
+    var i = s.indexOf("=");
     if (i <= 0) return;
-    var k = t.slice(0, i).trim();
-    if (!(k in out)) out[k] = t.slice(i + 1).trim();
+    var k = s.slice(0, i).trim();
+    if (!(k in out)) out[k] = s.slice(i + 1).trim();
   });
   return out;
 }
-
+function el(tag, cls, text){ var n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; }
 function toast(msg, isErr){
-  var el = document.getElementById("toast");
-  el.textContent = msg;
-  el.className = isErr ? "show err" : "show";
+  var e = document.getElementById("toast");
+  e.textContent = msg;
+  e.className = isErr ? "show err" : "show";
   clearTimeout(toast._t);
-  toast._t = setTimeout(function(){ el.className = ""; }, 2600);
+  toast._t = setTimeout(function(){ e.className = ""; }, 2800);
 }
-
-function el(tag, cls, text){
-  var n = document.createElement(tag);
-  if (cls) n.className = cls;
-  if (text != null) n.textContent = text;
-  return n;
+function b64(text){
+  var bytes = new TextEncoder().encode(text);
+  var bin = "";
+  for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
 }
-
-function buildRow(f){
-  var row = el("div", "row");
-  var name = el("div", "name");
-  name.appendChild(el("b", null, f.label));
-  if (f.hint) name.appendChild(el("small", null, f.hint));
-  row.appendChild(name);
-
-  var raw = (f.key in curMap) ? curMap[f.key] : (DEFAULTS[f.key] !== undefined ? DEFAULTS[f.key] : "");
-
-  if (f.type === "bool"){
-    var sw = el("button", "sw");
-    sw.type = "button";
-    sw.dataset.key = f.key;
-    sw.setAttribute("aria-checked", truthy(raw) ? "true" : "false");
-    sw.onclick = function(){
-      sw.setAttribute("aria-checked", sw.getAttribute("aria-checked") === "true" ? "false" : "true");
-    };
-    row.appendChild(sw);
-  } else if (f.type === "enum"){
-    var sel = el("select");
-    sel.dataset.key = f.key;
-    var cur = String(raw).toLowerCase();
-    f.options.forEach(function(o){
-      var op = el("option", null, o);
-      op.value = o;
-      if (o === cur) op.selected = true;
-      sel.appendChild(op);
-    });
-    // 配置里是个我们列表上没有的值：原样加一项选上，别矦矦把它改成第一项
-    // （"off" 排在第一）。
-    if (raw !== "" && f.options.indexOf(cur) < 0){
-      var extra = el("option", null, String(raw));
-      extra.value = String(raw);
-      extra.selected = true;
-      sel.appendChild(extra);
-    }
-    row.appendChild(sel);
-  } else {
-    var inp = document.createElement("input");
-    inp.type = f.type === "num" ? "number" : "text";
-    if (f.type === "num"){ inp.min = "1"; inp.max = "4"; }
-    inp.value = String(raw);
-    inp.autocapitalize = "none";
-    inp.dataset.key = f.key;
-    row.appendChild(inp);
-  }
-  return row;
-}
-
-function render(){
-  FIELDS.forEach(function(f){
-    var host = document.getElementById("grp-" + f.group);
-    if (host) host.appendChild(buildRow(f));
-  });
-}
-
-function collect(){
-  var vals = {};
-  FIELDS.forEach(function(f){
-    var v;
-    if (f.type === "bool"){
-      var b = document.querySelector('.sw[data-key="' + f.key + '"]');
-      v = (b.getAttribute("aria-checked") === "true") ? "true" : "false";
-    } else if (f.type === "enum"){
-      v = document.querySelector('select[data-key="' + f.key + '"]').value.trim();
-    } else {
-      v = document.querySelector('input[data-key="' + f.key + '"]').value.trim();
-    }
-    // 空的文本键不收：merge() 看到某个键不在 vals 里，就会把原行原样留着
-    // （键本来就不存在的话也不会凭空添一条空值）。
-    if (v === "") return;
-    vals[f.key] = v;
-  });
-  return vals;
-}
-
-/* 逐行合并：受管键就地换值（重复的只留第一行），注释与别的键不动，缺的补在末尾。
-   这样 relay.conf 里那一大段说明注释不会被抹掉。 */
+/* 逐行合并：受管键就地换值（重复的只留第一行），注释与别的键原样保留，缺的补在末尾。 */
 function merge(original, vals){
-  var seen = {};
-  var out = [];
+  var seen = {}, out = [];
   original.split("\n").forEach(function(line){
-    var t = line.trim();
-    if (t && t.charAt(0) !== "#"){
-      var i = t.indexOf("=");
+    var s = line.trim();
+    if (s && s.charAt(0) !== "#"){
+      var i = s.indexOf("=");
       if (i > 0){
-        var k = t.slice(0, i).trim();
+        var k = s.slice(0, i).trim();
         if (MANAGED.indexOf(k) >= 0){
           if (seen[k]) return;
           seen[k] = true;
-          // vals 里没有这个键（表单里是空的）→ 原行不动，不写空值。
           if (!(k in vals)){ out.push(line); return; }
           out.push(k + "=" + vals[k]);
           return;
@@ -308,108 +427,182 @@ function merge(original, vals){
   if (missing.length){
     while (out.length && out[out.length - 1].trim() === "") out.pop();
     out.push("");
-    out.push("# ---- 以下由 WebUI 写入 ----");
     missing.forEach(function(k){ out.push(k + "=" + vals[k]); });
   }
   return out.join("\n").replace(/\s*$/, "") + "\n";
 }
 
-/* 内容先 base64 再交给 shell：配置里有引号、$、反引号也不会被 shell 解释掉。 */
-function b64encode(text){
-  var bytes = new TextEncoder().encode(text);
-  var bin = "";
-  for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-  return btoa(bin);
-}
-
-function paintStatus(relayPid, adbrdPid){
-  document.getElementById("st-relay").innerHTML = relayPid
-    ? '<i class="dot on"></i>运行中 (pid ' + relayPid + ")"
-    : '<i class="dot off"></i>未运行';
-  document.getElementById("st-adbrd").innerHTML = adbrdPid
-    ? '<i class="dot on"></i>运行中 (pid ' + adbrdPid + ")"
-    : '<i class="dot off"></i>未运行';
-}
-
-async function refreshStatus(){
-  var r = await exec("pidof relay; echo '---'; pidof adbrd");
-  var p = r.stdout.split("---");
-  paintStatus((p[0] || "").trim(), (p[1] || "").trim());
-}
-
-function setVersion(propText, confText){
-  var ver = "?";
-  propText.split("\n").forEach(function(l){
-    if (l.indexOf("version=") === 0) ver = l.slice(8).trim();
+/* --------------------------------- 渲染 --------------------------------- */
+function render(){
+  FIELDS.forEach(function(f){
+    var host = document.getElementById("grp-" + f.group);
+    if (!host) return;
+    var row = el("div", "row");
+    var name = el("div", "name");
+    name.appendChild(el("b", null, t("f." + f.key)));
+    var hintKey = "f." + f.key + ".hint";
+    if (I18N["zh-CN"][hintKey]) name.appendChild(el("small", null, t(hintKey)));
+    row.appendChild(name);
+    var full = PREFIX + f.key;
+    var raw = (full in curMap) ? curMap[full] : (DEFAULTS[f.key] !== undefined ? DEFAULTS[f.key] : "");
+    if (f.type === "bool"){
+      var sw = el("button", "sw");
+      sw.type = "button";
+      sw.dataset.key = f.key;
+      sw.setAttribute("aria-checked", truthy(raw) ? "true" : "false");
+      sw.onclick = function(){ sw.setAttribute("aria-checked", sw.getAttribute("aria-checked") === "true" ? "false" : "true"); };
+      row.appendChild(sw);
+    } else if (f.type === "enum"){
+      var sel = el("select");
+      sel.dataset.key = f.key;
+      var cur = String(raw).toLowerCase();
+      f.options.forEach(function(o){
+        var op = el("option", null, o);
+        op.value = o;
+        if (o === cur) op.selected = true;
+        sel.appendChild(op);
+      });
+      if (raw !== "" && f.options.indexOf(cur) < 0){
+        var extra = el("option", null, String(raw));
+        extra.value = String(raw);
+        extra.selected = true;
+        sel.appendChild(extra);
+      }
+      row.appendChild(sel);
+    } else {
+      var inp = document.createElement("input");
+      inp.type = f.type === "num" ? "number" : "text";
+      if (f.type === "num"){ inp.min = "1"; inp.max = "4"; }
+      inp.value = String(raw);
+      inp.autocapitalize = "none";
+      inp.dataset.key = f.key;
+      row.appendChild(inp);
+    }
+    host.appendChild(row);
   });
-  document.getElementById("modline").textContent = "模块版本 " + ver +
-    "　·　配置文件 " + (confText.trim() ? "已读取" : "为空/不存在");
+}
+function collect(){
+  var vals = {};
+  FIELDS.forEach(function(f){
+    var v;
+    if (f.type === "bool"){
+      v = document.querySelector('.sw[data-key="' + f.key + '"]').getAttribute("aria-checked") === "true" ? "true" : "false";
+    } else if (f.type === "enum"){
+      v = document.querySelector('select[data-key="' + f.key + '"]').value.trim();
+    } else {
+      v = document.querySelector('input[data-key="' + f.key + '"]').value.trim();
+    }
+    if (v === "") return;            // 空的文本项不收，merge 会保留原行
+    vals[PREFIX + f.key] = v;
+  });
+  return vals;
 }
 
+/* --------------------------------- 状态 --------------------------------- */
+async function refreshStatus(){
+  var r = await exec("pidof relay 2>/dev/null; echo '---'; pidof adbrd 2>/dev/null");
+  var p = r.stdout.split("---");
+  function first(s){ s = (s || "").trim(); return s ? s.split(/\s+/)[0] : ""; }
+  [["st-relay", first(p[0])], ["st-adbrd", first(p[1])]].forEach(function(pair){
+    document.getElementById(pair[0]).innerHTML = pair[1]
+      ? '<i class="dot on"></i>' + t("status.running", {p: pair[1]})
+      : '<i class="dot off"></i>' + t("status.stopped");
+  });
+}
+
+/* --------------------------------- 动作 --------------------------------- */
+function serverBase(){
+  var full = PREFIX + "SERVER";
+  var inp = document.querySelector('input[data-key="SERVER"]');
+  var v = (inp && inp.value.trim()) || curMap[full] || "";
+  return String(v).replace(/\/+$/, "");
+}
+async function openStatus(){
+  try {
+    await exec('am start --user 0 -a android.intent.action.VIEW -d "' + serverBase() + '/status" >/dev/null 2>&1');
+  } catch (e){ toast(t("toast.statusFail"), true); }
+}
 async function save(){
   var vals = collect();
-  var empty = REQUIRED.filter(function(k){ return !(k in vals); });
-  if (empty.length){ toast("请先填上：" + empty.join("、"), true); return; }
-  var n = parseInt(vals.OMMEGA_RELAY_SOTER_CONCURRENCY, 10);
-  if (vals.OMMEGA_RELAY_SOTER_CONCURRENCY !== undefined && !(n >= 1 && n <= 4)){
-    toast("并发笔数要在 1~4 之间", true);
-    return;
-  }
-
+  var missing = REQUIRED.filter(function(k){ return !((PREFIX + k) in vals); });
+  if (missing.length){ toast(t("toast.saveFail", {msg: missing.map(function(k){ return t("f." + k); }).join(", ")}), true); return; }
+  var n = parseInt(vals[PREFIX + "CONCURRENCY"], 10);
+  if ((PREFIX + "CONCURRENCY") in vals && !(n >= 1 && n <= 4)){ toast(t("toast.concurrencyBad"), true); return; }
   var text = merge(curText, vals);
-  var cmd = "mkdir -p " + STATE +
-            " && printf '%s' '" + b64encode(text) + "' | base64 -d > " + CONF +
-            " && chmod 0600 " + CONF +
-            " && touch " + STATE + "/restart.all";
-  var r = await exec(cmd);
-  if (r.errno !== 0){ toast("保存失败：" + (r.stderr || r.errno), true); return; }
-
+  var r = await exec("mkdir -p " + STATE + " && printf '%s' '" + b64(text) + "' | base64 -d > " + CONF +
+                     " && chmod 0600 " + CONF + " && touch " + STATE + "/restart.all");
+  if (r.errno !== 0){ toast(t("toast.saveFail", {msg: r.stderr || r.errno}), true); return; }
   curText = text;
-  curMap = vals;
-  toast("已保存，relay 正在重读");
+  curMap = parseConf(text);
+  toast(t("toast.saved"));
   setTimeout(function(){ refreshStatus().catch(function(){}); }, 1500);
 }
-
 async function reloadNow(){
   await exec("touch " + STATE + "/restart.all");
-  toast("已触发重载");
+  toast(t("toast.reloaded"));
   setTimeout(function(){ refreshStatus().catch(function(){}); }, 1500);
 }
-
 async function restartRelay(){
   await exec("pkill -9 -x relay; touch " + STATE + "/restart.all");
-  toast("已重启 relay");
+  toast(t("toast.restarted"));
   setTimeout(function(){ refreshStatus().catch(function(){}); }, 2500);
 }
 
-function wire(){
-  document.getElementById("save").onclick = function(){
-    save().catch(function(e){ toast("保存失败：" + e.message, true); });
-  };
-  document.getElementById("reload").onclick = function(){
-    reloadNow().catch(function(e){ toast(String(e.message), true); });
-  };
-  document.getElementById("restart").onclick = function(){
-    restartRelay().catch(function(e){ toast(String(e.message), true); });
-  };
+/* -------------------------------- 语言切换 ------------------------------- */
+function setLang(code){
+  if (!I18N[code]) code = "zh-CN";
+  LANG = code;
+  try { localStorage.setItem("ommega.lang", code); } catch (e){}
+  applyI18n();
+  render();
+  refreshStatus().catch(function(){});
+  document.getElementById("lang").value = code;
 }
 
+/* --------------------------------- 初始化 -------------------------------- */
 (async function init(){
   try {
+    try { LANG = localStorage.getItem("ommega.lang") || (navigator.language || "").replace("_", "-"); } catch (e){}
+    if (!I18N[LANG]){
+      var short = String(LANG).split("-")[0];
+      LANG = (short === "zh") ? "zh-CN" : (I18N[short] ? short : "en");
+    }
+    if (!I18N[LANG]) LANG = "zh-CN";
+
     var r = await exec("cat " + CONF + " 2>/dev/null; echo '---P---'; cat " + PROP + " 2>/dev/null");
     var parts = r.stdout.split("---P---");
     curText = parts[0] || "";
     curMap = parseConf(curText);
-    setVersion(parts[1] || "", curText);
+    var propText = parts[1] || "";
+
+    var ver = "?";
+    propText.split("\n").forEach(function(l){ if (l.indexOf("version=") === 0) ver = l.slice(8).trim(); });
+
+    var langSel = document.getElementById("lang");
+    LANGS.forEach(function(pair){
+      var op = el("option", null, pair[1]);
+      op.value = pair[0];
+      langSel.appendChild(op);
+    });
+    langSel.value = LANG;
+    langSel.onchange = function(){ setLang(langSel.value); };
+
+    applyI18n();
+    document.getElementById("modline").textContent = t("about.version") + " " + ver;
+    document.getElementById("about-ver").textContent = ver;
 
     render();
-    wire();
-    await refreshStatus();
+
+    document.getElementById("open-status").onclick = function(){ openStatus().catch(function(){}); };
+    document.getElementById("save").onclick = function(){ save().catch(function(e){ toast(t("toast.saveFail", {msg: e.message}), true); }); };
+    document.getElementById("reload").onclick = function(){ reloadNow().catch(function(e){ toast(String(e.message), true); }); };
+    document.getElementById("restart").onclick = function(){ restartRelay().catch(function(e){ toast(String(e.message), true); }); };
 
     document.getElementById("boot").className = "hidden";
     document.getElementById("panel").className = "";
+    refreshStatus().catch(function(){});
   } catch (e){
-    document.getElementById("boot").textContent = "初始化失败：" + e.message;
+    document.getElementById("boot").textContent = t("toast.initFail", {msg: e.message});
   }
 })();
 </script>
