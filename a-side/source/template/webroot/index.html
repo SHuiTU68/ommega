@@ -133,13 +133,11 @@
         <button class="btn primary" id="patch-sync">从服务端同步并保存</button>
         <button class="btn sm" id="patch-edit">手动编辑</button>
       </div>
-      <p class="hint">拿上面的服务器地址和设备 ID 去问 <code>/api/status/</code>，把那台设备上报的启动哈希 / 启动公钥 / 三处安全补丁一次性取回来。设备 ID 留空就自动挑：在在线设备里按负载顺序（轻的优先）找一台 keymint 有效、已锁定、可信启动的；填了就只认那一台，它不在线或不存在就直接报失败。</p>
+      <p class="hint">拿上面的服务器地址和设备 ID 去问 <code>/api/status/</code>，把那台设备上报的启动哈希 / 三处安全补丁一次性取回来。设备 ID 留空就自动挑：在在线设备里按负载顺序（轻的优先）找一台 keymint 有效、已锁定、可信启动的；填了就只认那一台，它不在线或不存在就直接报失败。</p>
       <p class="hint">这些值存 <code>/data/adb/ommega/props.conf</code>，<b>不写进模块脚本</b> —— 写脚本里的话模块一升级就被新版整个替掉、设置全丢；开机时由 <code>post-fs-data.sh</code> 统一读这个文件应用。</p>
       <div id="patch-manual" class="hidden">
         <div class="row"><div class="name"><b>启动哈希</b><small>ro.boot.vbmeta.digest，64 位十六进制</small></div>
           <input type="text" id="boot-hash" autocapitalize="none" placeholder="可留空"></div>
-        <div class="row"><div class="name"><b>启动公钥</b><small>ro.boot.vbmeta.public_key_digest，64 位十六进制</small></div>
-          <input type="text" id="boot-key" autocapitalize="none" placeholder="可留空"></div>
         <div class="row"><div class="name"><b>安全补丁 · 系统</b><small>ro.build.version.security_patch</small></div>
           <input type="text" id="patch-system" autocapitalize="none" placeholder="2025-01-01"></div>
         <div class="row"><div class="name"><b>安全补丁 · 启动</b><small>ro.boot.image.build.security_patch</small></div>
@@ -250,10 +248,12 @@ var MANAGED = REMOTE_FIELDS.map(function(f){ return f.key; });
 
 var curConfText = "";
 var curPropsText = "";
-/* 伪装项那五个键：它就是 props.conf 里被面板管的那组。 */
-var PROP_KEYS = ["ro.boot.vbmeta.digest", "ro.boot.vbmeta.public_key_digest",
+/* 伪装项这几个键：它就是 props.conf 里被面板管的那组。 */
+var PROP_KEYS = ["ro.boot.vbmeta.digest",
                  "ro.build.version.security_patch", "ro.boot.image.build.security_patch",
                  "ro.vendor.build.security_patch"];
+/* 已经不要的键：面板不再管它，但文件里可能还留着（以前写进去的），保存时顺手删掉。 */
+var RETIRED_KEYS = ["ro.boot.vbmeta.public_key_digest"];
 var curTarget   = {normal:[], generate:[], hack:[]};
 var appRows     = [];   // {pkg,label,icon,mode,checked,system}
 var appFilter   = "";
@@ -281,6 +281,14 @@ function b64(text){
   var bin = "";
   for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
   return btoa(bin);
+}
+/* 把 text 里这些键的行整行删掉（用于清掉已经不要的旧设置）。 */
+function dropKeys(text, keys){
+  return text.split("\n").filter(function(line){
+    var i = line.indexOf(":");
+    if (i <= 0) return true;
+    return keys.indexOf(line.slice(0, i).trim()) < 0;
+  }).join("\n");
 }
 /* 内容一律 base64 再交给 shell：里面的引号、$、反引号都不会被 shell 解释。 */
 async function writeFile(path, text, mode){
@@ -555,13 +563,11 @@ async function saveApps(){
 }
 async function savePatch(){
   var hash = document.getElementById("boot-hash").value.trim().toLowerCase();
-  var key  = document.getElementById("boot-key").value.trim().toLowerCase();
   var sys  = document.getElementById("patch-system").value.trim();
   var boot = document.getElementById("patch-boot").value.trim();
   var vend = document.getElementById("patch-vendor").value.trim();
 
   if (hash && !/^[0-9a-f]{64}$/.test(hash)){ toast("启动哈希要 64 位十六进制", true); return; }
-  if (key && !/^[0-9a-f]{64}$/.test(key)){ toast("启动公钥要 64 位十六进制", true); return; }
   for (var pair of [["系统", sys], ["启动", boot], ["厂商", vend]]){
     if (pair[1] && !/^\d{4}-\d{2}-\d{2}$/.test(pair[1])){ toast(pair[0] + "安全补丁要 YYYY-MM-DD", true); return; }
   }
@@ -569,12 +575,11 @@ async function savePatch(){
   /* 空的键不进 vals：配合 dropEmpty，等于把这一项从 props.conf 里删掉。 */
   var kv = {};
   if (hash) kv["ro.boot.vbmeta.digest"] = hash;
-  if (key)  kv["ro.boot.vbmeta.public_key_digest"] = key;
   if (sys)  kv["ro.build.version.security_patch"] = sys;
   if (boot) kv["ro.boot.image.build.security_patch"] = boot;
   if (vend) kv["ro.vendor.build.security_patch"] = vend;
 
-  var text = mergeKV(curPropsText, kv, PROP_KEYS, true);
+  var text = dropKeys(mergeKV(curPropsText, kv, PROP_KEYS, true), RETIRED_KEYS);
   if (!curPropsText.trim()){
     /* 文件是新建的：给一段说明头，后续手改也不会一脸懵。 */
     text = "# 开机时统一应用的系统属性覆盖（面板「伪装参数」写的就是这里）。\n" +
@@ -742,7 +747,6 @@ async function fetchDeviceBoot(){
 
   var b = hit.boot;
   document.getElementById("boot-hash").value = b.boot_hash || "";
-  document.getElementById("boot-key").value = b.boot_key || "";
   document.getElementById("patch-system").value = patchDate(b.patch_system);
   document.getElementById("patch-boot").value = patchDate(b.patch_boot);
   document.getElementById("patch-vendor").value = patchDate(b.patch_vendor);
@@ -762,13 +766,15 @@ async function syncPatch(){
 
 /* 折叠栏里那行「当前」：把已经写进 post-fs-data.sh 的值汇总成一句。 */
 function refreshPatchSummary(){
-  function v(id){ return (document.getElementById(id).value || "").trim(); }
+  function v(id){
+    var e = document.getElementById(id);
+    return e ? (e.value || "").trim() : "";
+  }
   var items = [];
   if (v("patch-system")) items.push("系统 " + v("patch-system"));
   if (v("patch-boot")) items.push("启动 " + v("patch-boot"));
   if (v("patch-vendor")) items.push("厂商 " + v("patch-vendor"));
   if (v("boot-hash")) items.push("哈希已设");
-  if (v("boot-key")) items.push("公钥已设");
   document.getElementById("patch-summary").textContent = items.length ? items.join(" · ") : "都没设（开机不会改这几项）";
 }
 
@@ -800,7 +806,6 @@ function refreshPatchSummary(){
       if (m && PROP_KEYS.indexOf(m[1]) >= 0) rp[m[1]] = m[2].trim();
     });
     document.getElementById("boot-hash").value = rp["ro.boot.vbmeta.digest"] || "";
-    document.getElementById("boot-key").value = rp["ro.boot.vbmeta.public_key_digest"] || "";
     document.getElementById("patch-system").value = rp["ro.build.version.security_patch"] || "";
     document.getElementById("patch-boot").value = rp["ro.boot.image.build.security_patch"] || "";
     document.getElementById("patch-vendor").value = rp["ro.vendor.build.security_patch"] || "";
@@ -868,7 +873,7 @@ function refreshPatchSummary(){
       syncPatch().catch(function(e){ toast(String(e.message), true); });
     };
     document.getElementById("patch-clear").onclick = function(){
-      ["boot-hash", "boot-key", "patch-system", "patch-boot", "patch-vendor"].forEach(function(id){
+      ["boot-hash", "patch-system", "patch-boot", "patch-vendor"].forEach(function(id){
         document.getElementById(id).value = "";
       });
       refreshPatchSummary();
