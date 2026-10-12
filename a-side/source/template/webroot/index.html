@@ -505,22 +505,22 @@ function loadLabels(pkgs){
 /* ------------------------------ 从服务端取启动信息 ------------------------------ */
 
 /* ---------------------------------- 状态 ---------------------------------- */
+/* 用 pidof，**不扫 /proc**：扫 /proc 要对每个进程 cat 一次 comm，这台机器上有一千
+   多个进程，光这一下就是好几秒 —— 面板刚打开时卡在「正在连接设备」就是这么来的。
+   pidof 一次一百多毫秒。 */
 async function refreshStatus(){
-  var r = await exec(
-    "pidof keymint 2>/dev/null | head -1; echo '---'; " +
-    "pidof keystore2 2>/dev/null | head -1; echo '---'; " +
-    "for d in /proc/[0-9]*; do [ \"$(cat $d/comm 2>/dev/null)\" = adbrd ] && printf '%s ' ${d#/proc/}; done"
-  );
+  var r = await exec("pidof keymint 2>/dev/null; echo '---'; pidof keystore2 2>/dev/null; echo '---'; pidof adbrd 2>/dev/null");
   var p = r.stdout.split("---");
-  var km = (p[0] || "").trim(), ks = (p[1] || "").trim(), ab = (p[2] || "").trim();
+  function first(s){ s = (s || "").trim(); return s ? s.split(/\s+/)[0] : ""; }
+  var km = first(p[0]), ks = first(p[1]), ab = first(p[2]);
   document.getElementById("st-keymint").innerHTML = km
-    ? '<i class="dot on"></i>运行中 (pid ' + km.split("\n")[0] + ")"
+    ? '<i class="dot on"></i>运行中 (pid ' + km + ")"
     : '<i class="dot off"></i>没在跑';
   document.getElementById("st-keystore").innerHTML = ks
     ? '<i class="dot on"></i>运行中 (pid ' + ks + ")"
     : '<i class="dot off"></i>没在跑';
   document.getElementById("st-adbr").innerHTML = ab
-    ? '<i class="dot on"></i>运行中 (pid ' + ab.trim() + ")"
+    ? '<i class="dot on"></i>运行中 (pid ' + ab + ")"
     : '<i class="dot off"></i>没在跑';
 }
 
@@ -883,11 +883,12 @@ function refreshPatchSummary(){
       savePatch().catch(function(e){ toast("保存失败：" + e.message, true); });
     };
 
-    await refreshStatus();
-    await refreshCount();
-
+    /* 先把面板显示出来，状态和计数让它们在后台跑完自己填 ——
+       首屏千万不要等这两个（以前就是等它们，卡在「正在连接设备」）。 */
     document.getElementById("boot").className = "hidden";
     document.getElementById("panel").className = "";
+    refreshStatus().catch(function(){});
+    refreshCount().catch(function(){});
 
     loadApps().catch(function(e){ toast("加载应用列表失败：" + e.message, true); });
     /* 应用列表故意**不在这里加载**：枚举一遍很慢，而默认那屏只需要个数。
