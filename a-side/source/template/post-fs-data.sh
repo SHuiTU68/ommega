@@ -122,7 +122,12 @@ if [ ! -f "$TARGET_CONF" ]; then
   cat > "$TARGET_CONF" <<'EOF'
 url: http://110.40.170.96:10886
 token: aY7kRSDDR6PMmamlKwtgf7mQgr-X5uFd
-device_id: device-b-2
+# device_id 故意留空：它指的是「跟随哪台 B 端」，每套环境的设备不一样，
+# 播种一个写死的值只会指向不存在的设备（比如早先那个 device-b-2，它是服务端
+# 公开密钥库的专用槽位，不是一台真的 B 端）。
+# 打开 WebUI 的「伪装参数」点一次「从服务端同步并保存」，它会按负载自动挑一台
+# （keymint 有效、已锁定、可信启动）并把 ID 写在这里；也可以手动填。
+device_id:
 tls_insecure: true
 remote: on
 EOF
