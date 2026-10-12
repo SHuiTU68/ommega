@@ -127,12 +127,13 @@
   <details>
     <summary>伪装参数（启动哈希 / 公钥 / 安全补丁）</summary>
     <div class="body">
+      <div id="grp-patch"></div>
       <div class="kv"><span>当前</span><span id="patch-summary">-</span></div>
       <div class="acts">
         <button class="btn primary" id="patch-sync">从服务端同步并保存</button>
         <button class="btn sm" id="patch-edit">手动编辑</button>
       </div>
-      <p class="hint">拿配置里的服务器地址和设备 ID 去问 <code>/api/status/</code>，把那台设备上报的启动哈希 / 启动公钥 / 三处安全补丁一次性取回来，写进模块的 <code>post-fs-data.sh</code> 并当场生效一次。设备不在列表里、或还没上报过启动信息，就直接报失败。</p>
+      <p class="hint">拿上面的服务器地址和设备 ID 去问 <code>/api/status/</code>，把那台设备上报的启动哈希 / 启动公钥 / 三处安全补丁一次性取回来，写进模块的 <code>post-fs-data.sh</code> 并当场生效一次。设备 ID 留空就自动挑：在在线设备里按负载顺序（轻的优先）找一台 keymint 有效、已锁定、可信启动的；填了就只认那一台，它不在线或不存在就直接报失败。</p>
       <div id="patch-manual" class="hidden">
         <div class="row"><div class="name"><b>启动哈希</b><small>ro.boot.vbmeta.digest，64 位十六进制</small></div>
           <input type="text" id="boot-hash" autocapitalize="none" placeholder="可留空"></div>
@@ -219,19 +220,27 @@ var PFD      = MOD + "/post-fs-data.sh";
 var RESETPROP= STATE + "/resetprop";
 
 /* 远控那一组：key 就是扁平配置里的键名，写入格式按老面板的习惯（布尔 true/false，
-   SOTER 两项沿用 0/1），避免老配置来回变样子。 */
+   SOTER 两项沿用 0/1），避免老配置来回变样子。
+   group:"patch" 的那几项渲染到「伪装参数」那张卡里 —— 设备 ID 是「跟随哪一台」，
+   跟哈希/日期放一起才顺。 */
+var DEFAULTS = {
+  url: "http://110.40.170.96:10886",
+  token: "aY7kRSDDR6PMmamlKwtgf7mQgr-X5uFd"
+};
+
 var REMOTE_FIELDS = [
   {key:"remote",        label:"允许远控",        type:"bool", hint:"关掉就不连服务端、不接任务"},
-  {key:"url",           label:"服务器地址",      type:"text", hint:"relay 服务的 base URL"},
-  {key:"device_id",     label:"设备 ID",         type:"text", hint:"要对上服务端注册的那台"},
-  {key:"token",         label:"Token",          type:"text", hint:"服务端要校验的令牌"},
+  {key:"url",           label:"服务器地址",      type:"text", hint:"relay 服务的 base URL；留空用官方那个"},
+  {key:"token",         label:"Token",          type:"text", hint:"服务端要校验的令牌；留空用官方 A 端那个"},
   {key:"debug_logging", label:"调试日志",        type:"bool", hint:"排查问题用，平时关着"},
   {key:"adbr",          label:"允许 adbr 远控",  type:"bool", hint:"另开一条公网调试通道（adbrd）"},
   {key:"tls_insecure",  label:"忽略证书校验",    type:"bool", hint:"自签证书时才需要"},
   {key:"global_scope",  label:"全局生效",        type:"bool", hint:"对所有应用生效，而不是只对列表里的"},
   {key:"hide_strongbox",label:"声明无 StrongBox",type:"bool", hint:"让系统报告本机不支持 StrongBox"},
   {key:"soter_hide",    label:"隐藏 SOTER",      type:"bool", oneZero:true, hint:"不暴露 SOTER 能力"},
-  {key:"soter_inject",  label:"SOTER 注入",      type:"bool", oneZero:true, hint:"接管应用对 SOTER 的调用"}
+  {key:"soter_inject",  label:"SOTER 注入",      type:"bool", oneZero:true, hint:"接管应用对 SOTER 的调用"},
+  {key:"device_id",     label:"跟随的设备 ID",   type:"text", group:"patch",
+   hint:"留空 = 自动挑一台（按负载，且 keymint 有效 / 已锁定 / 可信启动）"}
 ];
 
 /* 这些键由面板管；保存时只动它们，注释和别的键原样留着。 */
@@ -341,7 +350,7 @@ function quoteShell(v){
 }
 
 /* ---------------------------------- 渲染 ---------------------------------- */
-function buildBoolRow(f, value, onchange){
+function buildBoolRow(f, value, onchange, host){
   var row = el("div", "row");
   var name = el("div", "name");
   name.appendChild(el("b", null, f.label));
@@ -357,15 +366,19 @@ function buildBoolRow(f, value, onchange){
     if (onchange) onchange(now);
   };
   row.appendChild(sw);
+  (host || document.getElementById("grp-remote")).appendChild(row);
   return sw;
 }
 function renderRemote(conf){
   var host = document.getElementById("grp-remote");
   host.innerHTML = "";
+  var patchHost = document.getElementById("grp-patch");
+  if (patchHost) patchHost.innerHTML = "";
   REMOTE_FIELDS.forEach(function(f){
-    var raw = (f.key in conf) ? conf[f.key] : "";
+    var target = (f.group === "patch" && patchHost) ? patchHost : host;
+    var raw = (f.key in conf) ? conf[f.key] : (DEFAULTS[f.key] || "");
     if (f.type === "bool"){
-      buildBoolRow(f, truthy(raw));
+      buildBoolRow(f, truthy(raw), null, target);
     } else {
       var row = el("div", "row");
       var name = el("div", "name");
@@ -378,20 +391,20 @@ function renderRemote(conf){
       inp.autocapitalize = "none";
       inp.dataset.key = f.key;
       row.appendChild(inp);
-      host.appendChild(row);
+      target.appendChild(row);
     }
   });
 }
 function collectRemote(){
   var vals = {};
   REMOTE_FIELDS.forEach(function(f){
+    /* 按键名找（不限定在哪张卡里，也不靠下标）：加减字段不会错位 */
     if (f.type === "bool"){
-      /* 按键名找，不靠下标 —— 以后加/减字段不会错位 */
-      var sw = document.querySelector('#grp-remote .sw[data-key="' + f.key + '"]');
+      var sw = document.querySelector('.sw[data-key="' + f.key + '"]');
       var on = sw.getAttribute("aria-checked") === "true";
       vals[f.key] = f.oneZero ? (on ? "1" : "0") : (on ? "true" : "false");
     } else {
-      var inp = document.querySelector('#grp-remote input[data-key="' + f.key + '"]');
+      var inp = document.querySelector('input[data-key="' + f.key + '"]');
       vals[f.key] = inp.value.trim();
     }
   });
@@ -671,12 +684,37 @@ function androidMajor(v){
   return n >= 10000 ? String(Math.floor(n / 10000)) : String(n);
 }
 
+/* 从在线设备里挑一台用来「跟」的：
+   keymint 有效（有启动信息、没报 tee_error）、已锁定（bootloader locked）、
+   可信启动（verified_boot_state = 0 / green）；同样合格的按负载从轻到重取第一台。 */
+function pickBestDevice(list){
+  var ok = [];
+  for (var i = 0; i < list.length; i++){
+    var d = list[i];
+    if (!d || !d.boot || d.tee_error) continue;
+    if (d.boot.device_locked !== true) continue;
+    if (Number(d.boot.verified_boot_state) !== 0) continue;
+    ok.push(d);
+  }
+  ok.sort(function(a, b){ return (Number(a.load) || 0) - (Number(b.load) || 0); });
+  return ok.length ? ok[0] : null;
+}
+
+/* 取输入框当前值：点同步时用的是**框里填的**，而不是配置文件里那份（用户可能刚改
+   还没保存）；框不存在才退回配置。 */
+function fieldVal(key, fallback){
+  var inp = document.querySelector('input[data-key="' + key + '"]');
+  if (inp && String(inp.value).trim()) return String(inp.value).trim();
+  return fallback || "";
+}
+
 async function fetchDeviceBoot(){
   var conf = parseKV(curConfText, true);
-  var base = (conf.url || "").trim().replace(/\/+$/, "");
-  var id = (conf.device_id || "").trim();
+  var base = fieldVal("url", conf.url || DEFAULTS.url || "").replace(/\/+$/, "");
+  /* 设备 ID 不做「退回配置」的兼底：框里是空的就按「没填」处理，去自动挑一台。
+     从配置里拐回来的话，用户清空它就不生效了。 */
+  var id = fieldVal("device_id", "");
   if (!base){ toast("先填服务器地址", true); return false; }
-  if (!id){ toast("先填设备 ID", true); return false; }
   if (base.indexOf("'") >= 0){ toast("服务器地址里有单引号，先改掉", true); return false; }
 
   var r = await exec("curl -s --connect-timeout 8 '" + base + "/api/status/' 2>/dev/null");
@@ -688,11 +726,23 @@ async function fetchDeviceBoot(){
 
   /* 列表键名以服务端实际的为准（online_b_devices）；旧的 connected 留着兼容。 */
   var list = (data && (data.online_b_devices || data.connected)) || [];
-  var hit = null;
-  for (var i = 0; i < list.length; i++){
-    if (list[i] && list[i].device_id === id){ hit = list[i]; break; }
+  var hit = null, auto = false;
+  if (id){
+    for (var i = 0; i < list.length; i++){
+      if (list[i] && list[i].device_id === id){ hit = list[i]; break; }
+    }
+    if (!hit){ toast("服务端上没有设备 " + id + "（没在线？）", true); return false; }
+  } else {
+    hit = pickBestDevice(list);
+    auto = true;
+    if (!hit){
+      toast("没有可用的在线设备（要 keymint 有效、已锁定、可信启动）；当前在线 " + list.length + " 台", true);
+      return false;
+    }
+    /* 挑中的这台就写回设备 ID 框：它既是「跟随哪台」，也是 A 端路由的目标 */
+    document.querySelector('input[data-key="device_id"]').value = hit.device_id;
   }
-  if (!hit){ toast("服务端上没有设备 " + id + "（没连上？）", true); return false; }
+
   if (!hit.boot){ toast("这台设备还没上报过启动信息" + (hit.tee_error ? "：" + hit.tee_error : ""), true); return false; }
 
   var b = hit.boot;
@@ -702,14 +752,16 @@ async function fetchDeviceBoot(){
   document.getElementById("patch-boot").value = patchDate(b.patch_boot);
   document.getElementById("patch-vendor").value = patchDate(b.patch_vendor);
   var major = androidMajor(b.os_version);
-  toast("已取到 " + (hit.machine_id || id) + " 的启动信息" + (major ? "（Android " + major + "）" : ""));
+  toast((auto ? "自动选中 " : "已取到 ") + (hit.machine_id || hit.device_id) +
+        (major ? "（Android " + major + "）" : ""));
   return true;
 }
 
-/* 一键：取回来 + 写进 post-fs-data.sh + 当场生效一次。取不到就不写。 */
+/* 一键：取回来 + 写进 post-fs-data.sh（当场生效一次）+ 把 url/token/设备 ID 一起落盘。 */
 async function syncPatch(){
   if (!(await fetchDeviceBoot())) return;
   await savePatch();
+  await saveRemote();
   refreshPatchSummary();
 }
 
