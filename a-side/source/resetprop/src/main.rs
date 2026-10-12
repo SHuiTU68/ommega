@@ -99,8 +99,7 @@ impl Api {
     /// 那几个符号在 bionic 的 libc.so 里是导出着的，dlsym 按普通名字就能拿到。
     #[cfg(not(target_feature = "crt-static"))]
     fn load() -> Result<Self, String> {
-        let handle =
-            unsafe { libc::dlopen(b"libc.so\0".as_ptr() as *const c_char, libc::RTLD_NOW) };
+        let handle = unsafe { libc::dlopen(c"libc.so".as_ptr(), libc::RTLD_NOW) };
         if handle.is_null() {
             return Err("dlopen(libc.so) 失败".to_string());
         }
