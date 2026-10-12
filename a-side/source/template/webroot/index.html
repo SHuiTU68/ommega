@@ -550,17 +550,21 @@ function modeOf(pkg){
   if (curTarget.hack.indexOf(pkg) >= 0) return "hack";
   return "normal";
 }
-function renderApps(){
-  var box = document.getElementById("applist");
-  box.innerHTML = "";
+/* 当前列表里看得见的那批：默认没有系统应用，搜索还再筛一道。
+   「全选 / 取消全选」都按这一批算 —— 显示用户应用时只动用户应用，点开「显示系统应用」
+   才是真的全选。 */
+function visibleApps(){
   var kw = appFilter.trim().toLowerCase();
-  var shown = appRows.filter(function(a){
-    /* 默认只列用户应用；点「显示系统应用」才把系统那份也放出来（同一个列表，
-       搜索、勾选、保存全走同一套）。 */
+  return appRows.filter(function(a){
     if (!showSystem && a.system) return false;
     if (!kw) return true;
     return a.pkg.toLowerCase().indexOf(kw) >= 0 || (a.label || "").toLowerCase().indexOf(kw) >= 0;
   });
+}
+function renderApps(){
+  var box = document.getElementById("applist");
+  box.innerHTML = "";
+  var shown = visibleApps();
   if (!shown.length) box.appendChild(el("p", "hint", appRows.length ? t("apps.empty") : t("toast.appsFail", {msg: "-"})));
   shown.forEach(function(a){
     var row = el("div", "app" + (a.checked ? " on" : " off"));
@@ -1116,8 +1120,8 @@ function setLang(code){
     /* 作用域页 */
     document.getElementById("app-reload").onclick = function(){ appRows = []; loadApps().catch(function(e){ toast(t("toast.appsFail", {msg: e.message}), true); }); };
     document.getElementById("app-search").oninput = function(ev){ appFilter = ev.target.value || ""; renderApps(); };
-    document.getElementById("pick-all").onclick = function(){ appRows.forEach(function(a){ a.checked = true; }); renderApps(); };
-    document.getElementById("pick-none").onclick = function(){ appRows.forEach(function(a){ a.checked = false; }); renderApps(); };
+    document.getElementById("pick-all").onclick = function(){ visibleApps().forEach(function(a){ a.checked = true; }); renderApps(); };
+    document.getElementById("pick-none").onclick = function(){ visibleApps().forEach(function(a){ a.checked = false; }); renderApps(); };
     document.getElementById("save-apps").onclick = function(){ saveApps().catch(function(e){ toast(t("toast.saveFail", {msg: e.message}), true); }); };
     document.getElementById("toggle-system").onclick = function(){
       openSysApp().catch(function(e){ toast(String(e.message), true); });
