@@ -55,11 +55,17 @@ impl PhoneIdentifierKind {
 }
 
 const RESETPROP_FALLBACKS: &[(&str, Option<&str>)] = &[
+    // 管理器提供的那几个，只当兼底。
     ("/system_ext/bin/resetprop", None),
     ("/system/bin/resetprop", None),
     ("/data/adb/ksu/bin/resetprop", None),
     ("/data/adb/ksud", Some("resetprop")),
 ];
+
+/// 模块自己带的那份（完全静态，源码在 `src/bin/resetprop.rs`，安装时
+/// customize.sh 把与设备 ABI 匹配的那份拷到这里）。它排在最前面：管理器的
+/// resetprop 不是每家都有、行为也不一致，不再依赖它们。
+const RESETPROP_BUNDLED: &str = "/data/adb/ommega/resetprop";
 
 #[derive(Clone)]
 pub struct ResetpropCommand {
@@ -196,6 +202,14 @@ pub fn read_string_property(name: &str) -> Option<String> {
 }
 
 pub fn find_resetprop_command() -> Result<ResetpropCommand> {
+    // 自己的那份优先，别让管理器 PATH 里的版本抢了先。
+    if Path::new(RESETPROP_BUNDLED).exists() {
+        return Ok(ResetpropCommand {
+            program: RESETPROP_BUNDLED.to_string(),
+            prepend_arg: None,
+        });
+    }
+
     if let Some(program) = std::env::var_os("PATH").and_then(|path| {
         std::env::split_paths(&path)
             .map(|directory| directory.join("resetprop"))

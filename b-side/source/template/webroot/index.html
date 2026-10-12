@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Ommega-B</title>
+<style>
+  /* 自包含单文件：样式和脚本都内联，不依赖任何外部资源。KernelSU/APatch 管理器
+     自己把 webroot/ 当静态目录 serve 并注入 window.ksu，不用另起 http 服务。 */
+  :root{
+    --bg:#f5f6f8; --card:#fff; --fg:#1b1c1f; --dim:#6b6f76;
+    --line:#e3e5e9; --accent:#3867d6; --ok:#1e9e5a; --bad:#d64545;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{--bg:#141518;--card:#1e2024;--fg:#eceef2;--dim:#9aa0a8;--line:#2c2f35;--accent:#7aa2f7;--ok:#4ec97b;--bad:#f0736f;}
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:16px 14px 40px;background:var(--bg);color:var(--fg);
+       font:15px/1.6 -apple-system,"Noto Sans SC","Segoe UI",Roboto,sans-serif}
+  h1{margin:0 0 4px;font-size:19px;font-weight:600}
+  .sub{color:var(--dim);font-size:13px;margin-bottom:14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+        padding:12px 14px;margin-bottom:12px}
+  .card h2{margin:0 0 10px;font-size:14px;font-weight:600;color:var(--dim)}
+  .row{display:flex;align-items:center;gap:10px;padding:7px 0;border-top:1px solid var(--line)}
+  .row:first-of-type{border-top:0}
+  .row .name{flex:1;min-width:0}
+  .row .name b{display:block;font-weight:500;font-size:14px}
+  .row .name small{display:block;color:var(--dim);font-size:12px;line-height:1.45}
+  .row input[type=text],.row input[type=number],.row select{
+    flex:0 0 46%;min-width:0;padding:7px 9px;border:1px solid var(--line);border-radius:8px;
+    background:var(--bg);color:var(--fg);font-size:13px;font-family:inherit}
+  .sw{position:relative;flex:0 0 46px;height:26px;border-radius:13px;background:#c9ccd2;
+      cursor:pointer;transition:background .15s;border:0;padding:0}
+  .sw::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;
+      background:#fff;transition:left .15s;box-shadow:0 1px 3px rgba(0,0,0,.25)}
+  .sw[aria-checked=true]{background:var(--accent)}
+  .sw[aria-checked=true]::after{left:23px}
+  .acts{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0 6px}
+  button.btn{flex:1;min-width:104px;padding:11px 12px;border-radius:10px;border:1px solid var(--line);
+      background:var(--card);color:var(--fg);font-size:14px;font-family:inherit}
+  button.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  .kv{display:flex;gap:10px;font-size:13px;padding:6px 0;border-top:1px solid var(--line)}
+  .kv:first-of-type{border-top:0}
+  .kv span:first-child{color:var(--dim);flex:0 0 96px}
+  .kv span:last-child{flex:1;min-width:0;word-break:break-all;font-family:ui-monospace,monospace}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;background:#c9ccd2}
+  .dot.on{background:var(--ok)} .dot.off{background:var(--bad)}
+  #toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%) translateY(70px);
+      background:#20232a;color:#fff;padding:10px 16px;border-radius:10px;font-size:13px;
+      max-width:86vw;opacity:0;transition:.22s;pointer-events:none;z-index:99}
+  #toast.show{opacity:1;transform:translateX(-50%)}
+  #toast.err{background:#8d2b2b}
+  #boot{color:var(--dim);font-size:13px;padding:8px 0}
+  .hidden{display:none}
+</style>
+</head>
+<body>
+
+<h1>Ommega-B</h1>
+<div class="sub" id="modline">正在读取模块信息…</div>
+<div id="boot">正在连接设备…</div>
+
+<div id="panel" class="hidden">
+  <div class="card">
+    <h2>运行状态</h2>
+    <div class="kv"><span>relay</span><span id="st-relay">-</span></div>
+    <div class="kv"><span>adbrd</span><span id="st-adbrd">-</span></div>
+  </div>
+
+  <div class="card"><h2>远控</h2><div id="grp-control"></div></div>
+  <div class="card"><h2>接入（服务端 / 身份）</h2><div id="grp-server"></div></div>
+  <div class="card"><h2>日志</h2><div id="grp-log"></div></div>
+  <div class="card"><h2>SOTER 建料</h2><div id="grp-soter"></div></div>
+  <div class="card"><h2>网络与保活</h2><div id="grp-net"></div></div>
+
+  <div class="acts">
+    <button class="btn primary" id="save">保存并生效</button>
+    <button class="btn" id="reload">仅重载</button>
+    <button class="btn" id="restart">重启 relay</button>
+  </div>
+  <div class="sub" style="margin:0">保存后会自动 touch restart.all，relay 就地重读，不用重启设备。</div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+"use strict";
+/* 跟 A 端一个路子：WebUI 跑在 KernelSU/APatch 管理器的 WebView 里，管理器注入了
+   window.ksu，所有读写都靠它以 root 跑一条 shell 命令；没有这个桥就没法执行。 */
+function exec(cmd){
+  return new Promise(function(resolve, reject){
+    if (typeof ksu === "undefined" || typeof ksu.exec !== "function"){
+      reject(new Error("没有 ksu 桥（请从 KernelSU/APatch 管理器的 WebUI 打开）"));
+      return;
+    }
+    var id = "oom_b_" + Date.now() + "_" + Math.floor(Math.random() * 1000);
+    window[id] = function(errno, stdout, stderr){
+      delete window[id];
+      resolve({errno: errno, stdout: stdout || "", stderr: stderr || ""});
+    };
+    try { ksu.exec(cmd, "{}", id); }
+    catch (e){ delete window[id]; reject(e); }
+  });
+}
+
+var CONF  = "/data/adb/ommega/relay.conf";
+var STATE = "/data/adb/ommega";
+var PROP  = "/data/adb/modules/ommega-b/module.prop";
+
+var LEVELS = ["off", "error", "warn", "info", "debug", "trace"];
+
+/* 表单定义：key 就是 relay.conf 里的键名；分组顺序 = 页面顺序。 */
+var FIELDS = [
+  {group:"control", key:"OMMEGA_RELAY_ENABLED", type:"bool", label:"允许远控（总开关）",
+   hint:"关掉就不连服务端、不被派活；开着才轮询"},
+  {group:"control", key:"OMMEGA_RELAY_ABDR_ENABLED", type:"bool", label:"允许 adbr 远控",
+   hint:"另开一条公网调试通道（adbrd），默认关"},
+
+  {group:"server", key:"OMMEGA_RELAY_SERVER", type:"text", label:"服务器地址",
+   hint:"relay_server 的 base URL，http:// 或 https://"},
+  {group:"server", key:"OMMEGA_RELAY_DEVICE_ID", type:"text", label:"设备 ID",
+   hint:"必须和 A 端配置里的 device_id 一致，服务端按它对活"},
+  {group:"server", key:"OMMEGA_RELAY_MACHINE_ID", type:"text", label:"设备名（机型）",
+   hint:"状态页上显示的名字"},
+  {group:"server", key:"OMMEGA_RELAY_TOKEN", type:"text", label:"Token",
+   hint:"请求头 X-Relay-Token，服务端要校验"},
+
+  {group:"log", key:"OMMEGA_RELAY_LOG_ENABLED", type:"bool", label:"文件日志",
+   hint:"写 /data/adb/ommega/logs/relay.log"},
+  {group:"log", key:"OMMEGA_RELAY_LOG_LEVEL", type:"enum", label:"文件日志级别",
+   hint:"off / error / warn / info / debug / trace", options:LEVELS},
+  {group:"log", key:"OMMEGA_RELAY_LOGCAT_ENABLED", type:"bool", label:"logcat 输出",
+   hint:"标签 ommega-b"},
+  {group:"log", key:"OMMEGA_RELAY_LOGCAT_LEVEL", type:"enum", label:"logcat 级别",
+   hint:"跟上面同一套档位", options:LEVELS},
+
+  {group:"soter", key:"OMMEGA_RELAY_SOTER_MUTATION", type:"bool", label:"允许建料（写槽位）",
+   hint:"关掉后 generate_*/remove_* 一律本地拒绝，真应用会一直重试"},
+  {group:"soter", key:"OMMEGA_RELAY_SOTER_CONCURRENCY", type:"num", label:"并发笔数",
+   hint:"1~4，默认 2；同一个 uid 永远串行"},
+
+  {group:"net", key:"OMMEGA_RELAY_BIND_IFACE", type:"text", label:"出口网卡",
+   hint:"none / auto / always / 网卡名，默认 auto"},
+  {group:"net", key:"OMMEGA_RELAY_PATH_PROBE", type:"bool", label:"长轮询前先探路",
+   hint:"路不通就别挂 15 秒长轮询"},
+  {group:"net", key:"OMMEGA_RELAY_WAKELOCK", type:"bool", label:"按住唤醒锁",
+   hint:"默认开；关掉省电，但灭屏后容易掉线"}
+];
+
+/* 文件里本来没这个键时，表单先给个默认状态。 */
+var DEFAULTS = {
+  OMMEGA_RELAY_ENABLED: true,
+  OMMEGA_RELAY_ABDR_ENABLED: false,
+  OMMEGA_RELAY_LOG_ENABLED: true,
+  OMMEGA_RELAY_LOG_LEVEL: "info",
+  OMMEGA_RELAY_LOGCAT_ENABLED: true,
+  OMMEGA_RELAY_LOGCAT_LEVEL: "info",
+  OMMEGA_RELAY_SOTER_CONCURRENCY: "2",
+  OMMEGA_RELAY_BIND_IFACE: "auto",
+  OMMEGA_RELAY_PATH_PROBE: true,
+  OMMEGA_RELAY_WAKELOCK: true
+};
+
+/* 必填项：空着就不让它保存 —— 这几个键写空了 relay 直接起不来，
+   而不是“没配”。 */
+var REQUIRED = ["OMMEGA_RELAY_SERVER", "OMMEGA_RELAY_DEVICE_ID", "OMMEGA_RELAY_TOKEN"];
+
+/* WebUI 管的键。保存时只动这些，注释和没见过的键原样留着。 */
+var MANAGED = FIELDS.map(function(f){ return f.key; });
+
+var curText = "";   // 最近一次读到的原文
+var curMap  = {};   // 解析出来的键值
+
+function truthy(v){
+  v = String(v == null ? "" : v).trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes" || v === "on";
+}
+
+function parseConf(text){
+  var out = {};
+  text.split("\n").forEach(function(line){
+    var t = line.trim();
+    if (!t || t.charAt(0) === "#") return;
+    var i = t.indexOf("=");
+    if (i <= 0) return;
+    var k = t.slice(0, i).trim();
+    if (!(k in out)) out[k] = t.slice(i + 1).trim();
+  });
+  return out;
+}
+
+function toast(msg, isErr){
+  var el = document.getElementById("toast");
+  el.textContent = msg;
+  el.className = isErr ? "show err" : "show";
+  clearTimeout(toast._t);
+  toast._t = setTimeout(function(){ el.className = ""; }, 2600);
+}
+
+function el(tag, cls, text){
+  var n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = text;
+  return n;
+}
+
+function buildRow(f){
+  var row = el("div", "row");
+  var name = el("div", "name");
+  name.appendChild(el("b", null, f.label));
+  if (f.hint) name.appendChild(el("small", null, f.hint));
+  row.appendChild(name);
+
+  var raw = (f.key in curMap) ? curMap[f.key] : (DEFAULTS[f.key] !== undefined ? DEFAULTS[f.key] : "");
+
+  if (f.type === "bool"){
+    var sw = el("button", "sw");
+    sw.type = "button";
+    sw.dataset.key = f.key;
+    sw.setAttribute("aria-checked", truthy(raw) ? "true" : "false");
+    sw.onclick = function(){
+      sw.setAttribute("aria-checked", sw.getAttribute("aria-checked") === "true" ? "false" : "true");
+    };
+    row.appendChild(sw);
+  } else if (f.type === "enum"){
+    var sel = el("select");
+    sel.dataset.key = f.key;
+    var cur = String(raw).toLowerCase();
+    f.options.forEach(function(o){
+      var op = el("option", null, o);
+      op.value = o;
+      if (o === cur) op.selected = true;
+      sel.appendChild(op);
+    });
+    // 配置里是个我们列表上没有的值：原样加一项选上，别矦矦把它改成第一项
+    // （"off" 排在第一）。
+    if (raw !== "" && f.options.indexOf(cur) < 0){
+      var extra = el("option", null, String(raw));
+      extra.value = String(raw);
+      extra.selected = true;
+      sel.appendChild(extra);
+    }
+    row.appendChild(sel);
+  } else {
+    var inp = document.createElement("input");
+    inp.type = f.type === "num" ? "number" : "text";
+    if (f.type === "num"){ inp.min = "1"; inp.max = "4"; }
+    inp.value = String(raw);
+    inp.autocapitalize = "none";
+    inp.dataset.key = f.key;
+    row.appendChild(inp);
+  }
+  return row;
+}
+
+function render(){
+  FIELDS.forEach(function(f){
+    var host = document.getElementById("grp-" + f.group);
+    if (host) host.appendChild(buildRow(f));
+  });
+}
+
+function collect(){
+  var vals = {};
+  FIELDS.forEach(function(f){
+    var v;
+    if (f.type === "bool"){
+      var b = document.querySelector('.sw[data-key="' + f.key + '"]');
+      v = (b.getAttribute("aria-checked") === "true") ? "true" : "false";
+    } else if (f.type === "enum"){
+      v = document.querySelector('select[data-key="' + f.key + '"]').value.trim();
+    } else {
+      v = document.querySelector('input[data-key="' + f.key + '"]').value.trim();
+    }
+    // 空的文本键不收：merge() 看到某个键不在 vals 里，就会把原行原样留着
+    // （键本来就不存在的话也不会凭空添一条空值）。
+    if (v === "") return;
+    vals[f.key] = v;
+  });
+  return vals;
+}
+
+/* 逐行合并：受管键就地换值（重复的只留第一行），注释与别的键不动，缺的补在末尾。
+   这样 relay.conf 里那一大段说明注释不会被抹掉。 */
+function merge(original, vals){
+  var seen = {};
+  var out = [];
+  original.split("\n").forEach(function(line){
+    var t = line.trim();
+    if (t && t.charAt(0) !== "#"){
+      var i = t.indexOf("=");
+      if (i > 0){
+        var k = t.slice(0, i).trim();
+        if (MANAGED.indexOf(k) >= 0){
+          if (seen[k]) return;
+          seen[k] = true;
+          // vals 里没有这个键（表单里是空的）→ 原行不动，不写空值。
+          if (!(k in vals)){ out.push(line); return; }
+          out.push(k + "=" + vals[k]);
+          return;
+        }
+      }
+    }
+    out.push(line);
+  });
+  var missing = MANAGED.filter(function(k){ return !seen[k] && (k in vals); });
+  if (missing.length){
+    while (out.length && out[out.length - 1].trim() === "") out.pop();
+    out.push("");
+    out.push("# ---- 以下由 WebUI 写入 ----");
+    missing.forEach(function(k){ out.push(k + "=" + vals[k]); });
+  }
+  return out.join("\n").replace(/\s*$/, "") + "\n";
+}
+
+/* 内容先 base64 再交给 shell：配置里有引号、$、反引号也不会被 shell 解释掉。 */
+function b64encode(text){
+  var bytes = new TextEncoder().encode(text);
+  var bin = "";
+  for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+
+function paintStatus(relayPid, adbrdPid){
+  document.getElementById("st-relay").innerHTML = relayPid
+    ? '<i class="dot on"></i>运行中 (pid ' + relayPid + ")"
+    : '<i class="dot off"></i>未运行';
+  document.getElementById("st-adbrd").innerHTML = adbrdPid
+    ? '<i class="dot on"></i>运行中 (pid ' + adbrdPid + ")"
+    : '<i class="dot off"></i>未运行';
+}
+
+async function refreshStatus(){
+  var r = await exec("pidof relay; echo '---'; pidof adbrd");
+  var p = r.stdout.split("---");
+  paintStatus((p[0] || "").trim(), (p[1] || "").trim());
+}
+
+function setVersion(propText, confText){
+  var ver = "?";
+  propText.split("\n").forEach(function(l){
+    if (l.indexOf("version=") === 0) ver = l.slice(8).trim();
+  });
+  document.getElementById("modline").textContent = "模块版本 " + ver +
+    "　·　配置文件 " + (confText.trim() ? "已读取" : "为空/不存在");
+}
+
+async function save(){
+  var vals = collect();
+  var empty = REQUIRED.filter(function(k){ return !(k in vals); });
+  if (empty.length){ toast("请先填上：" + empty.join("、"), true); return; }
+  var n = parseInt(vals.OMMEGA_RELAY_SOTER_CONCURRENCY, 10);
+  if (vals.OMMEGA_RELAY_SOTER_CONCURRENCY !== undefined && !(n >= 1 && n <= 4)){
+    toast("并发笔数要在 1~4 之间", true);
+    return;
+  }
+
+  var text = merge(curText, vals);
+  var cmd = "mkdir -p " + STATE +
+            " && printf '%s' '" + b64encode(text) + "' | base64 -d > " + CONF +
+            " && chmod 0600 " + CONF +
+            " && touch " + STATE + "/restart.all";
+  var r = await exec(cmd);
+  if (r.errno !== 0){ toast("保存失败：" + (r.stderr || r.errno), true); return; }
+
+  curText = text;
+  curMap = vals;
+  toast("已保存，relay 正在重读");
+  setTimeout(function(){ refreshStatus().catch(function(){}); }, 1500);
+}
+
+async function reloadNow(){
+  await exec("touch " + STATE + "/restart.all");
+  toast("已触发重载");
+  setTimeout(function(){ refreshStatus().catch(function(){}); }, 1500);
+}
+
+async function restartRelay(){
+  await exec("pkill -9 -x relay; touch " + STATE + "/restart.all");
+  toast("已重启 relay");
+  setTimeout(function(){ refreshStatus().catch(function(){}); }, 2500);
+}
+
+function wire(){
+  document.getElementById("save").onclick = function(){
+    save().catch(function(e){ toast("保存失败：" + e.message, true); });
+  };
+  document.getElementById("reload").onclick = function(){
+    reloadNow().catch(function(e){ toast(String(e.message), true); });
+  };
+  document.getElementById("restart").onclick = function(){
+    restartRelay().catch(function(e){ toast(String(e.message), true); });
+  };
+}
+
+(async function init(){
+  try {
+    var r = await exec("cat " + CONF + " 2>/dev/null; echo '---P---'; cat " + PROP + " 2>/dev/null");
+    var parts = r.stdout.split("---P---");
+    curText = parts[0] || "";
+    curMap = parseConf(curText);
+    setVersion(parts[1] || "", curText);
+
+    render();
+    wire();
+    await refreshStatus();
+
+    document.getElementById("boot").className = "hidden";
+    document.getElementById("panel").className = "";
+  } catch (e){
+    document.getElementById("boot").textContent = "初始化失败：" + e.message;
+  }
+})();
+</script>
+</body>
+</html>

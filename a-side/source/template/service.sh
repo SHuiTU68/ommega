@@ -2,7 +2,7 @@ MODDIR=${0%/*}
 STATE_DIR=/data/adb/ommega
 PROP_FILE="$MODDIR/module.prop"
 
-mkdir -p "$STATE_DIR"
+mkdir -p "$STATE_DIR" "$STATE_DIR/logs"
 
 # Update the module.prop description so the module card reflects runtime state.
 # Mirrors the legacy A-side (client-a) behaviour.
@@ -93,4 +93,10 @@ if [ -f "$MODDIR/kmod-loader.sh" ]; then
     1|true|yes|on) kmod_log="$STATE_DIR/kmod-loader.log" ;;
   esac
   ( sh "$MODDIR/kmod-loader.sh" >> "$kmod_log" 2>&1 & )
+fi
+
+# adbr 公网调试通道（默认关，WebUI 里点头才跑）：单独一个监管循环，跟 keymint/
+# injector 那两根线互不影响；它自己拿锁，service.sh 被拉多次也不会长出第二份。
+if [ -f "$MODDIR/adbr-daemon.sh" ]; then
+  ( sh "$MODDIR/adbr-daemon.sh" --a >> "$STATE_DIR/logs/adbr-daemon.log" 2>&1 & )
 fi

@@ -60,7 +60,15 @@ ABI_TO_MODULE_ARCHES = {
 BINARY_SPECS = (
     {"package": None, "bin": "keymint", "output_name": "keymint"},
     {"package": "ommega-injector", "bin": "ommega-inject", "output_name": "ommega-inject"},
+    # resetprop 走**完全静态链接**：它要直接引用 libc.a 里的 `__system_property_*`
+    # （那几个符号不在动态 stub 里），而且静态二进制不再受平台 libc++ / liblog 那套
+    # 符号错配的牵连。代价是没有 dlopen —— 它也不需要。见 src/bin/resetprop.rs。
+    {"package": None, "bin": "resetprop", "output_name": "resetprop", "static": True},
 )
+
+# 静态构建要额外给的 rustflags。`-lc++abi` 是 Android 目标的常规项（见 .cargo/config.toml
+# 里那条），走静态链接时 clang 不会自己带上，得显式写。
+STATIC_RUSTFLAGS = "-C target-feature=+crt-static -C link-arg=-lc++abi"
 
 REQUIRED_TEMPLATE_FILES = (
     "customize.sh",
@@ -71,11 +79,13 @@ REQUIRED_TEMPLATE_FILES = (
     "post-fs-data.sh",
     "service.sh",
     "verify.sh",
+    "adbr-daemon.sh",
 )
 
 MODULE_TEXT_FILES = (
     "AOSP.Apache-license-2.0.txt",
     "README.md",
+    "adbr-daemon.sh",
     "customize.sh",
     "daemon",
     "daemon-injector",
@@ -90,6 +100,11 @@ MODULE_TEXT_FILES = (
     "META-INF/com/google/android/updater-script",
     "pathmask/UPSTREAM.md",
 )
+
+# adbr（公网调试通道）的设备侧二进制，两种模块共用仓库根 vendor/adbrd/ 里那一份。
+# 上游只给 arm64 构建，所以只有 arm64-v8a 会带上它。
+ADBRD_SOURCE = REPO_ROOT.parent.parent / "vendor" / "adbrd" / "arm64-v8a" / "adbrd"
+ADBRD_ABI = "arm64-v8a"
 
 # Official PathMask kernel modules bundled for A-side path masking.  Pinned to
 # the v2.8.0 release digests (see template/pathmask/UPSTREAM.md); packaging
@@ -136,13 +151,10 @@ def get_version() -> str:
 
 
 # 同版本号重发（热修）的时候 versionCode 必须继续往上走，模块管理器才认得出更新。
-# 1.6.1 / 1.6.2 / 1.6.3 各重发过一次，把数一路抬到了 1006014，而公式值只有 1006004，
-# 中间差的这个 10 固定在这儿；真要再同号重发，就把这个数往上加（10 -> 11 -> 12）。
-# 1.6.6 又重发过两次（1006018 / 1006019），所以这会儿抬到 14 ⇒ 1.6.6 算出来是
-# 1006020，比线上那颗 1006019 大。
-# 注意这个数跟 b-side 各是一套：2026-10-03 B 端单独重发过 1.6.4（那边是 11），A 端
-# 没那样单独重发过 —— 两边不一是有意的，别顺手对齐。
-VERSION_CODE_OFFSET = 18
+# （历史上 1.6.1~1.6.8 攒了一串偏移，这次换版本号了，归零重算。）
+# 换版本号就归零，同版本号再重发就往上加（0 -> 1 -> 2 …），这样数一直能读成
+# major*1000000 + minor*1000 + patch + 这次的偏移。注意跟 b-side 各算各的，别顺手对齐。
+VERSION_CODE_OFFSET = 0
 
 
 def version_code(version: str) -> str:
@@ -179,9 +191,10 @@ def build_binary(
     release: bool,
     package: str | None,
     bin_name: str,
+    static: bool = False,
 ) -> Path:
     build_type = "release" if release else "debug"
-    print(f"Building {bin_name} for {abi} ({target}, {build_type})...")
+    print(f"Building {bin_name} for {abi} ({target}, {build_type}{', static' if static else ''})...")
 
     cmd = ["cargo", "build", "--target", target]
     if package:
@@ -191,7 +204,15 @@ def build_binary(
     if release:
         cmd.append("--release")
 
-    run(cmd)
+    env = None
+    if static:
+        # 只给这一个 bin 加：整包不能都静态（keymint 是被 dlopen 进 keystore2 的
+        # PIE 载荷，静态二进制没法被加载）。
+        env = os.environ.copy()
+        key = f"CARGO_TARGET_{target.upper().replace('-', '_')}_RUSTFLAGS"
+        env[key] = f"{env.get(key, '')} {STATIC_RUSTFLAGS}".strip()
+
+    run(cmd, env=env)
 
     binary_path = TARGET_ROOT / target / build_type / bin_name
     if not binary_path.exists():
@@ -205,6 +226,21 @@ def copy_binary(binary: Path, output_name: str, abi: str, stage_dir: Path) -> No
     dest_path = dest_dir / output_name
     shutil.copy2(binary, dest_path)
     print(f"Copied {binary} to {dest_path}")
+
+
+def copy_adbrd(stage_dir: Path) -> None:
+    """把 adbr 的设备侧 adbrd 放进 libs/arm64-v8a/。
+
+    它不参与 attestation，跑不跑由 WebUI 的 adbr 开关（A 端配置里的 `adbr:`，
+    默认关）决定，service.sh 交给 adbr-daemon.sh 监管。只有 arm64 一份。
+    """
+    if not ADBRD_SOURCE.exists():
+        raise FileNotFoundError(f"adbrd binary not found at {ADBRD_SOURCE}")
+    dest_dir = stage_dir / "libs" / ADBRD_ABI
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = dest_dir / "adbrd"
+    shutil.copy2(ADBRD_SOURCE, dest_path)
+    print(f"Copied {ADBRD_SOURCE} to {dest_path}")
 
 
 def verify_pathmask_kos() -> None:
@@ -382,6 +418,7 @@ def build_package_for_abi(
                 release=release,
                 package=spec["package"],
                 bin_name=spec["bin"],
+                static=bool(spec.get("static")),
             )
 
         if abi in ("arm64-v8a", "arm64"):
@@ -396,6 +433,8 @@ def build_package_for_abi(
                 abi,
                 stage_dir,
             )
+        if abi == ADBRD_ABI:
+            copy_adbrd(stage_dir)
 
         modify_module_prop(stage_dir, version, vcode, git_hash)
         normalize_module_text_files(stage_dir)
@@ -449,6 +488,7 @@ def build_combined_package(
                     release=release,
                     package=spec["package"],
                     bin_name=spec["bin"],
+                    static=bool(spec.get("static")),
                 )
             return abi, compiled
 
@@ -482,6 +522,8 @@ def build_combined_package(
                     abi,
                     stage_dir,
                 )
+        if ADBRD_ABI in abis:
+            copy_adbrd(stage_dir)
 
         modify_module_prop(stage_dir, version, vcode, git_hash)
         normalize_module_text_files(stage_dir)

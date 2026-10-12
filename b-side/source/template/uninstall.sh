@@ -14,6 +14,13 @@ STATE_DIR=/data/adb/ommega
 # ---------------------------------------------------------------------------
 pkill -9 -x relay 2>/dev/null
 pkill -9 -f 'daemon-relay' 2>/dev/null
+
+# adbr 公网调试通道：先停监管循环（那个进程是 sh 在跑我们的 adbr-daemon.sh，按路径认），
+# 再按进程名停 adbrd 本身（-x 是 comm 精确匹配，不会误伤监管脚本）。
+# 顺序不能反：先杀 adbrd 的话监管循环两秒后又把它拉起来。
+pkill -9 -f 'modules/ommega-b/adbr-daemon.sh' 2>/dev/null
+pkill -9 -x adbrd 2>/dev/null
+rm -rf "$STATE_DIR/adbr-daemon.lock"
 sleep 1
 
 # ---------------------------------------------------------------------------

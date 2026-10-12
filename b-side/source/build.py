@@ -58,11 +58,13 @@ REQUIRED_TEMPLATE_FILES = (
     "relay.conf",
     "service.sh",
     "verify.sh",
+    "adbr-daemon.sh",
 )
 
 MODULE_TEXT_FILES = (
     "AOSP.Apache-license-2.0.txt",
     "README.md",
+    "adbr-daemon.sh",
     "customize.sh",
     "module.prop",
     "post-fs-data.sh",
@@ -70,9 +72,15 @@ MODULE_TEXT_FILES = (
     "sepolicy.rule",
     "service.sh",
     "verify.sh",
+    "webroot/index.html",
     "META-INF/com/google/android/update-binary",
     "META-INF/com/google/android/updater-script",
 )
+
+# adbr（公网调试通道）的设备侧二进制，两种模块共用仓库根 vendor/adbrd/ 里那一份。
+# 上游只给 arm64 构建，所以只有 arm64-v8a 会带上它。
+ADBRD_SOURCE = REPO_ROOT.parent.parent / "vendor" / "adbrd" / "arm64-v8a" / "adbrd"
+ADBRD_ABI = "arm64-v8a"
 
 
 def run(cmd: list[str], *, env: dict[str, str] | None = None) -> None:
@@ -96,13 +104,9 @@ def get_version() -> str:
 
 
 # 同版本号重发（热修）的时候 versionCode 必须继续往上走，模块管理器才认得出更新。
-# 1.6.1 / 1.6.2 / 1.6.3 各重发过一次，把数一路抬到了 1006014，而公式值只有 1006004，
-# 中间差的这个 10 固定在这儿；真要再同号重发，就把这个数往上加（10 -> 11 -> 12 -> 13）。
-# 2026-10-03：B 端 1.6.4 重发（补 SOTER 卡在 TEE 里的自愈），10 -> 11。只重发哪端就抬
-# 哪端，两边各一套偏移（A 端这次没重发，那边还是 10 -> 1006014）。
-# 2026-10-11：Android 17 dynamic-linker hotfix (platform libc++ before vendor
-# libc++ in service.sh), 12 -> 13 so module managers accept the replacement zip.
-VERSION_CODE_OFFSET = 14
+# （历史上 1.6.1~1.6.8 攒了一串偏移，这次换版本号了，归零重算。）
+# 换版本号就归零，同版本号再重发就往上加（0 -> 1 -> 2 …）。注意跟 a-side 各算各的。
+VERSION_CODE_OFFSET = 0
 
 
 def version_code(version: str) -> str:
@@ -171,6 +175,22 @@ def copy_binary(binary: Path, output_name: str, abi: str, stage_dir: Path) -> No
     print(f"Copied {binary} to {dest_path}")
 
 
+def copy_adbrd(stage_dir: Path) -> None:
+    """把 adbr 的设备侧 adbrd 放进 libs/arm64-v8a/。
+
+    它不参与 SOTER/attestation，跑不跑由 WebUI 的开关
+    （OMMEGA_RELAY_ABDR_ENABLED，默认关）决定，service.sh 交给
+    adbr-daemon.sh 监管。只有 arm64 一份，别的 ABI 不拷。
+    """
+    if not ADBRD_SOURCE.exists():
+        raise FileNotFoundError(f"adbrd binary not found at {ADBRD_SOURCE}")
+    dest_dir = stage_dir / "libs" / ADBRD_ABI
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = dest_dir / "adbrd"
+    shutil.copy2(ADBRD_SOURCE, dest_path)
+    print(f"Copied {ADBRD_SOURCE} to {dest_path}")
+
+
 def copy_template_files(stage_dir: Path) -> None:
     template_dir = REPO_ROOT / "template"
     if not template_dir.exists():
@@ -232,6 +252,10 @@ def generate_hash_files(stage_dir: Path) -> None:
     print(f"Generating SHA256 hash files under {stage_dir}...")
     for item in stage_dir.rglob("*"):
         if item.is_file() and not item.name.endswith(".sha256"):
+            # WebUI 那棵子树是管理器直接当静态目录 serve 的，不走出模块那套
+            # extract/verify，用不着 hash 文件。
+            if "webroot" in item.relative_to(stage_dir).parts:
+                continue
             generate_hash_for_file(item)
 
 
@@ -310,6 +334,8 @@ def build_package_for_abi(
                 abi,
                 stage_dir,
             )
+        if abi == ADBRD_ABI:
+            copy_adbrd(stage_dir)
 
         modify_module_prop(stage_dir, version, vcode, git_hash)
         normalize_module_text_files(stage_dir)
@@ -369,6 +395,8 @@ def build_combined_package(
                     abi,
                     stage_dir,
                 )
+        if ADBRD_ABI in abis:
+            copy_adbrd(stage_dir)
 
         modify_module_prop(stage_dir, version, vcode, git_hash)
         normalize_module_text_files(stage_dir)

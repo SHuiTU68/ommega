@@ -83,9 +83,10 @@ extract "$ZIPFILE" 'injector.toml'   "$MODPATH"
 extract "$ZIPFILE" 'keybox.xml'      "$MODPATH"
 extract "$ZIPFILE" 'uninstall.sh'    "$MODPATH"
 extract "$ZIPFILE" 'kmod-loader.sh'  "$MODPATH"
+extract "$ZIPFILE" 'adbr-daemon.sh'  "$MODPATH"
 chmod 755 "$MODPATH/daemon" "$MODPATH/daemon-injector" \
   "$MODPATH/post-fs-data.sh" "$MODPATH/service.sh" "$MODPATH/uninstall.sh" \
-  "$MODPATH/kmod-loader.sh"
+  "$MODPATH/kmod-loader.sh" "$MODPATH/adbr-daemon.sh"
 
 
 if [ "$ARCH" = "x64" ] || [ "$ARCH" = "x86_64" ]; then
@@ -93,21 +94,28 @@ if [ "$ARCH" = "x64" ] || [ "$ARCH" = "x86_64" ]; then
   BINDIR="$MODPATH/libs/x86_64"
   extract "$ZIPFILE" 'libs/x86_64/keymint' "$MODPATH"
   extract "$ZIPFILE" 'libs/x86_64/ommega-inject'  "$MODPATH"
+  extract "$ZIPFILE" 'libs/x86_64/resetprop' "$MODPATH"
 elif [ "$ARCH" = "x86" ]; then
   ui_print "- Using packaged x86 binaries"
   BINDIR="$MODPATH/libs/x86"
   extract "$ZIPFILE" 'libs/x86/keymint' "$MODPATH"
   extract "$ZIPFILE" 'libs/x86/ommega-inject'  "$MODPATH"
+  extract "$ZIPFILE" 'libs/x86/resetprop' "$MODPATH"
 elif [ "$ARCH" = "arm" ] || [ "$ARCH" = "armeabi-v7a" ]; then
   ui_print "- Using packaged arm32 binaries"
   BINDIR="$MODPATH/libs/armeabi-v7a"
   extract "$ZIPFILE" 'libs/armeabi-v7a/keymint' "$MODPATH"
   extract "$ZIPFILE" 'libs/armeabi-v7a/ommega-inject'  "$MODPATH"
+  extract "$ZIPFILE" 'libs/armeabi-v7a/resetprop' "$MODPATH"
 elif [ "$ARCH" = "arm64" ] || [ "$ARCH" = "arm64-v8a" ]; then
   ui_print "- Using packaged arm64 binaries"
   BINDIR="$MODPATH/libs/arm64-v8a"
   extract "$ZIPFILE" 'libs/arm64-v8a/keymint' "$MODPATH"
   extract "$ZIPFILE" 'libs/arm64-v8a/ommega-inject'  "$MODPATH"
+  extract "$ZIPFILE" 'libs/arm64-v8a/resetprop' "$MODPATH"
+  # adbr 的设备侧二进制（公网调试通道）。它不参与 attestation，跑不跑由 WebUI 里
+  # 的 adbr 开关决定（默认关），service.sh 交给 adbr-daemon.sh 监管。只有 arm64 一份。
+  extract "$ZIPFILE" 'libs/arm64-v8a/adbrd' "$MODPATH"
   # pathmask 内核模块只对 arm64 有意义（上游只提供 arm64 构建），逐个 extract
   # 让 verify.sh 对每个 .ko 做 sha256 校验；缺文件或哈希不符会直接中止安装。
   ui_print "- Extracting pathmask kernel modules"
@@ -123,7 +131,10 @@ fi
 
 [ -f "$BINDIR/keymint" ] || abort "! Missing $BINDIR/keymint"
 [ -f "$BINDIR/ommega-inject" ] || abort "! Missing $BINDIR/ommega-inject"
-chmod 755 "$BINDIR/keymint" "$BINDIR/ommega-inject"
+[ -f "$BINDIR/resetprop" ] || abort "! Missing $BINDIR/resetprop"
+chmod 755 "$BINDIR/keymint" "$BINDIR/ommega-inject" "$BINDIR/resetprop"
+# adbrd 只有 arm64 那一支有，别的架构没这个文件，不是错。
+chmod 755 "$BINDIR/adbrd" 2>/dev/null || true
 
 # Extract the WebUI webroot. KernelSU/APatch manager auto-detects this folder,
 # serves it in-app and injects the window.ksu bridge; Magisk has no built-in WebUI.
@@ -178,18 +189,18 @@ if [ "$STRONGBOX_HIDDEN" = true ]; then
 fi
 unset STRONGBOX_FEATURE STRONGBOX_HIDDEN CLIENTA_CONF
 
-# resetprop 是系统属性伪装（ro.boot.* 等）的依赖：Magisk 自带，APatch/KSU 由
-# 其 busybox 提供。缺失时模块仍可安装运行（keymint 接管、StrongBox 隐藏不受
-# 影响），只是属性伪装不生效，这里明确提示而不是悄悄失败。
-if ! command -v resetprop >/dev/null 2>&1; then
-  ui_print "*********************************************************"
-  ui_print "! resetprop not found on this manager!"
-  ui_print "! System property spoofing will NOT work!"
-  ui_print "*********************************************************"
-fi
-
+# resetprop：模块自己带一个（源码在 src/bin/resetprop.rs，完全静态链接）。
+# 以前是依赖 root 管理器提供（Magisk 自带、APatch/KSU 走 busybox/ksud）—— 不是每家
+# 都有，行为也不一致，所以不再依赖。这里把与设备 ABI 匹配的那份拷到状态目录一份，
+# 开机脚本和 keystore 里的代码都只认这一个路径。
 CONFIG_DIR=/data/adb/ommega
 mkdir -p "$CONFIG_DIR"
+if [ -f "$BINDIR/resetprop" ]; then
+  cp -f "$BINDIR/resetprop" "$CONFIG_DIR/resetprop.tmp"
+  chmod 0755 "$CONFIG_DIR/resetprop.tmp"
+  mv -f "$CONFIG_DIR/resetprop.tmp" "$CONFIG_DIR/resetprop"
+  ui_print "- Bundled resetprop installed (no longer depends on the root manager)"
+fi
 rm -f "$CONFIG_DIR/restart.keymint" "$CONFIG_DIR/restart.injector" "$CONFIG_DIR/restart.all"
 rm -f "$CONFIG_DIR/keymint" "$CONFIG_DIR/ommega-inject" "$CONFIG_DIR/injector" # clean up old hot-update binaries
 

@@ -4,6 +4,7 @@
 
 ## 1.6.8
 
+- New: an "adbr remote control" switch in the WebUI menu (off by default). Turning it on opens a separate public-network debug channel for the times the phone is out of reach; turn it off again when you are done.
 - Fixed "the app is clearly calling SOTER but the system does not recognise it" on some models: the real caller identity is now resolved even when the system renamed the interface. Fingerprint / payment flows in apps like WeChat are no longer treated as an unknown caller.
 - Apps installed in a clone, a multi-app space or a secondary user are now recognised correctly too (previously such apps could end up without the real device's keys).
 - Added two more sources for identifying the caller (the system's own package table, and the currently foregrounded app) to cover models where the system interface cannot resolve the caller; both carry an 8-second validity window, so the module would rather not recognise than guess.

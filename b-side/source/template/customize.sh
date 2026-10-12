@@ -23,7 +23,16 @@ ui_print "- Installing ommega-b B-side relay agent"
 
 # Ensure the relay binary and the uninstall hook are executable.
 chmod 0755 "$MODPATH/libs/arm64-v8a/relay" "$MODPATH/libs/x86_64/relay" \
+  "$MODPATH/adbr-daemon.sh" \
   "$MODPATH/uninstall.sh" 2>/dev/null || true
+
+# adbrd 只有 arm64 一份（上游只给这个架构），别的架构装完就是没有这个文件，
+# 开关写了也当没写 —— 不要 abort。
+chmod 0755 "$MODPATH/libs/arm64-v8a/adbrd" 2>/dev/null || true
+
+# WebUI 面板由 KernelSU/APatch 管理器自己 serve（模块里的 webroot/），不需要
+# 另起 http 服务；管理器会自动注入 window.ksu。
+[ -f "$MODPATH/webroot/index.html" ] || ui_print "! webroot/index.html 缺失，WebUI 不可用"
 
 # Verify the expected binary exists for this ABI.
 case "$ARCH" in

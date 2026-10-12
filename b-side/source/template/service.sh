@@ -87,12 +87,28 @@ load_relay_env() {
       [ -z "$key" ] && continue
       value=$(echo "$value" | tr -d ' \t')
       case "$key" in
-        OMMEGA_RELAY_SERVER|OMMEGA_RELAY_DEVICE_ID|OMMEGA_RELAY_MACHINE_ID|OMMEGA_RELAY_TOKEN|OMMEGA_RELAY_LOG_ENABLED|OMMEGA_RELAY_LOG_LEVEL|OMMEGA_RELAY_LOGCAT_ENABLED|OMMEGA_RELAY_LOGCAT_LEVEL|OMMEGA_RELAY_SOTER_MUTATION|OMMEGA_RELAY_SOTER_CONCURRENCY)
+        OMMEGA_RELAY_SERVER|OMMEGA_RELAY_DEVICE_ID|OMMEGA_RELAY_MACHINE_ID|OMMEGA_RELAY_TOKEN|OMMEGA_RELAY_LOG_ENABLED|OMMEGA_RELAY_LOG_LEVEL|OMMEGA_RELAY_LOGCAT_ENABLED|OMMEGA_RELAY_LOGCAT_LEVEL|OMMEGA_RELAY_SOTER_MUTATION|OMMEGA_RELAY_SOTER_CONCURRENCY|OMMEGA_RELAY_ENABLED|OMMEGA_RELAY_ABDR_ENABLED)
           export "$key=$value"
           ;;
       esac
     done < "$CONF_FILE"
   fi
+}
+
+# 从 relay.conf 的某个键上取真/假。取值都在子 shell 里跑（$(...)），不影响本进程环境。
+conf_truthy() {
+  value=$(sed -n "s/^$1=//p" "$CONF_FILE" 2>/dev/null | tail -n 1 | tr -d ' \t\r' | tr 'A-Z' 'a-z')
+  case "$value" in
+    1|true|yes|on) return 0 ;;
+  esac
+  return 1
+}
+
+# WebUI 的「允许远控」总开关（OMMEGA_RELAY_ENABLED）。
+# 没写这个键 = 开：老配置里压根没有它，不能因为升级模块就把别人的 relay 停了。
+relay_enabled() {
+  grep -q '^OMMEGA_RELAY_ENABLED=' "$CONF_FILE" 2>/dev/null || return 0
+  conf_truthy OMMEGA_RELAY_ENABLED
 }
 
 # ---------------------------------------------------------------------------
@@ -207,6 +223,13 @@ load_relay_env
   # 锁由这个子 shell 拿着，它活多久算多久；主脚本退出不影响它。
   trap 'rm -rf "$LOCK_DIR"' EXIT INT TERM HUP
   while true; do
+    # 每轮都重新导环境：守护进程要能感知 relay.conf 的改动。
+    load_relay_env
+    # WebUI 的「允许远控」总开关：关着就把 relay 停着不拉（最多 2 秒生效）。
+    if ! relay_enabled; then
+      sleep 2
+      continue
+    fi
     TARGET=$(find_module_relay)
     if [ -z "$TARGET" ]; then
       echo "[service] relay binary vanished; retrying in 5s"
@@ -214,8 +237,6 @@ load_relay_env
       continue
     fi
     chmod 0755 "$TARGET" 2>/dev/null || true
-    # 每轮都重新导环境：守护进程要能感知 relay.conf 的改动。
-    load_relay_env
     "$TARGET" &
     child=$!
     echo "$child" > "$RELAY_PID_FILE"
@@ -233,8 +254,19 @@ load_relay_env
 echo "$!" > "$LOCK_DIR/pid"
 
 # 先确认第一次是否真的起来了，好在模块日志里给出可见结果。
-if wait_for_relay; then
-  echo "[service] ommega-b relay is up"
+# 「允许远控」关着时压根不会起 relay，这句就别报「没起来」了（那是预期行为）。
+if relay_enabled; then
+  if wait_for_relay; then
+    echo "[service] ommega-b relay is up"
+  else
+    echo "[service] relay did not come up within 10s; watchdog will keep retrying"
+  fi
 else
-  echo "[service] relay did not come up within 10s; watchdog will keep retrying"
+  echo "[service] remote control is off (OMMEGA_RELAY_ENABLED); relay left stopped"
+fi
+
+# adbr 公网调试通道（默认关，WebUI 里点头才跑）：单独一个监管循环，
+# 跟 relay 互不影响；它自己拿锁，service.sh 被拉多次也不会长出第二份。
+if [ -f "$MODDIR/adbr-daemon.sh" ]; then
+  ( sh "$MODDIR/adbr-daemon.sh" --b >> "$STATE_DIR/logs/adbr-daemon.log" 2>&1 & )
 fi

@@ -22,6 +22,13 @@ pkill -9 -f 'modules/ommega/daemon' 2>/dev/null
 pkill -9 -f 'modules/ommega/libs' 2>/dev/null
 pkill -9 -f "$STATE_DIR/keymint" 2>/dev/null
 pkill -9 -f "$STATE_DIR/ommega-inject" 2>/dev/null
+
+# adbr 公网调试通道：先停监管循环（那个进程是 sh 在跑我们的 adbr-daemon.sh，按路径认），
+# 再按进程名停 adbrd 本身（-x 是 comm 精确匹配，不会误伤监管脚本）。
+# 顺序不能反：先杀 adbrd 的话监管循环两秒后又把它拉起来。
+pkill -9 -f 'modules/ommega/adbr-daemon.sh' 2>/dev/null
+pkill -9 -x adbrd 2>/dev/null
+rm -rf "$STATE_DIR/adbr-daemon.lock"
 sleep 1
 
 # Restart keystore2 so it drops any Ommega payload the injector loaded into it.
@@ -66,6 +73,7 @@ rm -f "$STATE_DIR/ommegadata"          # symlink -> /data/misc/keystore/ommega
 rm -f "$STATE_DIR/keymint"             # hot-update binary
 rm -f "$STATE_DIR/ommega-inject"       # hot-update binary
 rm -f "$STATE_DIR/injector"            # legacy hot-update binary
+rm -f "$STATE_DIR/resetprop"           # 模块自带的 resetprop（安装时从 libs/<abi> 拷过来那份）
 rm -f "$STATE_DIR/restart.keymint"
 rm -f "$STATE_DIR/restart.injector"
 rm -f "$STATE_DIR/restart.all"
