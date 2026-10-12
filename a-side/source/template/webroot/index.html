@@ -212,7 +212,8 @@
     <div class="card">
       <h2 data-i18n="patch.title"></h2>
       <div id="grp-patch"></div>
-      <div class="kv"><span data-i18n="patch.current"></span><span class="plain" id="patch-summary">-</span></div>
+      <p class="hint" data-i18n="patch.current"></p>
+      <div id="patch-summary"></div>
       <div class="acts">
         <button class="btn primary" id="patch-sync" data-i18n="patch.sync"></button>
         <button class="btn sm" id="patch-edit" data-i18n="patch.manual"></button>
@@ -835,14 +836,26 @@ async function saveApps(){
   else toast(t("toast.appsSaved", {n: lines.length}));
   refreshCount().catch(function(){});
 }
+/* 「当前」那一块：**一行一个信息**（标签 + 值）。挤成一句长句会被压得只剩省略号，
+   而这里的东西本来就是一行一项。 */
 function refreshPatchSummary(){
+  var box = document.getElementById("patch-summary");
+  if (!box) return;
   function v(id){ var e = document.getElementById(id); return e ? (e.value || "").trim() : ""; }
-  var items = [];
-  if (v("patch-system")) items.push(t("patch.short.system") + " " + v("patch-system"));
-  if (v("patch-boot")) items.push(t("patch.short.boot") + " " + v("patch-boot"));
-  if (v("patch-vendor")) items.push(t("patch.short.vendor") + " " + v("patch-vendor"));
-  if (v("boot-hash")) items.push(t("patch.short.hash"));
-  document.getElementById("patch-summary").textContent = items.length ? items.join(" · ") : t("patch.none");
+  var rows = [];
+  if (v("patch-system")) rows.push([t("patch.short.system"), v("patch-system")]);
+  if (v("patch-boot")) rows.push([t("patch.short.boot"), v("patch-boot")]);
+  if (v("patch-vendor")) rows.push([t("patch.short.vendor"), v("patch-vendor")]);
+  var hash = v("boot-hash");
+  if (hash) rows.push([t("patch.short.hash"), hash.slice(0, 12) + "…"]);
+  box.innerHTML = "";
+  if (!rows.length){ box.appendChild(el("p", "hint", t("patch.none"))); return; }
+  rows.forEach(function(pair){
+    var row = el("div", "kv");
+    row.appendChild(el("span", null, pair[0]));
+    row.appendChild(el("span", "plain", pair[1]));
+    box.appendChild(row);
+  });
 }
 function patchDate(v){
   if (v === null || v === undefined || v === "") return "";
