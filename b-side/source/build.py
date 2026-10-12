@@ -102,7 +102,7 @@ def get_version() -> str:
 # 哪端，两边各一套偏移（A 端这次没重发，那边还是 10 -> 1006014）。
 # 2026-10-11：Android 17 dynamic-linker hotfix (platform libc++ before vendor
 # libc++ in service.sh), 12 -> 13 so module managers accept the replacement zip.
-VERSION_CODE_OFFSET = 13
+VERSION_CODE_OFFSET = 14
 
 
 def version_code(version: str) -> str:

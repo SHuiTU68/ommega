@@ -9,3 +9,5 @@
 - Fixed a misjudgement in capability reporting: a single failed signature used to be taken as "this device cannot sign at all", which could drop a perfectly capable machine out of the signing path.
 - Hotfix #4: when configuration keys added by a newer version are filled in automatically on upgrade, environment-specific tuning keys such as the network bind setting are no longer touched along the way (so an upgrade cannot quietly change network settings that were working fine).
 - Android 17 compatibility hotfix: prefer the platform `libc++.so` in the launcher so an older vendor C++ runtime cannot make `liblog.so` fail on the missing `__hash_memory` symbol before the B-side relay starts.
+
+- Fixed the `system error'' loop when a real app (WeChat) sets up its fingerprint: one setting never reached the device relay, so the key-material step was refused and the app kept deleting and recreating it. Fixed at the source; takes effect right after the update, no reinstall needed.
