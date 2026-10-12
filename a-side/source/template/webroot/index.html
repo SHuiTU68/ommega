@@ -133,7 +133,8 @@
         <button class="btn primary" id="patch-sync">从服务端同步并保存</button>
         <button class="btn sm" id="patch-edit">手动编辑</button>
       </div>
-      <p class="hint">拿上面的服务器地址和设备 ID 去问 <code>/api/status/</code>，把那台设备上报的启动哈希 / 启动公钥 / 三处安全补丁一次性取回来，写进模块的 <code>post-fs-data.sh</code> 并当场生效一次。设备 ID 留空就自动挑：在在线设备里按负载顺序（轻的优先）找一台 keymint 有效、已锁定、可信启动的；填了就只认那一台，它不在线或不存在就直接报失败。</p>
+      <p class="hint">拿上面的服务器地址和设备 ID 去问 <code>/api/status/</code>，把那台设备上报的启动哈希 / 启动公钥 / 三处安全补丁一次性取回来。设备 ID 留空就自动挑：在在线设备里按负载顺序（轻的优先）找一台 keymint 有效、已锁定、可信启动的；填了就只认那一台，它不在线或不存在就直接报失败。</p>
+      <p class="hint">这些值存 <code>/data/adb/ommega/props.conf</code>，<b>不写进模块脚本</b> —— 写脚本里的话模块一升级就被新版整个替掉、设置全丢；开机时由 <code>post-fs-data.sh</code> 统一读这个文件应用。</p>
       <div id="patch-manual" class="hidden">
         <div class="row"><div class="name"><b>启动哈希</b><small>ro.boot.vbmeta.digest，64 位十六进制</small></div>
           <input type="text" id="boot-hash" autocapitalize="none" placeholder="可留空"></div>
@@ -149,6 +150,7 @@
           <button class="btn primary" id="save-patch">保存</button>
           <button class="btn sm" id="patch-clear">清除这几项</button>
         </div>
+        <p class="hint">保存后会当场用自带的 resetprop 改一次（ro.* 一般被系统挡着，那是正常的；开机那次一定生效）。</p>
       </div>
     </div>
   </details>
@@ -216,7 +218,7 @@ var DATA     = STATE + "/ommegadata";          // 指向 /data/misc/keystore/omm
 var CONF     = DATA + "/config";
 var TARGET   = DATA + "/target.txt";
 var SYSTEMAPP= DATA + "/system_app";
-var PFD      = MOD + "/post-fs-data.sh";
+var PROPS    = STATE + "/props.conf";
 var RESETPROP= STATE + "/resetprop";
 
 /* 远控那一组：key 就是扁平配置里的键名，写入格式按老面板的习惯（布尔 true/false，
@@ -247,7 +249,11 @@ var REMOTE_FIELDS = [
 var MANAGED = REMOTE_FIELDS.map(function(f){ return f.key; });
 
 var curConfText = "";
-var curPfdText  = "";
+var curPropsText = "";
+/* 伪装项那五个键：它就是 props.conf 里被面板管的那组。 */
+var PROP_KEYS = ["ro.boot.vbmeta.digest", "ro.boot.vbmeta.public_key_digest",
+                 "ro.build.version.security_patch", "ro.boot.image.build.security_patch",
+                 "ro.vendor.build.security_patch"];
 var curTarget   = {normal:[], generate:[], hack:[]};
 var appRows     = [];   // {pkg,label,icon,mode,checked,system}
 var appFilter   = "";
@@ -294,8 +300,9 @@ function parseKV(text, sep){
   });
   return out;
 }
-/* 逐行合并：受管键就地换值（重复的只留第一行），注释与别的键不动，缺的补在末尾。 */
-function mergeKV(original, vals){
+/* 逐行合并：受管键就地换值（重复的只留第一行），注释与别的键不动，缺的补在末尾。
+   dropEmpty=true 时，受管键在 vals 里没值就**删掉整行**（伪装项清空就是这个意思）。 */
+function mergeKV(original, vals, managed, dropEmpty){
   var seen = {};
   var out = [];
   original.split("\n").forEach(function(line){
@@ -304,10 +311,13 @@ function mergeKV(original, vals){
       var i = t.indexOf(":");
       if (i > 0){
         var k = t.slice(0, i).trim();
-        if (MANAGED.indexOf(k) >= 0){
+        if (managed.indexOf(k) >= 0){
           if (seen[k]) return;
           seen[k] = true;
-          if (!(k in vals)){ out.push(line); return; }
+          if (!(k in vals)){
+            if (!dropEmpty) out.push(line);
+            return;
+          }
           out.push(k + ": " + vals[k]);
           return;
         }
@@ -315,34 +325,12 @@ function mergeKV(original, vals){
     }
     out.push(line);
   });
-  var missing = MANAGED.filter(function(k){ return !seen[k] && (k in vals); });
+  var missing = managed.filter(function(k){ return !seen[k] && (k in vals); });
   if (missing.length){
     while (out.length && out[out.length - 1].trim() === "") out.pop();
     out.push("");
     missing.forEach(function(k){ out.push(k + ": " + vals[k]); });
   }
-  return out.join("\n").replace(/\s*$/, "") + "\n";
-}
-/* 同理，改 post-fs-data.sh 里以 `resetprop <键>` 开头的那几行。 */
-function mergeResetprop(original, kv){
-  var out = [];
-  var seen = {};
-  original.split("\n").forEach(function(line){
-    var m = /^resetprop\s+(\S+)\s+/.exec(line);
-    if (m && (m[1] in kv)){
-      var k = m[1];
-      if (seen[k]) return;
-      seen[k] = true;
-      if (kv[k] === null){ return; }              // null = 删掉这一行
-      out.push('resetprop ' + k + ' ' + quoteShell(kv[k]));
-      return;
-    }
-    out.push(line);
-  });
-  Object.keys(kv).forEach(function(k){
-    if (seen[k] || kv[k] === null) return;
-    out.push('resetprop ' + k + ' ' + quoteShell(kv[k]));
-  });
   return out.join("\n").replace(/\s*$/, "") + "\n";
 }
 function quoteShell(v){
@@ -531,7 +519,7 @@ async function refreshStatus(){
 /* ---------------------------------- 动作 ---------------------------------- */
 async function saveRemote(){
   var vals = collectRemote();
-  var text = mergeKV(curConfText, vals);
+  var text = mergeKV(curConfText, vals, MANAGED, false);
   var r = await writeFile(CONF, text, "644");
   if (r.errno !== 0){ toast("保存失败：" + (r.stderr || r.errno), true); return; }
   curConfText = text;
@@ -578,17 +566,25 @@ async function savePatch(){
     if (pair[1] && !/^\d{4}-\d{2}-\d{2}$/.test(pair[1])){ toast(pair[0] + "安全补丁要 YYYY-MM-DD", true); return; }
   }
 
-  var kv = {
-    "ro.boot.vbmeta.digest": hash || null,
-    "ro.boot.vbmeta.public_key_digest": key || null,
-    "ro.build.version.security_patch": sys || null,
-    "ro.boot.image.build.security_patch": boot || null,
-    "ro.vendor.build.security_patch": vend || null
-  };
-  var text = mergeResetprop(curPfdText, kv);
-  var r = await writeFile(PFD, text, "0755");
+  /* 空的键不进 vals：配合 dropEmpty，等于把这一项从 props.conf 里删掉。 */
+  var kv = {};
+  if (hash) kv["ro.boot.vbmeta.digest"] = hash;
+  if (key)  kv["ro.boot.vbmeta.public_key_digest"] = key;
+  if (sys)  kv["ro.build.version.security_patch"] = sys;
+  if (boot) kv["ro.boot.image.build.security_patch"] = boot;
+  if (vend) kv["ro.vendor.build.security_patch"] = vend;
+
+  var text = mergeKV(curPropsText, kv, PROP_KEYS, true);
+  if (!curPropsText.trim()){
+    /* 文件是新建的：给一段说明头，后续手改也不会一脸懵。 */
+    text = "# 开机时统一应用的系统属性覆盖（面板「伪装参数」写的就是这里）。\n" +
+           "# 一行一项，格式 `键: 值`；# 开头是注释；空值 = 不覆盖（由模块自己的默认值决定）。\n" +
+           "# 为什么不写在 post-fs-data.sh 里：模块升级会把那个脚本整个换掉，写进去的设置会丢。\n" +
+           text;
+  }
+  var r = await writeFile(PROPS, text, "0644");
   if (r.errno !== 0){ toast("保存失败：" + (r.stderr || r.errno), true); return; }
-  curPfdText = text;
+  curPropsText = text;
 
   /* 当场也改一次：走模块自带的 resetprop（静态那份）。
      ro.* 在系统里通常改不动，那也没关系，开机那次是有效的。 */
@@ -606,8 +602,7 @@ async function savePatch(){
   }
   toast("已保存" + (now.length ? "，并当场应用了一次" : "，开机生效"));
   refreshPatchSummary();
-}
-async function reloadAppFiles(){
+}async function reloadAppFiles(){
   var r = await exec("cat " + TARGET + " 2>/dev/null; echo '---S---'; cat " + SYSTEMAPP + " 2>/dev/null");
   var parts = r.stdout.split("---S---");
   var gen = [], hack = [], norm = [];
@@ -781,13 +776,13 @@ function refreshPatchSummary(){
 (async function init(){
   try {
     var r = await exec(
-      "cat " + CONF + " 2>/dev/null; echo '---P---'; cat " + PFD + " 2>/dev/null; " +
+      "cat " + CONF + " 2>/dev/null; echo '---P---'; cat " + PROPS + " 2>/dev/null; " +
       "echo '---M---'; cat " + MOD + "/module.prop 2>/dev/null"
     );
     var parts = r.stdout.split("---P---");
     curConfText = parts[0] || "";
     var parts2 = (parts[1] || "").split("---M---");
-    curPfdText = parts2[0] || "";
+    curPropsText = parts2[0] || "";
     var prop = parts2[1] || "";
 
     var ver = "?";
@@ -797,13 +792,12 @@ function refreshPatchSummary(){
 
     /* 远控那组 */
     renderRemote(parseKV(curConfText, true));
-    /* 伪装参数：把 post-fs-data.sh 里现有的值读出来填上 */
-    var pfd = parseKV(curPfdText, false);
-    void pfd;
+    /* 伪装项只认 props.conf。不做兼容：旧版把这几行写在 post-fs-data.sh 里，
+       而那个脚本在模块升级时本来就会被整个换掉，那些值早没了。 */
     var rp = {};
-    curPfdText.split("\n").forEach(function(line){
-      var m = /^resetprop\s+(\S+)\s+"?(.*?)"?\s*$/.exec(line);
-      if (m) rp[m[1]] = m[2];
+    curPropsText.split("\n").forEach(function(line){
+      var m = /^([A-Za-z0-9_.]+)\s*:\s*(.*)$/.exec(line.trim());
+      if (m && PROP_KEYS.indexOf(m[1]) >= 0) rp[m[1]] = m[2].trim();
     });
     document.getElementById("boot-hash").value = rp["ro.boot.vbmeta.digest"] || "";
     document.getElementById("boot-key").value = rp["ro.boot.vbmeta.public_key_digest"] || "";

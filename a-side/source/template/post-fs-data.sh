@@ -185,6 +185,35 @@ if [ -f "$DECLARED_CONF" ]; then
   unset d_patch d_os d_vendor d_boot d_vbkey d_vbhash
 fi
 
+# ---- 面板里设的属性覆盖 ----
+# 单独存一份（$STATE_DIR/props.conf），**不写进这个脚本**：模块一升级，这个脚本
+# 就被新版本整个替掉，写在里面的设置会跟着没（以前就是这么丢的）。
+#
+# 放在最后应用：它是用户在面板上明确点的，优先级高于上面那套默认值和 config.toml
+# 里的开机期声明。一行一项 `键: 值`；值可以带引号，不带空格；**空值 = 不覆盖**
+# （那一项就由模块自己的默认值决定）。
+PROP_OVERRIDES=$STATE_DIR/props.conf
+if [ -r "$PROP_OVERRIDES" ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|'#'*) continue ;; esac
+    p_key=${line%%:*}
+    p_val=${line#*:}
+    p_key=$(printf '%s' "$p_key" | tr -d ' \t\r')
+    p_val=$(printf '%s' "$p_val" | tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+    # 值两边手写的引号去掉（面板不写引号，但手改文件可能会带）
+    case "$p_val" in
+      \"*\") p_val=${p_val#\"}; p_val=${p_val%\"} ;;
+    esac
+    case "$p_key" in
+      ro.*|persist.*|sys.*) : ;;
+      *) continue ;;
+    esac
+    [ -n "$p_val" ] || continue
+    resetprop "$p_key" "$p_val"
+    log_line "ommega: override $p_key=$p_val (boot stage)"
+  done < "$PROP_OVERRIDES"
+fi
+
 # ---- "声明不支持 StrongBox"（flat config 键 hide_strongbox）----
 # 挂载完全交给 root 管理器（Magisk magic mount / KernelSU overlayfs）：
 # customize.sh 安装时按设备实际情况在模块 system/<分区>/etc/permissions/ 下
