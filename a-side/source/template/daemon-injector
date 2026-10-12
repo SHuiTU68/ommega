@@ -189,6 +189,18 @@ sync_log_flag() {
   [ -f "$APP_LOG_FILE" ] || : > "$APP_LOG_FILE" 2>/dev/null
   chmod 0666 "$APP_LOG_FILE" 2>/dev/null
   chcon u:object_r:system_app_data_file:s0 "$APP_LOG_FILE" 2>/dev/null
+  # 「这台机器的 SOTER 签成功过」的记录：签名那一瞬间由 app 域的 payload 追加一行，
+  # 所以得跟上面那份日志一样 —— 先建好、放 0666（宿主只能靠 other 那一档写）。
+  # 面板只看最后一条，留多了没意义；超过 64KB 就清掉重来。
+  SIGN_OK_FILE=$LOG_FLAG_DIR/soter_ok
+  [ -f "$SIGN_OK_FILE" ] || : > "$SIGN_OK_FILE" 2>/dev/null
+  chmod 0666 "$SIGN_OK_FILE" 2>/dev/null
+  chcon u:object_r:system_app_data_file:s0 "$SIGN_OK_FILE" 2>/dev/null
+  sog_size=$(stat -c %s "$SIGN_OK_FILE" 2>/dev/null)
+  case "$sog_size" in
+    ''|*[!0-9]*) : ;;
+    *) [ "$sog_size" -gt 65536 ] && : > "$SIGN_OK_FILE" 2>/dev/null ;;
+  esac
   mkdir -p "$LOG_FLAG_DIR" 2>/dev/null
   # 这个目录里可能放着用户自己替换的 soter_ask.pem（本地兜底的私钥），
   # 所以不能让 other 进得来读：属主给 system(1000) 是因为 app 域的 payload

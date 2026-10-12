@@ -967,7 +967,59 @@ pub(crate) fn interceptable(call: &SoterCall) -> bool {
 /// parcel 一直留到宿主把 `BC_FREE_BUFFER` 交回来为止** —— 这两个返回值是一个整体。
 /// `OwnedReply` 里装的是堆上的 `Parcel`，移交给调用方不会挪动数据本身，指针依旧有效。
 pub(crate) fn build_br_reply(call: &SoterCall) -> Option<(Vec<u8>, OwnedReply)> {
-    frame_br_reply(call, crate::hook::soter_relay::answer(call)?)
+    let answer = crate::hook::soter_relay::answer(call)?;
+    note_sign_success(call, &answer);
+    frame_br_reply(call, answer)
+}
+
+/// 「这台机器的 SOTER 能签」的记录文件。宿主是 app 域（uid 1000），写不进 keystore
+/// 那棵目录，而 daemon 会把这个文件预先建好、改成 0666（跟它自己那份日志一个待遇），
+/// 所以主机侧只要追加一行就行。
+const SIGN_OK_PATH: &str = "/data/misc/ommega/soter_ok";
+
+/// 签名成功就落一条记录，面板据此显示「SOTER 可用」—— 重启后加载时直接就有结论，
+/// 不用再等某一笔新调用。
+///
+/// **哪一层答的（远程真机 TEE / 本地自签 / 服务器自签）都算**：对 App 来说签出来
+/// 了就是能用，不关心背后是谁签的。
+///
+/// 只写本地文件：**不碰网络、不碰 TEE、不阻塞**。写失败就算了（顶多面板显示不准），
+/// 签名这条路上不能因为它多发一次请求或者多等一瞬。
+fn note_sign_success(call: &SoterCall, answer: &Answer) {
+    // 只认真正出签名的那两笔（跟 B 端判据一致：init_sign + finish_sign 都回 0）：
+    // 4 = finishSign，11 = init_sign。
+    if call.code != 4 && call.code != 11 {
+        return;
+    }
+    let code = match answer {
+        Answer::Code(code) => *code,
+        Answer::Buffer { code, .. } => *code,
+        Answer::Init { status, .. } => *status,
+    };
+    if code != 0 {
+        return;
+    }
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(SIGN_OK_PATH)
+    else {
+        return;
+    };
+    let epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let _ = std::io::Write::write_all(
+        &mut file,
+        format!(
+            "{epoch}\t{}\t{}\t{}\n",
+            call.op,
+            call.uid.unwrap_or(0),
+            call.alias.as_deref().unwrap_or("")
+        )
+        .as_bytes(),
+    );
 }
 
 /// Frame an already resolved answer without contacting the daemon or local key state.
