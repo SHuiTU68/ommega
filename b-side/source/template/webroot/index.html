@@ -215,7 +215,7 @@ var FIELDS = [
 var PREFIX = "OMMEGA_RELAY_";
 function envOf(f){ return PREFIX + (f.env || f.key); }
 var DEFAULTS = {
-  ENABLED: true, ABDR: false, MUTATION: false, LOG_ENABLED: true, LOG_LEVEL: "info",
+  ENABLED: true, ABDR: false, MUTATION: true, LOG_ENABLED: true, LOG_LEVEL: "info",
   LOGCAT_ENABLED: true, LOGCAT_LEVEL: "info", CONCURRENCY: "2",
   BIND_IFACE: "auto", PATH_PROBE: true, WAKELOCK: true
 };
