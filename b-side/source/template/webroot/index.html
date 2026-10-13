@@ -300,7 +300,12 @@ function render(){
       sw.type = "button";
       sw.dataset.key = f.key;
       sw.setAttribute("aria-checked", truthy(raw) ? "true" : "false");
-      sw.onclick = function(){ sw.setAttribute("aria-checked", sw.getAttribute("aria-checked") === "true" ? "false" : "true"); };
+      sw.onclick = function(){
+        sw.setAttribute("aria-checked", sw.getAttribute("aria-checked") === "true" ? "false" : "true");
+        /* 开关点一下就直接写、立刻生效（relay 那边 1 秒内热重载）。
+           以前改完还得回去点「保存」，用户以为开关本身就是保存 —— 回头一看文件根本没动。 */
+        save().catch(function(e){ toast(t("toast.saveFail", {msg: e.message}), true); });
+      };
       row.appendChild(sw);
     } else if (f.type === "enum"){
       var sel = el("select");

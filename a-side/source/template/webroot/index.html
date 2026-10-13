@@ -501,7 +501,11 @@ function buildBoolRow(f, value, host){
   sw.type = "button";
   sw.dataset.key = f.key;
   sw.setAttribute("aria-checked", value ? "true" : "false");
-  sw.onclick = function(){ sw.setAttribute("aria-checked", sw.getAttribute("aria-checked") === "true" ? "false" : "true"); };
+  sw.onclick = function(){
+    sw.setAttribute("aria-checked", sw.getAttribute("aria-checked") === "true" ? "false" : "true");
+    /* 开关点一下就直接写、立刻生效。以前改完还得回去点「保存」，用户以为开关本身就是保存。 */
+    saveRemote().catch(function(e){ toast(t("toast.saveFail", {msg: e.message}), true); });
+  };
   row.appendChild(sw);
   (host || document.getElementById("grp-remote")).appendChild(row);
 }
@@ -866,6 +870,7 @@ async function saveRemote(){
   var r = await writeFile(CONF, text, "644");
   if (r.errno !== 0){ toast(t("toast.saveFail", {msg: r.stderr || r.errno}), true); return; }
   curConfText = text;
+  aDirty = false;
   toast(t("toast.saved"));
   setTimeout(function(){ refreshStatus().catch(function(){}); }, 2000);
 }
@@ -996,6 +1001,7 @@ async function savePatch(){
   var r = await writeFile(PROPS, text, "0644");
   if (r.errno !== 0){ toast(t("toast.saveFail", {msg: r.stderr || r.errno}), true); return; }
   curPropsText = text;
+  aDirty = false;
   var now = [], vals = {};
   if (sys){ now.push("ro.build.version.security_patch"); vals["ro.build.version.security_patch"] = sys; }
   if (boot){ now.push("ro.boot.image.build.security_patch"); vals["ro.boot.image.build.security_patch"] = boot; }
@@ -1039,6 +1045,61 @@ function setLang(code){
 }
 
 /* --------------------------------- 初始化 -------------------------------- */
+/* 从磁盘读一遍配置、伪装参数与版本。init 用一次，页面重新可见/拿回焦点时也用它 ——
+   WebView 常把上次那页留着不重建，只在 init 里读会让人一直看到旧值（B 端就是这么中招的）。 */
+async function readFromDisk(){
+  var r = await exec(
+    "cat " + CONF + " 2>/dev/null; echo '---P---'; cat " + PROPS + " 2>/dev/null; " +
+    "echo '---M---'; cat " + MOD + "/module.prop 2>/dev/null"
+  );
+  var parts = r.stdout.split("---P---");
+  curConfText = parts[0] || "";
+  var parts2 = (parts[1] || "").split("---M---");
+  curPropsText = parts2[0] || "";
+  var prop = parts2[1] || "";
+  var ver = "?";
+  prop.split("\n").forEach(function(l){ if (l.indexOf("version=") === 0) ver = l.slice(8).trim(); });
+  return ver;
+}
+/* 把 props.conf 里那几个键填进「伪装参数」的输入框和「当前」摘要。 */
+function propsToPatchFields(){
+  var rp = {};
+  curPropsText.split("\n").forEach(function(line){
+    var m = /^([A-Za-z0-9_.]+)\s*:\s*(.*)$/.exec(line.trim());
+    if (m && PROP_KEYS.indexOf(m[1]) >= 0) rp[m[1]] = m[2].trim();
+  });
+  patchValues = {
+    "boot-hash": rp["ro.boot.vbmeta.digest"] || "",
+    "patch-system": rp["ro.build.version.security_patch"] || "",
+    "patch-boot": rp["ro.boot.image.build.security_patch"] || "",
+    "patch-vendor": rp["ro.vendor.build.security_patch"] || ""
+  };
+  fillPatchInputs();
+  refreshPatchSummary();
+}
+/* 页面又露出来了（或者拿回焦点）就重读一次：没动过手的直接刷新，动过手的不碰 ——
+   否则会把用户正在改、还没保存的东西冲掉。 */
+var aDirty = false;
+async function refreshFromDisk(){
+  if (aDirty) return;
+  try {
+    await readFromDisk();
+    renderRemote(parseKV(curConfText, true));
+    propsToPatchFields();
+    refreshStatus().catch(function(){});
+    refreshSoter().catch(function(){});
+    refreshCount().catch(function(){});
+    refreshAsk().catch(function(){});
+  } catch (e){}
+}
+document.addEventListener("visibilitychange", function(){ if (!document.hidden) refreshFromDisk(); });
+if (typeof window !== "undefined" && window && typeof window.addEventListener === "function"){
+  window.addEventListener("focus", function(){ refreshFromDisk(); });
+}
+/* 表单里任何一处被改过就置 aDirty；保存/重读成功之后清掉。语言下拉不算「改配置」。 */
+document.addEventListener("input", function(ev){ if (!(ev && ev.target && ev.target.id === "lang")) aDirty = true; }, true);
+document.addEventListener("change", function(ev){ if (!(ev && ev.target && ev.target.id === "lang")) aDirty = true; }, true);
+
 (async function init(){
   try {
     try { LANG = localStorage.getItem("ommega.lang") || (navigator.language || "").replace("_", "-"); } catch (e){}
@@ -1048,17 +1109,7 @@ function setLang(code){
     }
     if (!I18N[LANG]) LANG = "zh-CN";
 
-    var r = await exec(
-      "cat " + CONF + " 2>/dev/null; echo '---P---'; cat " + PROPS + " 2>/dev/null; " +
-      "echo '---M---'; cat " + MOD + "/module.prop 2>/dev/null"
-    );
-    var parts = r.stdout.split("---P---");
-    curConfText = parts[0] || "";
-    var parts2 = (parts[1] || "").split("---M---");
-    curPropsText = parts2[0] || "";
-    var prop = parts2[1] || "";
-    var ver = "?";
-    prop.split("\n").forEach(function(l){ if (l.indexOf("version=") === 0) ver = l.slice(8).trim(); });
+    var ver = await readFromDisk();
 
     var langSel = document.getElementById("lang");
     LANGS.forEach(function(pair){ var op = el("option", null, pair[1]); op.value = pair[0]; langSel.appendChild(op); });
@@ -1071,19 +1122,7 @@ function setLang(code){
 
     renderRemote(parseKV(curConfText, true));
 
-    var rp = {};
-    curPropsText.split("\n").forEach(function(line){
-      var m = /^([A-Za-z0-9_.]+)\s*:\s*(.*)$/.exec(line.trim());
-      if (m && PROP_KEYS.indexOf(m[1]) >= 0) rp[m[1]] = m[2].trim();
-    });
-    patchValues = {
-      "boot-hash": rp["ro.boot.vbmeta.digest"] || "",
-      "patch-system": rp["ro.build.version.security_patch"] || "",
-      "patch-boot": rp["ro.boot.image.build.security_patch"] || "",
-      "patch-vendor": rp["ro.vendor.build.security_patch"] || ""
-    };
-    fillPatchInputs();
-    refreshPatchSummary();
+    propsToPatchFields();
 
     /* 顶栏 / 悬浮窗 */
     document.getElementById("about-btn").onclick = function(){ document.getElementById("about-modal").className = "modal"; };
