@@ -115,6 +115,11 @@
   #toast.show{opacity:1;transform:translateX(-50%)}
   #toast.err{background:#8d2b2b}
   #boot{color:var(--dim);font-size:13px;padding:8px 14px}
+  /* 点按钮时浏览器会画一圈方框焦点框（有时还带点按高亮），手机上看很突兀 —— 去掉；
+     输入框/下拉保留一圈柔和高亮，不然点进去看不出焦点在哪。 */
+  button, .sw, .btn, .tb-btn { -webkit-tap-highlight-color: transparent; }
+  button:focus, button:focus-visible, .sw:focus, .sw:focus-visible { outline: none; }
+  input:focus, select:focus { outline: none; border-color: var(--accent); }
   .hidden{display:none}
 </style>
 </head>
