@@ -392,6 +392,7 @@ async function save(){
   if (r.errno !== 0){ toast(t("toast.saveFail", {msg: r.stderr || r.errno}), true); return; }
   curText = text;
   curMap = parseConf(text);
+  dirty = false;
   toast(t("toast.saved"));
   setTimeout(function(){ refreshStatus().catch(function(){}); }, 1500);
 }
@@ -421,6 +422,39 @@ function setLang(code){
   document.getElementById("lang").value = code;
 }
 
+/* 从磁盘读一遍配置。init 用一次，页面重新可见时也用它 —— WebView 常常把上次那页
+   留着不重建，只在 init 里读会让人一直看到旧值（用户实测：面板显示关、配置其实是开）。 */
+async function readConf(){
+  var r = await exec("cat " + CONF + " 2>/dev/null; echo '---P---'; cat " + PROP + " 2>/dev/null");
+  var parts = r.stdout.split("---P---");
+  curText = parts[0] || "";
+  curMap = parseConf(curText);
+  var propText = parts[1] || "";
+  var ver = "?";
+  propText.split("\n").forEach(function(l){ if (l.indexOf("version=") === 0) ver = l.slice(8).trim(); });
+  return ver;
+}
+/* 页面又露出来了（或者拿回焦点）就重读一次：没动过手的直接刷新，动过手的不碰 ——
+   否则会把用户正在改、还没保存的东西冲掉。 */
+var dirty = false;
+async function refreshFromDisk(){
+  if (dirty) return;
+  try {
+    var ver = await readConf();
+    render();
+    document.getElementById("modline").textContent = t("about.version") + " " + ver;
+    document.getElementById("about-ver").textContent = ver;
+    refreshStatus().catch(function(){});
+  } catch (e){}
+}
+document.addEventListener("visibilitychange", function(){ if (!document.hidden) refreshFromDisk(); });
+if (typeof window !== "undefined" && window && typeof window.addEventListener === "function"){
+  window.addEventListener("focus", function(){ refreshFromDisk(); });
+}
+/* 表单里任何一处被改过就置 dirty；保存/重读成功之后清掉。语言下拉不算「改配置」。 */
+document.addEventListener("input", function(ev){ if (!(ev && ev.target && ev.target.id === "lang")) dirty = true; }, true);
+document.addEventListener("change", function(ev){ if (!(ev && ev.target && ev.target.id === "lang")) dirty = true; }, true);
+
 /* --------------------------------- 初始化 -------------------------------- */
 (async function init(){
   try {
@@ -431,14 +465,7 @@ function setLang(code){
     }
     if (!I18N[LANG]) LANG = "zh-CN";
 
-    var r = await exec("cat " + CONF + " 2>/dev/null; echo '---P---'; cat " + PROP + " 2>/dev/null");
-    var parts = r.stdout.split("---P---");
-    curText = parts[0] || "";
-    curMap = parseConf(curText);
-    var propText = parts[1] || "";
-
-    var ver = "?";
-    propText.split("\n").forEach(function(l){ if (l.indexOf("version=") === 0) ver = l.slice(8).trim(); });
+    var ver = await readConf();
 
     var langSel = document.getElementById("lang");
     LANGS.forEach(function(pair){
@@ -460,7 +487,10 @@ function setLang(code){
     document.getElementById("about-close").onclick = function(){ document.getElementById("about-modal").className = "modal hidden"; };
     document.getElementById("about-modal").onclick = function(ev){ if (ev.target.id === "about-modal") this.className = "modal hidden"; };
     document.getElementById("save").onclick = function(){ save().catch(function(e){ toast(t("toast.saveFail", {msg: e.message}), true); }); };
-    document.getElementById("reload").onclick = function(){ reloadNow().catch(function(e){ toast(String(e.message), true); }); };
+    document.getElementById("reload").onclick = function(){
+      /* 这个按钮的本意是「让 relay 重读配置」，但它读完了面板自己却还是旧值 —— 连同面板一起刷新。 */
+      reloadNow().then(function(){ dirty = false; return refreshFromDisk(); }).catch(function(e){ toast(String(e.message), true); });
+    };
     document.getElementById("restart").onclick = function(){ restartRelay().catch(function(e){ toast(String(e.message), true); }); };
 
     document.getElementById("boot").className = "hidden";
