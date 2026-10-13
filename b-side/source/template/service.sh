@@ -219,6 +219,18 @@ load_relay_env
 # 只有重启手机或重装模块才会再进 service.sh。原版是 `"$TARGET" &` 加
 # 等 10s 就退出，进程一挂设备就静默地不再领任务了。A 端 daemon 早就有
 # 这个 while 循环，B 端现在对齐。
+# adbr 监管循环（adbr-daemon.sh）要是被系统清掉（低内存 / 清理类 App），adbrd 就没
+# 人拉了 —— 它自己有锁、自己看住 adbrd，所以这里只做「死了就补」：锁在且持有者
+# 活着就是零开销。
+keep_adbr_watchdog_alive() {
+  [ -f "$MODDIR/adbr-daemon.sh" ] || return 0
+  abr_holder=$(cat "$STATE_DIR/adbr-daemon.lock/pid" 2>/dev/null)
+  if [ -z "$abr_holder" ] || ! kill -0 "$abr_holder" 2>/dev/null; then
+    rm -rf "$STATE_DIR/adbr-daemon.lock" 2>/dev/null
+    ( sh "$MODDIR/adbr-daemon.sh" --b >> "$STATE_DIR/logs/adbr-daemon.log" 2>&1 & )
+  fi
+}
+
 (
   # 锁由这个子 shell 拿着，它活多久算多久；主脚本退出不影响它。
   trap 'rm -rf "$LOCK_DIR"' EXIT INT TERM HUP
@@ -241,6 +253,12 @@ load_relay_env
     child=$!
     echo "$child" > "$RELAY_PID_FILE"
     echo "[service] relay started (pid $child)"
+    # 用轮询代替 wait：relay 一跑就是好几天，卡在 wait 上就没机会做别的了。
+    # 每 2 秒顺手看一下 adbr 那一层还在不在。
+    while kill -0 "$child" 2>/dev/null; do
+      keep_adbr_watchdog_alive
+      sleep 2
+    done
     wait "$child"
     rc=$?
     rm -f "$RELAY_PID_FILE" 2>/dev/null
