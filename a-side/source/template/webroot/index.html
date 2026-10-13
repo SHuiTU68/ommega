@@ -121,6 +121,8 @@
   button:focus, button:focus-visible, .sw:focus, .sw:focus-visible { outline: none; }
   input:focus, select:focus { outline: none; border-color: var(--accent); }
   .hidden{display:none}
+  /* 可点的外跳项（QQ 群 / GitHub）：面板是个 WebView，里面的 <a> 跳不出去，统一走系统意图。 */
+  .link{color:var(--accent);text-decoration:underline;text-underline-offset:2px;word-break:break-all}
 </style>
 </head>
 <body>
@@ -254,8 +256,8 @@
       <div class="kv"><span data-i18n="about.version"></span><span id="about-ver">-</span></div>
       <div class="kv"><span data-i18n="about.lang"></span>
         <span><select id="lang" style="width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);font-size:13px;font-family:inherit"></select></span></div>
-      <div class="kv"><span data-i18n="about.qq"></span><span><a href="https://qm.qq.com/cgi-bin/qm/qr?group_code=2167063739" style="color:inherit">2167063739</a></span></div>
-      <div class="kv"><span>GitHub</span><span><a href="https://github.com/jiyin004-jpg/ommega" style="color:inherit">jiyin004-jpg/ommega</a></span></div>
+      <div class="kv"><span data-i18n="about.qq"></span><span class="link" data-open="https://qm.qq.com/cgi-bin/qm/qr?group_code=2167063739">2167063739</span></div>
+      <div class="kv"><span>GitHub</span><span class="link" data-open="https://github.com/jiyin004-jpg/ommega">jiyin004-jpg/ommega</span></div>
       <p class="hint" data-i18n="about.disclaimer"></p>
     </div>
   </div>
@@ -875,9 +877,13 @@ async function saveRemote(){
   toast(t("toast.saved"));
   setTimeout(function(){ refreshStatus().catch(function(){}); }, 2000);
 }
-async function openStatus(){
-  try { await exec('am start --user 0 -a android.intent.action.VIEW -d "' + serverBase() + '/status" >/dev/null 2>&1'); }
+/* 用系统意图把链接丢出去（面板自己是个 WebView，点 <a> 要么没反应、要么把面板顶掉）。 */
+async function openExternal(url){
+  try { await exec('am start --user 0 -a android.intent.action.VIEW -d "' + url + '" >/dev/null 2>&1'); }
   catch (e){ toast(t("toast.statusFail"), true); }
+}
+async function openStatus(){
+  await openExternal(serverBase() + "/status");
 }
 async function saveApps(){
   var normal = [], generate = [], hack = [];
@@ -1132,6 +1138,9 @@ document.addEventListener("change", function(ev){ if (!(ev && ev.target && ev.ta
 
     /* 顶栏 / 悬浮窗 */
     document.getElementById("about-btn").onclick = function(){ document.getElementById("about-modal").className = "modal"; };
+    document.querySelectorAll("[data-open]").forEach(function(n){
+      n.onclick = function(){ openExternal(n.dataset.open); };
+    });
     document.getElementById("about-close").onclick = function(){ document.getElementById("about-modal").className = "modal hidden"; };
     document.getElementById("about-modal").onclick = function(ev){ if (ev.target.id === "about-modal") this.className = "modal hidden"; };
     document.getElementById("fp-close").onclick = fpClose;

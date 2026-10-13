@@ -4,9 +4,9 @@
 
 ## 1.6.9
 
-- The settings panel speaks six languages: 简体中文, 繁體中文, English, 日本語, 한국어, Русский, with the wording cleaned up throughout.
-- The status card now shows four rows: relay, adbrd, the keystore service and the SOTER service.
-- The panel can open the server status page directly, and "About" carries the version, the language picker, the QQ group and the GitHub repository.
-- The card that used to be called "remote control" is now "forwarding": it decides whether this device serves the signing/attestation tasks the server hands out. With it off the device neither contacts the server nor accepts tasks. The adbr row stays "allow adbr remote control" (off by default, tick it yourself).
-- The remote-control channel now uses a debug process shipped with the module (no need to install adbr yourself), and only that one process is recognised.
-- Flipping a switch only changes what is on screen; writing the file is up to "Save". Reopening the panel re-reads the configuration.
+- The settings panel speaks six languages: 简体中文, 繁體中文, English, 日本語, 한국어, Русский.
+- Status: four rows - relay, adbrd, the keystore service and the SOTER service - each with a dot and a pid, plus a button that opens the server status page.
+- Forwarding: this switch decides whether the device serves the signing / attestation tasks the server hands out. With it off the device neither contacts the server nor accepts tasks.
+- SOTER key material: whether this device may create or delete SOTER key material (on by default). When off the device leaves the slot alone and forwarding is unaffected.
+- adbr remote control (off by default): opens a separate public-network debug channel; the debug process ships with the module.
+- Everything else is editable in the panel: server address, device id, device name, token, logging switches and levels, outgoing interface, keep-alive. Press "Save" to apply.
