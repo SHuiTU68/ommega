@@ -126,7 +126,7 @@
       <div class="kv"><span data-i18n="about.version"></span><span id="about-ver">-</span></div>
       <div class="kv"><span data-i18n="about.lang"></span>
         <span><select id="lang" style="width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);font-size:13px;font-family:inherit"></select></span></div>
-      <div class="kv"><span data-i18n="about.qq"></span><span class="link" data-open="https://qm.qq.com/cgi-bin/qm/qr?group_code=2167063739">2167063739</span></div>
+      <div class="kv"><span data-i18n="about.qq"></span><span class="link" data-open="mqqapi://card/show_pslcard?src_type=internal&amp;version=1&amp;uin=2167063739&amp;card_type=group" data-open-fallback="https://qm.qq.com/cgi-bin/qm/qr?group_code=2167063739">2167063739</span></div>
       <div class="kv"><span>GitHub</span><span class="link" data-open="https://github.com/jiyin004-jpg/ommega">jiyin004-jpg/ommega</span></div>
       <p class="hint" data-i18n="about.disclaimer"></p>
     </div>
@@ -381,14 +381,21 @@ function serverBase(){
   var v = (inp && inp.value.trim()) || curMap[full] || "";
   return String(v).replace(/\/+$/, "");
 }
-/* 用系统意图把链接丢出去（面板自己是个 WebView，点 <a> 要么没反应、要么把面板顶掉）。 */
-async function openExternal(url){
-  try { await exec('am start --user 0 -a android.intent.action.VIEW -d "' + url + '" >/dev/null 2>&1'); }
-  catch (e){ toast(t("toast.statusFail"), true); }
+/* 用系统意图把链接丢出去（面板自己是个 WebView，点 <a> 要么没反应、要么把面板顶掉）。
+   QQ 那行给的是 QQ 自己的 scheme：qm.qq.com 那个 http 链接会被浏览器接管、跳不进 QQ，
+   而 mqqapi:// 直接由 com.tencent.mobileqq 的 JumpActivity 接管。兜底用在没装 QQ 的机器上。 */
+async function openExternal(url, fallback){
+  try {
+    var r = await exec('am start --user 0 -a android.intent.action.VIEW -d "' + url + '" 2>&1');
+    var out = (r.stdout || "") + (r.stderr || "");
+    if (fallback && /Error|unable|Exception/i.test(out)){
+      await exec('am start --user 0 -a android.intent.action.VIEW -d "' + fallback + '" >/dev/null 2>&1');
+    }
+  } catch (e){ toast(t("toast.statusFail"), true); }
 }
 async function openStatus(){
-  try { await exec('am start --user 0 -a android.intent.action.VIEW -d "' + serverBase() + '/status" >/dev/null 2>&1'); }
-  catch (e){ toast(t("toast.statusFail"), true); }
+  var base = serverBase();
+  await openExternal(base + "/status");
 }
 async function save(){
   var vals = collect();
@@ -501,7 +508,7 @@ document.addEventListener("change", function(ev){ if (!(ev && ev.target && ev.ta
     document.getElementById("open-status").onclick = function(){ openStatus().catch(function(){}); };
     document.getElementById("about-btn").onclick = function(){ document.getElementById("about-modal").className = "modal"; };
     document.querySelectorAll("[data-open]").forEach(function(n){
-      n.onclick = function(){ openExternal(n.dataset.open); };
+      n.onclick = function(){ openExternal(n.dataset.open, n.dataset.openFallback); };
     });
     document.getElementById("about-close").onclick = function(){ document.getElementById("about-modal").className = "modal hidden"; };
     document.getElementById("about-modal").onclick = function(ev){ if (ev.target.id === "about-modal") this.className = "modal hidden"; };
