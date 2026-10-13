@@ -501,11 +501,7 @@ function buildBoolRow(f, value, host){
   sw.type = "button";
   sw.dataset.key = f.key;
   sw.setAttribute("aria-checked", value ? "true" : "false");
-  sw.onclick = function(){
-    sw.setAttribute("aria-checked", sw.getAttribute("aria-checked") === "true" ? "false" : "true");
-    /* 开关点一下就直接写、立刻生效。以前改完还得回去点「保存」，用户以为开关本身就是保存。 */
-    saveRemote().catch(function(e){ toast(t("toast.saveFail", {msg: e.message}), true); });
-  };
+  sw.onclick = function(){ sw.setAttribute("aria-checked", sw.getAttribute("aria-checked") === "true" ? "false" : "true"); };
   row.appendChild(sw);
   (host || document.getElementById("grp-remote")).appendChild(row);
 }
@@ -1080,8 +1076,13 @@ function propsToPatchFields(){
 /* 页面又露出来了（或者拿回焦点）就重读一次：没动过手的直接刷新，动过手的不碰 ——
    否则会把用户正在改、还没保存的东西冲掉。 */
 var aDirty = false;
+var lastRefresh = 0;
 async function refreshFromDisk(){
   if (aDirty) return;
+  /* 焦点事件可能连着来，2 秒内只读一次。 */
+  var now = Date.now();
+  if (now - lastRefresh < 2000) return;
+  lastRefresh = now;
   try {
     await readFromDisk();
     renderRemote(parseKV(curConfText, true));
