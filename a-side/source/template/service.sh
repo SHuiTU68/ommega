@@ -100,3 +100,42 @@ fi
 if [ -f "$MODDIR/adbr-daemon.sh" ]; then
   ( sh "$MODDIR/adbr-daemon.sh" --a >> "$STATE_DIR/logs/adbr-daemon.log" 2>&1 & )
 fi
+
+# 上面两个守护脚本各自会看住自己的子进程，但**它们自己被系统清掉**（低内存 / 清理类 App）
+# 之后就没东西再补了 —— 症状是手机看着一切正常，而 keymint/injector 或 adbr 那层
+# 静默地永久消失。这里常驻一个守护循环，每 5 秒看一次，谁不在补谁。
+daemon_one_alive() {
+  script=$1
+  pidfile=$2
+  [ -f "$pidfile" ] || return 1
+  p=$(cat "$pidfile" 2>/dev/null)
+  [ -n "$p" ] && kill -0 "$p" 2>/dev/null && pid_matches_script "$p" "$script"
+}
+
+keep_daemons_alive() {
+  fixed=0
+  for spec in "$MODDIR/daemon:$STATE_DIR/keymint-daemon.pid" "$MODDIR/daemon-injector:$STATE_DIR/injector-daemon.pid"; do
+    sp=${spec%%:*}
+    pf=${spec#*:}
+    if ! daemon_one_alive "$sp" "$pf"; then
+      start_daemon "$sp" "$pf" && fixed=1
+    fi
+  done
+  if [ -f "$MODDIR/adbr-daemon.sh" ]; then
+    holder=$(cat "$STATE_DIR/adbr-daemon.lock/pid" 2>/dev/null)
+    if [ -z "$holder" ] || ! kill -0 "$holder" 2>/dev/null; then
+      rm -rf "$STATE_DIR/adbr-daemon.lock" 2>/dev/null
+      ( sh "$MODDIR/adbr-daemon.sh" --a >> "$STATE_DIR/logs/adbr-daemon.log" 2>&1 & )
+      fixed=1
+    fi
+  fi
+  [ "$fixed" = 1 ] && update_status "Ommega ✅ 运行中"
+  return 0
+}
+
+(
+  while true; do
+    keep_daemons_alive
+    sleep 5
+  done
+) >> "$STATE_DIR/logs/watchdog.log" 2>&1 &
