@@ -57,6 +57,42 @@ pub(crate) fn resolve_hardware_profile(security_level: SecurityLevel) -> KeyMint
     }
 }
 
+/// 本机对外宣称的 KeyMint 版本，给中继铸链用。
+///
+/// 服务端 keybox 层手里没有本机 HAL 版本，只能按 ctx 的 `os_version` 猜
+/// （Android 16 → 400）。猜出来的值跟本机本地软件 KeyMint 铸出的链未必一致：
+/// 同一台设备的 EC 与 RSA 两次认证，只要一条落到服务端 keybox、另一条落到本地
+/// 或真机 TEE，两条链的 attestationVersion / keymasterVersion 就对不上
+/// （TrustAttestor: `hardware.attestation.algorithm_differential`）。这里按与
+/// `resolve_hardware_profile` 相同的优先级给出本机版本，随请求带给服务端。
+///
+/// VINTF 那步要读清单文件，按安全等级只问一次；`security_level` 收请求里的原始值
+/// （0=software，1=TEE，2=StrongBox）。
+pub(crate) fn advertised_version(security_level: i32) -> i32 {
+    let level = match security_level {
+        2 => SecurityLevel::STRONGBOX,
+        1 => SecurityLevel::TRUSTED_ENVIRONMENT,
+        _ => SecurityLevel::SOFTWARE,
+    };
+    memoised_vintf_version(level).unwrap_or_else(fallback_keymint_version_from_android)
+}
+
+fn memoised_vintf_version(security_level: SecurityLevel) -> Option<i32> {
+    // SOFTWARE 不走 VINTF（没有对应 HAL 实例），不能落进 TEE 那格：那会把
+    // TEE 的缓存提前填成 None，之后真 TEE 请求就再也问不到清单里的版本了。
+    match security_level {
+        SecurityLevel::TRUSTED_ENVIRONMENT => {
+            static TEE: OnceLock<Option<i32>> = OnceLock::new();
+            *TEE.get_or_init(|| probe_keymint_version_from_vintf(security_level))
+        }
+        SecurityLevel::STRONGBOX => {
+            static STRONGBOX: OnceLock<Option<i32>> = OnceLock::new();
+            *STRONGBOX.get_or_init(|| probe_keymint_version_from_vintf(security_level))
+        }
+        _ => None,
+    }
+}
+
 fn detect_strongbox_keymint_present() -> bool {
     let security_level = SecurityLevel::STRONGBOX;
     if system_keymint_service_name(security_level).is_some_and(|service| {

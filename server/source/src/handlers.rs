@@ -781,8 +781,17 @@ async fn run_a_side_task(state: &AppState, task_type: &str, body: &Value) -> Res
                         "run_a_side_task: type={task_type} layer=b reported missing key; \
                          skipping keybox/self_signed substitution for {device_id}"
                     );
-                    last_error = Some(msg.clone());
-                    break;
+                    // 「这台设备的这个 alias 没有私钥」是设备给的确定答复，不是层失败。
+                    // 用 200 + 因由回给 A 端，让它把这条路径跟「远端整个不可用」分开：
+                    // A 端会翻译成 KEY_NOT_FOUND，调用方据此作废自己那把 attestation
+                    // key 并重建。以前这里包成 HTTP 500，A 端只看得到「远端不可用」，
+                    // 一路退成 UNKNOWN_ERROR(-1000) 并且反复重试 —— 既补不齐证书链，
+                    // 又把这个错误码画像留在检测方那里。
+                    return Json(json!({
+                        "error": msg,
+                        "relay_error_kind": "key_not_found",
+                    }))
+                    .into_response();
                 }
                 last_error = Some(msg);
             }

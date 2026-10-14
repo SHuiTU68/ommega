@@ -848,6 +848,23 @@ impl RemoteRelay {
         if os_version > 0 {
             ctx.insert("os_version".to_string(), Value::from(os_version));
         }
+        // 本机对外宣称的 KeyMint 版本也带上。服务端 keybox 层读不到这两个字段时
+        // 只能按 `os_version` 猜，猜出来的 attestationVersion/keymasterVersion 未必
+        // 等于本机 HAL 的；同一台设备的 EC/RSA 两条认证只要一条走 keybox、另一条
+        // 走真机 TEE，画像就对不上（TrustAttestor:
+        // `hardware.attestation.algorithm_differential`）。
+        let record_version =
+            crate::plat::keymint_profile::advertised_version(params.security_level.unwrap_or(1));
+        if record_version > 0 {
+            ctx.insert(
+                "attest_record_version".to_string(),
+                Value::from(i64::from(record_version)),
+            );
+            ctx.insert(
+                "keymint_record_version".to_string(),
+                Value::from(i64::from(record_version)),
+            );
+        }
         let os_patch_level = match config::config().read() {
             Ok(g) => patch_level_to_yyyymm(&g.trust.os_patchlevel),
             Err(_) => None,
@@ -1086,6 +1103,23 @@ impl kmr_ta::device::RemoteBackend for RemoteRelayBackend {
             return Ok(None);
         };
         let result = resp.get("result").cloned().unwrap_or(resp);
+        // 远端明确回「这个 alias 的私钥不在我这」时，把因由带出去。调用方（
+        // `KeyMaterial::Remote` 那条 attestation-key 签名路径）据此回
+        // KEY_NOT_FOUND，让调用方知道那把 attestation key 已经作废；以前一律退成
+        // UNKNOWN_ERROR(-1000)，调用方把它当“远端不可用”无限重试，证书链永远补不上。
+        if let Some(kind) = result.get("relay_error_kind").and_then(Value::as_str) {
+            let msg = result
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("relay sign refused");
+            log::warn!("remote sign refused (kind={kind}): {msg}");
+            return Err(match kind {
+                // 真机上「attest key 的 blob 指向的钥匙已经不在」就是 INVALID_KEY_BLOB，
+                // 调用方据此作废并重建，而不是一直把它当 -1000 重试。
+                "key_not_found" => kmr_common::km_err!(InvalidKeyBlob, "{msg}"),
+                _ => kmr_common::km_err!(UnknownError, "{msg}"),
+            });
+        }
         let sig_b64 = result
             .get("signature")
             .or_else(|| result.get("data"))
@@ -1111,6 +1145,18 @@ impl kmr_ta::device::RemoteBackend for RemoteRelayBackend {
             return Ok(None);
         };
         let result = resp.get("result").cloned().unwrap_or(resp);
+        // 跟 `sign` 同理：钥匙不存在的确定答复要原样带出去，不能退成 -1000。
+        if let Some(kind) = result.get("relay_error_kind").and_then(Value::as_str) {
+            let msg = result
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("relay decrypt refused");
+            log::warn!("remote decrypt refused (kind={kind}): {msg}");
+            return Err(match kind {
+                "key_not_found" => kmr_common::km_err!(InvalidKeyBlob, "{msg}"),
+                _ => kmr_common::km_err!(UnknownError, "{msg}"),
+            });
+        }
         let plain_b64 = result.get("data").and_then(Value::as_str).ok_or_else(|| {
             kmr_common::km_err!(UnknownError, "remote decrypt response missing data")
         })?;

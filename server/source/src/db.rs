@@ -267,6 +267,12 @@ impl Db {
     /// Fetch any active identity for a device regardless of algorithm — a
     /// targeted lookup replacing a full `list_device_identities()` scan when
     /// the exact algorithm match is missing.
+    ///
+    /// `ORDER BY` 不能省：一台设备可能按算法存着好几行（EC 一行、RSA 一行），
+    /// 没有排序时 `LIMIT 1` 取哪一行由存储引擎决定。EC 和 RSA 两次认证各取到
+    /// 一行不同身份，链的中间证书/签发者就不一样 —— 检测方报的就是
+    /// `hardware.attestation.algorithm_differential`。按 algorithm 定序，两条
+    /// 算法永远落在同一行上（一行身份本来就能同时铸 EC 与 RSA 叶子）。
     pub fn get_any_device_identity(
         &self,
         device_id: &str,
@@ -275,7 +281,8 @@ impl Db {
         let rows: Vec<mysql::Row> = conn.exec(
             "SELECT device_id, algorithm, certificate_chain_pem, private_key_pem_cipher,
                     active, machine_id, created_at
-             FROM device_server_identity WHERE device_id = :device_id AND active = 1 LIMIT 1",
+             FROM device_server_identity WHERE device_id = :device_id AND active = 1
+             ORDER BY algorithm, created_at LIMIT 1",
             params! { "device_id" => device_id },
         )?;
         match rows.into_iter().next() {

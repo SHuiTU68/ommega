@@ -622,9 +622,7 @@ fn build_attestation_params(
     // child-cert TBS for a plain begin(SIGN), so an attestation key is minted
     // as a plain SIGNING key. The A-side's Remote keyblob carries the app's
     // requested ATTEST_KEY purpose, so keystore-side purpose checks still
-    // pass. For business keys we add the purposes the relay itself needs for
-    // its begin()/sign()/decrypt() calls (real keymint supports multiple
-    // purposes on one key).
+    // pass.
     let mut purposes = spec.purposes.clone();
     let is_attest_key = purposes.contains(&KmKeyPurpose::AttestKey);
     if is_attest_key {
@@ -633,7 +631,18 @@ fn build_attestation_params(
     if !purposes.contains(&KmKeyPurpose::Sign) {
         purposes.push(KmKeyPurpose::Sign);
     }
-    if algo == KmAlgorithm::Rsa && !purposes.contains(&KmKeyPurpose::Decrypt) {
+    // DECRYPT 只在调用方真要求解密时才出现（RSA 加密类的 padding 说明它要
+    // decrypt）。之前无条件给每把 RSA key 都补一个 DECRYPT，导致同一次认证里
+    // RSA 叶子的授权列表比 EC 多一项 —— 检测方拿这个判
+    // `hardware.attestation.algorithm_differential`。调用方要解密时本来就带着
+    // DECRYPT purpose，这一补只是兜底。
+    if algo == KmAlgorithm::Rsa
+        && !purposes.contains(&KmKeyPurpose::Decrypt)
+        && spec
+            .paddings
+            .iter()
+            .any(|p| matches!(p, KmPadding::RsaOaep | KmPadding::RsaPkcs115Encrypt))
+    {
         purposes.push(KmKeyPurpose::Decrypt);
     }
     for p in purposes {
