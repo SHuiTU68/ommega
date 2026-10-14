@@ -189,7 +189,8 @@ if [ "$STRONGBOX_HIDDEN" = true ]; then
 fi
 unset STRONGBOX_FEATURE STRONGBOX_HIDDEN CLIENTA_CONF
 
-# resetprop：模块自己带一个（源码在 resetprop/src/main.rs，完全静态链接）。
+# resetprop：模块自己带一个（实现是 vendor/ 里的 resetprop-rs，源码在 vendor/prop-rs*、
+# vendor/prop-rs-android 和 resetprop/src/）。
 # 以前是依赖 root 管理器提供（Magisk 自带、APatch/KSU 走 busybox/ksud）—— 不是每家
 # 都有，行为也不一致，所以不再依赖。这里把与设备 ABI 匹配的那份拷到状态目录一份，
 # 开机脚本和 keystore 里的代码都只认这一个路径。

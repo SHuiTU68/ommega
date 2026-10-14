@@ -8,3 +8,4 @@
 - Six languages: 简体中文, 繁體中文, English, 日本語, 한국어, Русский.
 - App scope, the local keybox (official public keybox / built-in self-signed chain / your own XML) and the spoofing values are all managed in the panel; the official address and token come pre-filled.
 - Whether SOTER works is decided on the device and remembered across reboots; adbr remote control is off by default.
+- System properties are now written with the same implementation Magisk uses, so no tampering traces are left in the property area.
