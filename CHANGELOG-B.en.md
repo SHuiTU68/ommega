@@ -6,7 +6,8 @@
 
 - New: mint with the patch dates the A side declares. When an attestation request carries dates, the relay writes them locally, has the keymint HAL re-read them, and only then mints the key; the switch `OMMEGA_RELAY_PATCHLEVEL_FOLLOW_A` is off by default.
 - Older clients (A-side below 1.7.0) are left alone: a request without a version is served with the local values as-is, touching no property and restarting nothing.
-- New skip list `OMMEGA_RELAY_PATCHLEVEL_SKIP_PKGS`: the packages listed there are always served with the local values.
+- New skip list `OMMEGA_RELAY_PATCHLEVEL_SKIP_PKGS`: the packages listed there are always served with the local values (the relay reports the list on every poll, so the server does not even send those requests over).
+- The panel now has two pages, Home and Skip list; the skip list page lets you view, add and remove package names.
 
 ## 1.6.9
 
