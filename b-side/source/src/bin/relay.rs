@@ -663,9 +663,12 @@ fn poll_tasks(cfg: &RelayConfig) -> Result<Option<(String, String, Value)>> {
     // 显示这几个。SOTER 那一支会真去签一次（命中缓存时不再碰 HAL），其余只查
     // 服务实例在不在，没有副作用。
     let caps = ommegaclient_b::caps::report(cfg.soter_probe.as_ref());
+    // 把这台的「不跟随补丁日期」名单一起报上去：服务端拿到之后，命中名单的认证请求
+    // 就不再往这台派，直接让 keybox 层构造返回（少一跳）。
+    let skip = cfg.patchlevel_skip_pkgs.join(",");
     let url = format!(
-        "{}/api/b/poll/?device_id={}&machine_id={}&timeout={}&caps={}",
-        cfg.server, cfg.device_id, cfg.machine_id, POLL_TIMEOUT_SEC, caps
+        "{}/api/b/poll/?device_id={}&machine_id={}&timeout={}&caps={}&skip_pkgs={}",
+        cfg.server, cfg.device_id, cfg.machine_id, POLL_TIMEOUT_SEC, caps, skip
     );
     let headers = vec![("X-Relay-Token".to_string(), cfg.token.clone())];
     let (status, body) =
