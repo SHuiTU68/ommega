@@ -34,6 +34,10 @@ const MAX_CHALLENGE_SIZE: usize = 128;
 
 const SESSION_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
+/// 自动源（public 采集）专用的槽位 device id。某台设备一份身份都没存过的时候
+/// 用它的材料顶上，别掉到 self_signed 那条一眼假的自签链。
+const AUTO_PUBLIC_SLOT: &str = "device-b-2";
+
 /// 距上次顶过「最后使用」多久才值得再顶一次。TTL/LRU 判的是小时级窗口，差几分钟
 /// 无所谓；这条节流把「每签一次就写一次库」压成每个 alias 五分钟最多一次。
 const SESSION_TOUCH_MIN_MS: u64 = 5 * 60 * 1000;
@@ -894,11 +898,25 @@ impl Fulfill {
         let identity = match self.identity_for(device_id, &algorithm) {
             Some(id) => id,
             None => {
-                return Some(json!({
-                    "error": format!(
-                        "server_keybox: no stored server identity for device {device_id} (algorithm {algorithm})"
-                    )
-                }));
+                // 这台设备一份身份都没存过时，退一步用自动源（public）的专用槽位
+                // `device-b-2`，别直接掉到 self_signed 那条自签链上：自签链的颁发者
+                // 一眼就是假的，而这份至少是采集回来的真 keybox 材料。
+                match self.identity_for(AUTO_PUBLIC_SLOT, &algorithm) {
+                    Some(id) => {
+                        tracing::info!(
+                            "server_keybox: device={device_id} 没有存身份，改从槽位 {AUTO_PUBLIC_SLOT} 取（machine_id={}）",
+                            id.machine_id
+                        );
+                        id
+                    }
+                    None => {
+                        return Some(json!({
+                            "error": format!(
+                                "server_keybox: no stored server identity for device {device_id} (algorithm {algorithm})"
+                            )
+                        }));
+                    }
+                }
             }
         };
         self.attest_from_identity(body, &identity, "server_keybox")
