@@ -310,6 +310,27 @@ async fn try_b_device_layer(
     Some(v)
 }
 
+/// 把请求里带的设备 ID 证明值（`device_attest_context.attestation_ids`，710..717 那一组）
+/// 摘掉，返回是否真的摘了。
+///
+/// 这些值只在「我们自己 keybox 层 + 这次请求是被黑名单打下来的」那种情况下才用
+/// （见 `run_a_side_task` 里的调用）。走 B 真机时 B 的 TEE 拿到不是它自己的 ID 会回
+/// `-66`，链就掉到服务端 keybox（那份已泄露/被吊销），拿链的一方（Google 服务端）
+/// 反而判不过 —— 不如给一条不带 ID 的真 TEE 链。
+fn strip_attestation_ids(body: &mut Value) -> bool {
+    let mut stripped = false;
+    if let Some(obj) = body
+        .get_mut("device_attest_context")
+        .and_then(Value::as_object_mut)
+    {
+        stripped |= obj.remove("attestation_ids").is_some();
+    }
+    if let Some(obj) = body.as_object_mut() {
+        stripped |= obj.remove("attestation_ids").is_some();
+    }
+    stripped
+}
+
 /// Whether the A-side request explicitly asked for StrongBox (security_level=2).
 fn is_strongbox_request(body: &Value) -> bool {
     body.get("device_attest_context")
@@ -781,10 +802,22 @@ async fn run_a_side_task(state: &AppState, task_type: &str, body: &Value) -> Res
     // 那种情况下密钥层的身份查找要先看自动源槽位（见 `identity_for`）。
     let mut blacklist_hit = false;
     for &layer in order {
+        // 设备 ID 证明（710..717）只在我们自己的 keybox 层、且这次请求是被黑名单打下来
+        // 的时候才带着走；其它任何情况（走 B、B 失败掉到 keybox、自签层）都摘掉。
+        let mut layer_body = body.clone();
+        if !(layer == "keybox" && blacklist_hit) && strip_attestation_ids(&mut layer_body) {
+            tracing::info!(
+                "run_a_side_task: type={task_type} layer={layer} 摘掉设备 ID 证明（只给黑名单->keybox 那条路用）"
+            );
+        }
         let result = match layer {
-            "b" => try_b_device_layer(state, task_type, body, &device_id, any_b_online).await,
-            "keybox" => run_layer_keybox(state, task_type, body, &device_id, blacklist_hit).await,
-            "self_signed" => run_layer_self_signed(state, task_type, body, &device_id).await,
+            "b" => {
+                try_b_device_layer(state, task_type, &layer_body, &device_id, any_b_online).await
+            }
+            "keybox" => {
+                run_layer_keybox(state, task_type, &layer_body, &device_id, blacklist_hit).await
+            }
+            "self_signed" => run_layer_self_signed(state, task_type, &layer_body, &device_id).await,
             _ => None,
         };
         match result {
