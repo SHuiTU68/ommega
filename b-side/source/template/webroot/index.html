@@ -44,6 +44,11 @@
   .kv:first-of-type{border-top:0}
   .kv span:first-child{color:var(--dim);flex:0 0 104px}
   .kv span:last-child{flex:1;min-width:0;word-break:break-all;font-family:ui-monospace,monospace}
+  /* 黑名单一行：包名占满，删除按钮贴右，不让 .btn 的 flex:1 抻开。 */
+  .skiprow{display:flex;align-items:center;gap:10px;font-size:13px;padding:8px 0;border-top:1px solid var(--line)}
+  .skiprow:first-of-type{border-top:0}
+  .skiprow .pkg{flex:1;min-width:0;word-break:break-all;font-family:ui-monospace,monospace}
+  .skiprow button.btn{flex:0 0 auto;min-width:auto;padding:6px 12px;font-size:12px;margin-left:auto}
   .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;background:#c9ccd2}
   .dot.on{background:var(--ok)} .dot.off{background:var(--bad)}
   #toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%) translateY(70px);
@@ -559,14 +564,12 @@ function renderSkip(){
   box.innerHTML = "";
   if (!list.length){ box.appendChild(el("p", "hint", t("skip.empty"))); return; }
   list.forEach(function(pkg){
-    var row = el("div", "kv");
-    row.appendChild(el("span", null, pkg));
-    var right = el("span");
-    var del = el("button", "btn sm", t("skip.remove"));
+    var row = el("div", "skiprow");
+    row.appendChild(el("span", "pkg", pkg));
+    var del = el("button", "btn", t("skip.remove"));
     del.type = "button";
     del.onclick = function(){ removeSkip(pkg).catch(function(){}); };
-    right.appendChild(del);
-    row.appendChild(right);
+    row.appendChild(del);
     box.appendChild(row);
   });
 }
