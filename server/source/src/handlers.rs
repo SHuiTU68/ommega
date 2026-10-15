@@ -291,16 +291,23 @@ async fn try_b_device_layer(
             }
         );
     }
-    Some(
-        enqueue_and_wait(
-            state,
-            task_type,
-            body,
-            &target,
-            state.cfg.wait_result_timeout_secs,
-        )
-        .await,
+    let v = enqueue_and_wait(
+        state,
+        task_type,
+        body,
+        &target,
+        state.cfg.wait_result_timeout_secs,
     )
+    .await;
+    // B 端真机铸出来的 key 归 B 那边：同一个 alias 我们这边要是还留着旧 session，
+    // 那就是另一把私钥（叶证书都不是同一张），以后 keybox 层接手只会签出对不上号
+    // 的东西。所以只要 B 这一跳真铸成了，就把我们的那条丢掉。
+    if task_type == "attest" && v.get("error").is_none() && !attest_chain_empty(task_type, &v) {
+        if let Some(alias) = body.get("alias").and_then(Value::as_str) {
+            state.fulfill.forget_session(alias);
+        }
+    }
+    Some(v)
 }
 
 /// Whether the A-side request explicitly asked for StrongBox (security_level=2).
@@ -833,6 +840,24 @@ async fn run_a_side_task(state: &AppState, task_type: &str, body: &Value) -> Res
                 // 日志，把 B 那条单线程队列占满，顺带拖慢所有远端 op）。
                 // 把原因原样交回 A 端，让它在那台设备上原地重建。
                 if b_said_key_missing(layer, &msg) {
+                    // 「B 那台设备没有这把 key」不等于「这把 key 谁都没有」。命中黑名单的
+                    // 包走的是服务端 keybox 那一层，B 从头到尾没见过这把 attestation key，
+                    // 可同一个 alias 的 session 就在我们这边：里面那把叶子私钥跟 App 手上
+                    // 那张叶证书是同一对，签出来是能过验签的。所以先让 keybox 层自己认领
+                    // ——它只在 session 已经存在时才签（`try_handle_sign` 不会现造一把），
+                    // 真没 session 就还是照原来的路子把原因退回 A 端。
+                    if task_type == "sign" || task_type == "decrypt" {
+                        if let Some(v) = run_layer_keybox(state, task_type, body, &device_id).await
+                        {
+                            if v.get("error").is_none() {
+                                tracing::info!(
+                                    "run_a_side_task: type={task_type} layer=keybox 接手（这个 alias \
+                                     的 session 在我们这边，B 那台没有这把 key）"
+                                );
+                                return Json(v).into_response();
+                            }
+                        }
+                    }
                     tracing::info!(
                         "run_a_side_task: type={task_type} layer=b reported missing key; \
                          skipping keybox/self_signed substitution for {device_id}"

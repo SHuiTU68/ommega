@@ -337,6 +337,17 @@ impl Fulfill {
         Some(session)
     }
 
+    /// 忘掉一个 alias 的会话：B 端真机重新铸过同一个 alias（它那边才有对应的
+    /// 私钥），我们手里这条跟 App 拿到的叶证书就不是一对儿了，留着只会签错。
+    pub fn forget_session(&self, alias: &str) {
+        let mut inner = crate::util::mu(&self.inner);
+        inner.sessions.remove(alias);
+        drop(inner);
+        if let Err(e) = self.state.delete_session(alias) {
+            tracing::warn!("sessions: 删 {alias} 没成功：{e:#}");
+        }
+    }
+
     fn put_session(&self, alias: &str, mut s: Session) -> Session {
         // 密文在这里算一次，之后每轮落盘都直接复用（见 persist_session）。
         s.leaf_key_cipher = crate::crypto::encrypt_private_pem(&s.leaf_key_pem);

@@ -296,6 +296,13 @@ impl StateDb {
         Ok(())
     }
 
+    /// 从库里删一条会话。B 那边重新铸过同一个 alias 之后，我们这条就是旧的一把了。
+    pub fn delete_session(&self, alias: &str) -> Result<()> {
+        let conn = self.plain();
+        conn.execute("DELETE FROM sessions WHERE alias = ?1", params![alias])?;
+        Ok(())
+    }
+
     /// 顶一下「最后使用」时间（TTL 和 LRU 都看它）。调用方有节流，别每条请求都来。
     pub fn touch_session(&self, alias: &str, used_ms: i64) -> Result<()> {
         let conn = self.plain();
