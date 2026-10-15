@@ -65,6 +65,28 @@ pub(crate) fn client_ip(headers: &HeaderMap) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+/// tag 709 里的包名（只给日志用）。AAID 是 DER，包名是里面一段 OCTET STRING，
+/// 直接取里面最长的可打印 ASCII 串就是它；签名摘要那 32 字节是二进制，会被滤掉。
+fn aaid_package(b64: &str) -> String {
+    use base64::Engine;
+    let Ok(der) = base64::engine::general_purpose::STANDARD.decode(b64) else {
+        return String::new();
+    };
+    let mut best = String::new();
+    let mut cur = String::new();
+    for b in der.iter().chain(std::iter::once(&0u8)) {
+        if (0x20..0x7f).contains(b) {
+            cur.push(*b as char);
+            continue;
+        }
+        if cur.len() > best.len() && cur.contains('.') {
+            best = std::mem::take(&mut cur);
+        }
+        cur.clear();
+    }
+    best
+}
+
 fn json_err(status: StatusCode, msg: &str) -> Response {
     (status, Json(json!({ "error": msg }))).into_response()
 }
@@ -641,8 +663,16 @@ async fn run_a_side_task(state: &AppState, task_type: &str, body: &Value) -> Res
             let mut s = String::new();
             for (k, v) in m {
                 if k == "attestation_application_id" {
+                    // 顺手把 tag 709 里的包名解出来写日志：要按请求方聚合看流量时
+                    // 只有长度没法统计。解不出来就只留长度。
+                    let pkg = v
+                        .as_str()
+                        .map(aaid_package)
+                        .filter(|p| !p.is_empty())
+                        .map(|p| format!(" pkg:{p}"))
+                        .unwrap_or_default();
                     s.push_str(&format!(
-                        "{k}=<appid-len:{}> ",
+                        "{k}=<appid-len:{}{pkg}> ",
                         v.as_str().map(|x| x.len()).unwrap_or(0)
                     ));
                 } else if k == "certificate_subject" {
