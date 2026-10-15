@@ -174,9 +174,10 @@ if [ -f "$DECLARED_CONF" ]; then
   # 没单写就跟着 security_patch 走，跟 Rust 侧 resolve_patch_levels 的继承顺序一致
   d_os=$(cfg_val os_patchlevel); [ "$d_os" = auto ] && d_os=$d_patch
   d_vendor=$(cfg_val vendor_patchlevel); [ "$d_vendor" = auto ] && d_vendor=$d_patch
-  # boot 不继承：设备原本没这个属性，凭空造一个反而多一处马脚，只认显式声明
+  # boot 不继承，但属性名要跟 ctx / 面板读写的那一个一致（以前写的是
+  # ro.vendor.boot_security_patch，没人读，等于凭空多一个属性）
   d_boot=$(cfg_val boot_patchlevel)
-  for pair in "$d_os|ro.build.version.security_patch" "$d_vendor|ro.vendor.build.security_patch" "$d_boot|ro.vendor.boot_security_patch"; do
+  for pair in "$d_os|ro.build.version.security_patch" "$d_vendor|ro.vendor.build.security_patch" "$d_boot|ro.boot.build.security_patch"; do
     value=${pair%%|*}
     prop=${pair##*|}
     case "$value" in ""|auto) continue ;; esac

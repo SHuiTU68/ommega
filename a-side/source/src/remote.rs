@@ -834,23 +834,6 @@ impl RemoteRelay {
                 ),
             );
         }
-        // Device-ID attestation (KM_TAG_ATTESTATION_ID_*, 710..717 + 723 second
-        // IMEI). Values are the A-side's own (config `[device]`), picked and
-        // validated by the TA — the caller's declared values are never trusted.
-        // Without these the relay-minted leaf carries no device properties at
-        // all and self-check apps report `hardware.attestation.device_properties`.
-        if !params.attestation_ids.is_empty() {
-            ctx.insert(
-                "attestation_ids".to_string(),
-                Value::Array(
-                    params
-                        .attestation_ids
-                        .iter()
-                        .map(|(tag, value)| json!([*tag, base64_encode(value)]))
-                        .collect(),
-                ),
-            );
-        }
         // Forward the device's OS version + security patch level so the relay
         // can emit KM_TAG_OS_VERSION (705) / KM_TAG_OS_PATCH_LEVEL (706) in the
         // teeEnforced authorization list. Software attestations that omit these
@@ -889,47 +872,57 @@ impl RemoteRelay {
                 Value::from(i64::from(record_version)),
             );
         }
-        let os_patch_level = match config::config().read() {
-            Ok(g) => patch_level_to_yyyymm(&g.trust.os_patchlevel),
-            Err(_) => None,
+        // 补丁日期（os 706 / vendor 718 / boot 719）：跟本地铸链用同一套解析
+        // （`plat::vbmeta::resolve_patch_levels`），免得两条路的取值规则不一样。
+        // 规则是：config 里显式写了就用它，`auto` 才回落到设备属性
+        // （`ro.build.version.security_patch` / `ro.vendor.build.security_patch` /
+        // `ro.boot.build.security_patch`），属性也没有再用 build.prop / 兼容值。
+        // 以前这里是另写一段：os 先 config 再属性，vendor/boot 先属性再 config，
+        // 两边不一致时链上两条能对不上。
+        let mut patch_levels_done = false;
+        if let Ok(g) = config::config().read() {
+            // `trust` 里是启动/配置变更时由 `plat::vbmeta::resolve_patch_levels` 算好的
+            // 那一组（config 显式声明，`auto` 才用设备属性）—— 本地铸链用的就是它，
+            // 所以远程请求照着报就行。
+            let os = patch_level_to_yyyymm(&g.trust.os_patchlevel);
+            let vendor = patch_level_to_yyyymmdd(&g.trust.vendor_patchlevel);
+            let boot = patch_level_to_yyyymmdd(&g.trust.boot_patchlevel);
+            if let Some(v) = os {
+                ctx.insert("os_patch_level".to_string(), Value::from(v));
+            }
+            if let Some(v) = vendor {
+                ctx.insert("vendor_patch_level".to_string(), Value::from(v));
+            }
+            if let Some(v) = boot {
+                ctx.insert("boot_patch_level".to_string(), Value::from(v));
+            }
+            patch_levels_done = os.is_some() || vendor.is_some() || boot.is_some();
         }
-        .or_else(|| {
-            crate::plat::resetprop::read_string_property("ro.build.version.security_patch")
-                .as_deref()
-                .and_then(patch_level_to_yyyymm)
-        });
-        if let Some(patch) = os_patch_level {
-            ctx.insert("os_patch_level".to_string(), Value::from(patch));
-        }
-        // KeyMint 3.0+ also carries per-partition patch levels
-        // (KM_TAG_VENDOR_PATCH_LEVEL 707 / KM_TAG_BOOT_PATCH_LEVEL 708).
-        // Real TEE attestations include them; omitting them makes the server
-        // keybox layer fail STRONG integrity checks that expect them.
-        // Prefer the device's real partition patch props; the resolved config
-        // `[trust]` values can be stale/malformed (e.g. a bogus "2026-30").
-        let vendor_patch_level =
-            crate::plat::resetprop::read_string_property("ro.vendor.build.security_patch")
-                .as_deref()
-                .and_then(patch_level_to_yyyymmdd)
-                .or_else(|| match config::config().read() {
-                    Ok(g) => patch_level_to_yyyymm(&g.trust.vendor_patchlevel),
-                    Err(_) => None,
-                })
-                .or(os_patch_level);
-        if let Some(patch) = vendor_patch_level {
-            ctx.insert("vendor_patch_level".to_string(), Value::from(patch));
-        }
-        let boot_patch_level =
-            crate::plat::resetprop::read_string_property("ro.boot.build.security_patch")
-                .as_deref()
-                .and_then(patch_level_to_yyyymmdd)
-                .or_else(|| match config::config().read() {
-                    Ok(g) => patch_level_to_yyyymm(&g.trust.boot_patchlevel),
-                    Err(_) => None,
-                })
-                .or(os_patch_level);
-        if let Some(patch) = boot_patch_level {
-            ctx.insert("boot_patch_level".to_string(), Value::from(patch));
+        if !patch_levels_done {
+            // 解析不出来（config 坏了、锁没拿到）时最少把本机属性原样报上去。
+            let os_patch_level =
+                crate::plat::resetprop::read_string_property("ro.build.version.security_patch")
+                    .as_deref()
+                    .and_then(patch_level_to_yyyymm);
+            if let Some(patch) = os_patch_level {
+                ctx.insert("os_patch_level".to_string(), Value::from(patch));
+            }
+            let vendor_patch_level =
+                crate::plat::resetprop::read_string_property("ro.vendor.build.security_patch")
+                    .as_deref()
+                    .and_then(patch_level_to_yyyymmdd)
+                    .or(os_patch_level);
+            if let Some(patch) = vendor_patch_level {
+                ctx.insert("vendor_patch_level".to_string(), Value::from(patch));
+            }
+            let boot_patch_level =
+                crate::plat::resetprop::read_string_property("ro.boot.build.security_patch")
+                    .as_deref()
+                    .and_then(patch_level_to_yyyymmdd)
+                    .or(os_patch_level);
+            if let Some(patch) = boot_patch_level {
+                ctx.insert("boot_patch_level".to_string(), Value::from(patch));
+            }
         }
         // The B-side reads `device_attest_context` (nested form) for the
         // appid and optional serial; the full key params are passed through.
