@@ -1,0 +1,392 @@
+//! 让本机真 TEE 按 A 端声明的补丁日期出链。
+//!
+//! KeyMint HAL 只在进程启动那一刻读一次 `ro.build.version.security_patch` /
+//! `ro.vendor.build.security_patch`（打包成 tag 705/706/718 一次性交给 TEE），之后就
+//! 再也不看属性。所以「让链上的日期跟着 A 端走」必须两步：先 resetprop 改属性，再让
+//! HAL 重读；只改属性链上不会变（2026-10-15 在 PLC110 / Trustonic 上实测过）。
+//!
+//! 默认关闭，relay.conf 里开 `OMMEGA_RELAY_PATCHLEVEL_FOLLOW_A=true`。
+//! 只在请求真带了日期、且与本机当前值不一致时才动，平时一分一秒都不多花。
+
+use std::process::Command;
+use std::sync::{Mutex, OnceLock};
+use std::thread::sleep;
+use std::time::Duration;
+
+use anyhow::{anyhow, Context, Result};
+use serde_json::Value;
+
+use crate::keymaster::attest_proxy::{SYSTEM_KEYMINT_DEFAULT, SYSTEM_KEYMINT_STRONGBOX};
+use crate::keymaster::relay_tee::clear_system_keymint;
+
+/// 开关是 relay.conf 的 `OMMEGA_RELAY_PATCHLEVEL_FOLLOW_A`（由 `RelayConfig` 热重载，
+/// 改完不用重启进程）。
+pub const FOLLOW_KEY: &str = "OMMEGA_RELAY_PATCHLEVEL_FOLLOW_A";
+
+/// 这些包**不**跟随（黑名单，逗号分隔，匹配 tag 709 里的包名）：碰到它们就不动
+/// 属性、不重启 HAL，直接拿本机现在的值出链。
+/// **留空 = 全都跟**（旧行为）。
+pub const FOLLOW_PKGS_KEY: &str = "OMMEGA_RELAY_PATCHLEVEL_SKIP_PKGS";
+
+const OS_PROP: &str = "ro.build.version.security_patch";
+const VENDOR_PROP: &str = "ro.vendor.build.security_patch";
+
+/// 找 resetprop：KernelSU / APatch 都自带，模块目录里也可能放了一份。
+const RESETPROP_CANDIDATES: &[&str] = &[
+    "/data/adb/ommega/resetprop",
+    "/data/adb/ksu/bin/resetprop",
+    "/data/adb/ap/bin/resetprop",
+];
+
+static KNOWN_SERVICE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+/// 对齐 + 出链之间不能被别的请求插进来，见 [`lock`]。
+static ATTEST_LOCK: Mutex<()> = Mutex::new(());
+
+/// 把「按 A 端日期对齐」和「铸钥匙」两步锁在一起。
+///
+/// 开了跟随开关之后每一笔 attest 都要拿这把锁：两个请求各自改了属性、各自弹了 HAL
+/// 再出链，中间一交叉，铸出来的链就不是它自己声明的值了（2026-10-15 在 PLC110 上
+/// 实测到过：另一台 A 的请求插进来把值翻了回去）。
+pub fn lock() -> std::sync::MutexGuard<'static, ()> {
+    ATTEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn getprop(key: &str) -> Result<String> {
+    let out = Command::new("getprop")
+        .arg(key)
+        .output()
+        .with_context(|| format!("run getprop {key}"))?;
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+fn resetprop(key: &str, value: &str) -> Result<()> {
+    let mut failures: Vec<String> = Vec::new();
+    let mut candidates: Vec<String> = RESETPROP_CANDIDATES
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    candidates.push("resetprop".to_string());
+    for cand in candidates {
+        // 绝对路径的先看看在不在；不在就跳过。
+        if cand.starts_with('/') && !std::path::Path::new(&cand).exists() {
+            continue;
+        }
+        match Command::new(&cand).args([key, value]).output() {
+            Ok(o) if o.status.success() => return Ok(()),
+            Ok(o) => failures.push(format!(
+                "{cand}: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            )),
+            Err(e) => failures.push(format!("{cand}: {e}")),
+        }
+    }
+    if failures.is_empty() {
+        failures.push("没找到可用的 resetprop".to_string());
+    }
+    Err(anyhow!("{}", failures.join("; ")))
+}
+
+fn ymd(year: i64, month: i64, day: i64) -> Option<String> {
+    if !(2000..=2099).contains(&year) || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    Some(format!("{year:04}-{month:02}-{day:02}"))
+}
+
+/// A 端的 `os_patch_level` 是 YYYYMM → 属性要 "YYYY-MM-01"。
+fn os_prop_value(v: i64) -> Option<String> {
+    ymd(v / 100, v % 100, 1)
+}
+
+/// A 端的 `vendor_patch_level` 是 YYYYMMDD → 属性要 "YYYY-MM-DD"。
+fn vendor_prop_value(v: i64) -> Option<String> {
+    ymd(v / 10000, (v / 100) % 100, v % 100)
+}
+
+/// tag 709 的 DER 里含请求方的包名；列表命中才跟随。
+fn payload_package(payload: &Value) -> Option<String> {
+    let ctx = payload.get("device_attest_context").unwrap_or(payload);
+    let raw = ctx
+        .get("attestation_application_id")
+        .or_else(|| payload.get("attestation_application_id"))
+        .and_then(Value::as_str)?;
+    let der = base64_decode(raw)?;
+    Some(String::from_utf8_lossy(&der).to_string())
+}
+
+fn base64_decode(raw: &str) -> Option<Vec<u8>> {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = Vec::with_capacity(raw.len() / 4 * 3);
+    let mut acc: u32 = 0;
+    let mut bits = 0u32;
+    for c in raw.bytes() {
+        if c == b'=' || c == b'\n' || c == b'\r' {
+            continue;
+        }
+        let v = T.iter().position(|&t| t == c)? as u32;
+        acc = (acc << 6) | v;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((acc >> bits) & 0xff) as u8);
+        }
+    }
+    Some(out)
+}
+
+/// 这个请求的 AAID 包名是否命中了黑名单。命中了就不跟随。
+pub fn package_blocked(payload: &Value, blocked: &[String]) -> bool {
+    if blocked.is_empty() {
+        return false;
+    }
+    let Some(aaid) = payload_package(payload) else {
+        return false;
+    };
+    blocked
+        .iter()
+        .any(|p| !p.is_empty() && aaid.contains(p.as_str()))
+}
+
+/// 从 1.7.0 起 A 端才会在请求里带自己的版本号。低于这个版本的（或者压根没带
+/// `client_version` 的旧客户端）不跟随：它们上报的日期格式也还是旧的 YYYYMM。
+const FOLLOW_MIN_VERSION: (u32, u32, u32) = (1, 7, 0);
+
+fn parse_version(s: &str) -> Option<(u32, u32, u32)> {
+    let mut parts = s.trim().split('.');
+    let major = parts.next()?.parse::<u32>().ok()?;
+    let minor = parts.next().unwrap_or("0").parse::<u32>().ok()?;
+    let patch = parts
+        .next()
+        .unwrap_or("0")
+        .split(['-', '+'])
+        .next()
+        .unwrap_or("0")
+        .parse::<u32>()
+        .ok()?;
+    Some((major, minor, patch))
+}
+
+/// A 端版本 ≥ 1.7.0 才跟随。
+pub fn client_version_ok(payload: &Value) -> bool {
+    let ctx = payload.get("device_attest_context").unwrap_or(payload);
+    ctx.get("client_version")
+        .or_else(|| payload.get("client_version"))
+        .and_then(Value::as_str)
+        .and_then(parse_version)
+        .is_some_and(|v| v >= FOLLOW_MIN_VERSION)
+}
+
+/// 把 A 端在 `device_attest_context` 里声明的补丁日期落到本机 TEE 上。
+///
+/// 返回 `Some(说明)` 表示这次真动了属性（并让 HAL 重读了）；`None` 表示不用动——
+/// 开关没开、请求里没带日期、或者本机已经是这个值。
+pub fn follow_a_side(payload: &Value, on: bool) -> Option<String> {
+    if !on {
+        return None;
+    }
+    // 字段可能在顶层，也可能在 `device_attest_context` 里（server 两种都发过）。
+    let ctx = payload.get("device_attest_context").unwrap_or(payload);
+    let want_os = ctx
+        .get("os_patch_level")
+        .and_then(Value::as_i64)
+        .and_then(os_prop_value);
+    let want_vendor = ctx
+        .get("vendor_patch_level")
+        .and_then(Value::as_i64)
+        .and_then(vendor_prop_value);
+    if want_os.is_none() && want_vendor.is_none() {
+        return None;
+    }
+
+    let mut applied: Vec<String> = Vec::new();
+    for (prop, want) in [(OS_PROP, want_os), (VENDOR_PROP, want_vendor)] {
+        let Some(want) = want else { continue };
+        let current = match getprop(prop) {
+            Ok(v) => v,
+            Err(e) => {
+                log::warn!("patchlevel follow: 读 {prop} 失败: {e:#}");
+                continue;
+            }
+        };
+        if current == want {
+            continue;
+        }
+        if let Err(e) = resetprop(prop, &want) {
+            log::warn!("patchlevel follow: 写 {prop}={want} 失败: {e:#}");
+            continue;
+        }
+        applied.push(format!("{prop}: {current} -> {want}"));
+    }
+    if applied.is_empty() {
+        return None;
+    }
+
+    // 属性改了还不够，HAL 不重读 TEE 那边还是老值。
+    let note = match restart_keymint_hal() {
+        Ok(note) => {
+            // 老句柄跟着进程一起没了，清掉缓存让下一笔重新连。
+            clear_system_keymint(SYSTEM_KEYMINT_DEFAULT);
+            clear_system_keymint(SYSTEM_KEYMINT_STRONGBOX);
+            note
+        }
+        Err(e) => {
+            log::warn!("patchlevel follow: keymint HAL 重启失败: {e:#}");
+            format!("重读失败({e:#})")
+        }
+    };
+    Some(format!(
+        "B 端补丁日期跟随 A 端：{}；{note}",
+        applied.join(", ")
+    ))
+}
+
+/// 上一次找到的 keymint 服务名。扫描不能每次都成：上一笔刚 `ctl.restart`、现在正卡在
+/// `restarting/stopped` 那一下，就扫不到了 —— 那时候只能靠记住的名字继续弹它。
+fn known_service() -> Option<String> {
+    KNOWN_SERVICE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+}
+
+fn remember_service(name: &str) {
+    if let Ok(mut g) = KNOWN_SERVICE.get_or_init(|| Mutex::new(None)).lock() {
+        *g = Some(name.to_string());
+    }
+}
+
+/// `init.svc.*` 里在跑的 keymint 服务。
+fn running_keymint_services() -> Vec<String> {
+    let Ok(out) = Command::new("getprop").output() else {
+        return Vec::new();
+    };
+    let all = String::from_utf8_lossy(&out.stdout);
+    let mut services: Vec<String> = Vec::new();
+    for line in all.lines() {
+        // 形如 `[init.svc.vendor.keymint-trustonic]: [running]`
+        let Some(rest) = line.strip_prefix("[init.svc.") else {
+            continue;
+        };
+        let Some((name, val)) = rest.split_once("]: [") else {
+            continue;
+        };
+        if !name.contains("keymint") {
+            continue;
+        }
+        if val.trim_end_matches(']') != "running" {
+            continue;
+        }
+        services.push(name.to_string());
+    }
+    services
+}
+
+/// 重启 init 管的 keymint HAL：它启动时会重读属性、重新 `TEE_Configure`。
+/// 服务名各机型不同（PLC110 是 `vendor.keymint-trustonic`，NX721J 是
+/// `vendor.keymint-qti`），所以从 `init.svc.*` 里现找。
+fn restart_keymint_hal() -> Result<String> {
+    let mut services = running_keymint_services();
+    if services.is_empty() {
+        // 上一笔刚弹完，这一笔正好撞在它没起来的窗口里；等一两秒再看。
+        for _ in 0..6 {
+            sleep(Duration::from_millis(300));
+            services = running_keymint_services();
+            if !services.is_empty() {
+                break;
+            }
+        }
+    }
+    if services.is_empty() {
+        // 还是看不到，就用上次记住的名字继续弹（这个名字 init 认）。
+        if let Some(name) = known_service() {
+            services.push(name);
+        }
+    }
+    if services.is_empty() {
+        return Err(anyhow!("没找到在跑的 keymint HAL 服务"));
+    }
+    remember_service(&services[0]);
+
+    let mut notes: Vec<String> = Vec::new();
+    for svc in services {
+        let pid_prop = format!("init.svc_debug_pid.{svc}");
+        let before = getprop(&pid_prop).unwrap_or_default();
+        Command::new("setprop")
+            .args(["ctl.restart", &svc])
+            .output()
+            .with_context(|| format!("setprop ctl.restart {svc}"))?;
+        let mut restarted = false;
+        let mut now = before.clone();
+        // 最多等 6 秒；等不到也照常出链，只是链上还是旧值。
+        for _ in 0..24 {
+            sleep(Duration::from_millis(250));
+            now = getprop(&pid_prop).unwrap_or_default();
+            if !now.is_empty() && now != before {
+                restarted = true;
+                break;
+            }
+        }
+        notes.push(format!(
+            "{svc} {} ({before} -> {now})",
+            if restarted {
+                "已重读"
+            } else {
+                "重启没等到"
+            }
+        ));
+    }
+    Ok(notes.join("; "))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn formats_patch_levels() {
+        assert_eq!(os_prop_value(202608).as_deref(), Some("2026-08-01"));
+        assert_eq!(vendor_prop_value(20260801).as_deref(), Some("2026-08-01"));
+        assert_eq!(os_prop_value(0), None);
+        assert_eq!(vendor_prop_value(20261301), None);
+    }
+
+    #[test]
+    fn disabled_by_default() {
+        let payload = json!({"device_attest_context": {"os_patch_level": 202608}});
+        assert!(follow_a_side(&payload, false).is_none());
+    }
+
+    #[test]
+    fn ignores_payloads_without_dates() {
+        let payload = json!({"device_attest_context": {"key_algorithm": 3}});
+        assert!(follow_a_side(&payload, true).is_none());
+    }
+
+    #[test]
+    fn package_gate_needs_a_match() {
+        // "com.example" 的 AttestationApplicationId
+        let aaid = "MBYxEjAQBAtjb20uZXhhbXBsZQIBATEA";
+        let payload = json!({"device_attest_context": {"attestation_application_id": aaid}});
+        assert!(package_blocked(&payload, &["com.example".to_string()]));
+        assert!(!package_blocked(&payload, &["com.other.app".to_string()]));
+        // 黑名单留空 = 谁都不拦
+        assert!(!package_blocked(&payload, &[]));
+    }
+
+    #[test]
+    fn version_gate_matches_1_7_0() {
+        let old = json!({"device_attest_context": {"client_version": "1.6.9"}});
+        let missing = json!({"device_attest_context": {"key_algorithm": 3}});
+        let same = json!({"device_attest_context": {"client_version": "1.7.0"}});
+        let newer = json!({"device_attest_context": {"client_version": "1.10.2-3-gabc"}});
+        let top = json!({"client_version": "2.0.0"});
+        assert!(!client_version_ok(&old));
+        assert!(!client_version_ok(&missing));
+        assert!(client_version_ok(&same));
+        assert!(client_version_ok(&newer));
+        assert!(client_version_ok(&top));
+    }
+}

@@ -199,6 +199,13 @@ struct RelayConfig {
     /// 允许它睡（靠看门狗在醒过来之后救）就设成 false。
     /// 内核没这个接口时安静跳过，不算错。见 `ommegaclient_b::wakelock`。
     wakelock: bool,
+    /// A 端在 `device_attest_context` 里声明的补丁日期，要不要落到本机 TEE 上
+    /// （改属性 + 让 keymint HAL 重读，见 `ommegaclient_b::plat::patchlevel`）。
+    /// **默认关** —— 开了以后一笔认证可能要多等两三秒，而且本机的补丁日期会跟着
+    /// 请求方变。
+    patchlevel_follow_a: bool,
+    /// 这些包不跟随（黑名单）；空 = 全都跟。
+    patchlevel_skip_pkgs: Vec<String>,
 }
 
 impl RelayConfig {
@@ -315,6 +322,18 @@ fn load_config_from_file() -> Result<RelayConfig> {
         .get("OMMEGA_RELAY_WAKELOCK")
         .map(|v| parse_bool(v))
         .unwrap_or(true);
+    let patchlevel_follow_a = m
+        .get(ommegaclient_b::plat::patchlevel::FOLLOW_KEY)
+        .is_some_and(|v| parse_bool(v));
+    let patchlevel_skip_pkgs = m
+        .get(ommegaclient_b::plat::patchlevel::FOLLOW_PKGS_KEY)
+        .map(|v| {
+            v.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<String>>()
+        })
+        .unwrap_or_default();
     let server = server.trim_end_matches('/').to_string();
     Ok(RelayConfig {
         server,
@@ -327,6 +346,8 @@ fn load_config_from_file() -> Result<RelayConfig> {
         bind_iface,
         path_probe,
         wakelock,
+        patchlevel_follow_a,
+        patchlevel_skip_pkgs,
     })
 }
 
@@ -431,6 +452,16 @@ fn load_config() -> Result<(RelayConfig, &'static str)> {
     let wakelock = env("OMMEGA_RELAY_WAKELOCK")
         .map(|v| parse_bool(&v))
         .unwrap_or(true);
+    let patchlevel_follow_a =
+        env(ommegaclient_b::plat::patchlevel::FOLLOW_KEY).is_some_and(|v| parse_bool(&v));
+    let patchlevel_skip_pkgs = env(ommegaclient_b::plat::patchlevel::FOLLOW_PKGS_KEY)
+        .map(|v| {
+            v.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<String>>()
+        })
+        .unwrap_or_default();
     let server = server.trim_end_matches('/').to_string();
     let cfg = RelayConfig {
         server,
@@ -443,6 +474,8 @@ fn load_config() -> Result<(RelayConfig, &'static str)> {
         bind_iface,
         path_probe,
         wakelock,
+        patchlevel_follow_a,
+        patchlevel_skip_pkgs,
     };
     cfg.validate()?;
     Ok((cfg, "env"))
@@ -946,13 +979,26 @@ fn alias_of(payload: &Value, default: &str) -> String {
         .to_string()
 }
 
-fn handle_generate_attest(_task_type: &str, payload: &Value) -> Result<Value> {
+fn handle_generate_attest(cfg: &RelayConfig, _task_type: &str, payload: &Value) -> Result<Value> {
     let (app_id_der, challenge) = extract_attestation_context(payload)?;
     check_app_id_der(&app_id_der).with_context(|| {
         "attestation_application_id is not a valid AttestationApplicationId DER"
     })?;
     let alias = alias_of(payload, "attest");
     let spec = parse_key_spec(payload)?;
+    // A 端在 ctx 里声明的补丁日期要不要落到本机 TEE 上（开关是 relay.conf 的
+    // OMMEGA_RELAY_PATCHLEVEL_FOLLOW_A）。真改了属性就得等 keymint HAL 重读，
+    // 这一笔会慢两三秒；值没变时什么都不做。
+    // 开了跟随开关、且这个请求的包不在黑名单里、且 A 端版本不低于 1.7.0，才把
+    // 「改属性 + 弹 HAL 重读」和「铸这把钥匙」锁在一起 —— 中间不能被别的请求插进来
+    // （见 plat::patchlevel::lock）。不跟的请求、老版本客户端的请求不碰属性，不用排队。
+    let follow_this = cfg.patchlevel_follow_a
+        && ommegaclient_b::plat::patchlevel::client_version_ok(payload)
+        && !ommegaclient_b::plat::patchlevel::package_blocked(payload, &cfg.patchlevel_skip_pkgs);
+    let _align_guard = follow_this.then(ommegaclient_b::plat::patchlevel::lock);
+    if let Some(note) = ommegaclient_b::plat::patchlevel::follow_a_side(payload, follow_this) {
+        log::info!("attest: {note}");
+    }
     // The requested purposes are forwarded unchanged (see
     // tee_ops::build_attestation_params). For an App Attest Key this mirrors
     // AOSP keystore2: a lone PURPOSE_ATTEST_KEY is accepted by the real TEE
@@ -1074,7 +1120,7 @@ fn handle_soter(cfg: &RelayConfig, _task_type: &str, payload: &Value) -> Result<
 
 fn handle_task(cfg: &RelayConfig, task_id: &str, task_type: &str, payload: &Value) -> Result<()> {
     let handler: fn(&RelayConfig, &str, &Value) -> Result<Value> = match task_type {
-        "attest" => |_cfg, task_type, payload| handle_generate_attest(task_type, payload),
+        "attest" => handle_generate_attest,
         "sign" => |_cfg, task_type, payload| handle_sign(task_type, payload),
         "decrypt" => |_cfg, task_type, payload| handle_decrypt(task_type, payload),
         // SOTER forwarding needs the config (mutation policy), so it gets the
@@ -1358,6 +1404,8 @@ fn main() {
             bind_iface: "auto".to_string(),
             path_probe: true,
             wakelock: true,
+            patchlevel_follow_a: false,
+            patchlevel_skip_pkgs: Vec::new(),
         });
         log::info!(
             "relay daemon starting (config from {source}) server={} device={} machine={}",
