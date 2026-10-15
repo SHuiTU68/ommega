@@ -231,12 +231,8 @@
       <div id="patch-manual" class="hidden">
         <div class="row"><div class="name"><b data-i18n="patch.hash"></b><small data-i18n="patch.hash.hint"></small></div>
           <input type="text" id="boot-hash" autocapitalize="none"></div>
-        <div class="row"><div class="name"><b data-i18n="patch.system"></b><small data-i18n="patch.system.hint"></small></div>
-          <input type="text" id="patch-system" autocapitalize="none" placeholder="2025-01-01"></div>
         <div class="row"><div class="name"><b data-i18n="patch.boot"></b><small data-i18n="patch.boot.hint"></small></div>
           <input type="text" id="patch-boot" autocapitalize="none" placeholder="2025-01-01"></div>
-        <div class="row"><div class="name"><b data-i18n="patch.vendor"></b><small data-i18n="patch.vendor.hint"></small></div>
-          <input type="text" id="patch-vendor" autocapitalize="none" placeholder="2025-01-01"></div>
         <div class="acts">
           <button class="btn primary" id="save-patch" data-i18n="patch.saveAll"></button>
           <button class="btn sm" id="patch-clear" data-i18n="patch.clear"></button>
@@ -370,8 +366,7 @@ var REMOTE_FIELDS = [
 ];
 var MANAGED = REMOTE_FIELDS.map(function(f){ return f.key; });
 var curConfText = "", curPropsText = "";
-var PROP_KEYS = ["ro.boot.vbmeta.digest", "ro.build.version.security_patch",
-                 "ro.boot.build.security_patch", "ro.vendor.build.security_patch"];
+var PROP_KEYS = ["ro.boot.vbmeta.digest", "ro.boot.build.security_patch"];
 var RETIRED_KEYS = ["ro.boot.vbmeta.public_key_digest"];
 var curTarget = {normal:[], generate:[], hack:[]};
 var appRows = [], appFilter = "";
@@ -917,9 +912,7 @@ function refreshPatchSummary(){
   if (!box) return;
   function v(id){ var e = document.getElementById(id); return e ? (e.value || "").trim() : ""; }
   var rows = [];
-  if (v("patch-system")) rows.push([t("patch.short.system"), v("patch-system")]);
   if (v("patch-boot")) rows.push([t("patch.short.boot"), v("patch-boot")]);
-  if (v("patch-vendor")) rows.push([t("patch.short.vendor"), v("patch-vendor")]);
   var hash = v("boot-hash");
   if (hash) rows.push([t("patch.short.hash"), hash.slice(0, 12) + "…"]);
   box.innerHTML = "";
@@ -976,9 +969,7 @@ async function fetchDeviceBoot(){
   if (!hit.boot){ toast(t("toast.noBoot"), true); return false; }
   var b = hit.boot;
   document.getElementById("boot-hash").value = b.boot_hash || "";
-  document.getElementById("patch-system").value = patchDate(b.patch_system);
   document.getElementById("patch-boot").value = patchDate(b.patch_boot);
-  document.getElementById("patch-vendor").value = patchDate(b.patch_vendor);
   capturePatchInputs();
   var major = androidMajor(b.os_version);
   var name = (hit.machine_id || hit.device_id) + (major ? " (Android " + major + ")" : "");
@@ -994,18 +985,12 @@ async function syncPatch(){
 }
 async function savePatch(){
   var hash = document.getElementById("boot-hash").value.trim().toLowerCase();
-  var sys  = document.getElementById("patch-system").value.trim();
   var boot = document.getElementById("patch-boot").value.trim();
-  var vend = document.getElementById("patch-vendor").value.trim();
   if (hash && !/^[0-9a-f]{64}$/.test(hash)){ toast(t("toast.hashBad"), true); return; }
-  for (var pair of [["patch.system", sys], ["patch.boot", boot], ["patch.vendor", vend]]){
-    if (pair[1] && !/^\d{4}-\d{2}-\d{2}$/.test(pair[1])){ toast(t("toast.patchBad", {field: t(pair[0])}), true); return; }
-  }
+  if (boot && !/^\d{4}-\d{2}-\d{2}$/.test(boot)){ toast(t("toast.patchBad", {field: t("patch.boot")}), true); return; }
   var kv = {};
   if (hash) kv["ro.boot.vbmeta.digest"] = hash;
-  if (sys)  kv["ro.build.version.security_patch"] = sys;
   if (boot) kv["ro.boot.build.security_patch"] = boot;
-  if (vend) kv["ro.vendor.build.security_patch"] = vend;
   var text = dropKeys(mergeKV(curPropsText, kv, PROP_KEYS, true), RETIRED_KEYS);
   if (!curPropsText.trim()){
     text = "# 开机时统一应用的系统属性覆盖（面板「伪装参数」写的就是这里）。\n" +
@@ -1017,9 +1002,7 @@ async function savePatch(){
   curPropsText = text;
   aDirty = false;
   var now = [], vals = {};
-  if (sys){ now.push("ro.build.version.security_patch"); vals["ro.build.version.security_patch"] = sys; }
   if (boot){ now.push("ro.boot.build.security_patch"); vals["ro.boot.build.security_patch"] = boot; }
-  if (vend){ now.push("ro.vendor.build.security_patch"); vals["ro.vendor.build.security_patch"] = vend; }
   if (now.length){
     await exec(now.map(function(k){
       return '(R=' + RESETPROP + '; [ -x "$R" ] || R=resetprop; "$R" -n ' + k + " " + quoteShell(vals[k]) + ")";
@@ -1031,13 +1014,13 @@ async function savePatch(){
 
 /* -------------------------------- 语言切换 ------------------------------- */
 function capturePatchInputs(){
-  ["boot-hash", "patch-system", "patch-boot", "patch-vendor"].forEach(function(id){
+  ["boot-hash", "patch-boot"].forEach(function(id){
     var e = document.getElementById(id);
     if (e) patchValues[id] = e.value;
   });
 }
 function fillPatchInputs(){
-  ["boot-hash", "patch-system", "patch-boot", "patch-vendor"].forEach(function(id){
+  ["boot-hash", "patch-boot"].forEach(function(id){
     var e = document.getElementById(id);
     if (e && patchValues[id] !== undefined) e.value = patchValues[id];
   });
@@ -1084,9 +1067,7 @@ function propsToPatchFields(){
   });
   patchValues = {
     "boot-hash": rp["ro.boot.vbmeta.digest"] || "",
-    "patch-system": rp["ro.build.version.security_patch"] || "",
-    "patch-boot": rp["ro.boot.build.security_patch"] || "",
-    "patch-vendor": rp["ro.vendor.build.security_patch"] || ""
+    "patch-boot": rp["ro.boot.build.security_patch"] || ""
   };
   fillPatchInputs();
   refreshPatchSummary();
@@ -1215,8 +1196,10 @@ document.addEventListener("change", function(ev){ if (!(ev && ev.target && ev.ta
       runBusy("patch-sync", t("patch.syncing"), function(){ return syncPatch(); });
     };
     document.getElementById("patch-clear").onclick = function(){
-      ["boot-hash", "patch-system", "patch-boot", "patch-vendor"].forEach(function(id){
-        document.getElementById(id).value = "";
+      ["boot-hash", "patch-boot"].forEach(function(id){
+        var e = document.getElementById(id);
+        if (!e) return;
+        e.value = "";
         patchValues[id] = "";
       });
       refreshPatchSummary();
@@ -1231,8 +1214,9 @@ document.addEventListener("change", function(ev){ if (!(ev && ev.target && ev.ta
         .then(function(){ refreshPatchSummary(); })
         .catch(function(e){ toast(t("toast.saveFail", {msg: e.message}), true); });
     };
-    ["boot-hash", "patch-system", "patch-boot", "patch-vendor"].forEach(function(id){
-      document.getElementById(id).addEventListener("input", capturePatchInputs);
+    ["boot-hash", "patch-boot"].forEach(function(id){
+      var e = document.getElementById(id);
+      if (e) e.addEventListener("input", capturePatchInputs);
     });
 
     /* 首屏先出来，状态/密钥信息在后台补 */
