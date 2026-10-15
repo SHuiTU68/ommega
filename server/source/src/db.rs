@@ -264,6 +264,29 @@ impl Db {
         }
     }
 
+    /// 随便挑一条能用的身份（`active = 1`）。自动采集的那些（`machine_id` 以 `auto`
+    /// 开头）优先 —— 它们本来就是给所有设备共用的材料；手动上传 / 真机自己传上来的
+    /// 那份是人家的真身份，只当最后手段。定序是固定的，同一个库里挑到的永远同一条。
+    pub fn get_any_usable_identity(&self) -> anyhow::Result<Option<DeviceIdentity>> {
+        let mut conn = self.conn()?;
+        let rows: Vec<mysql::Row> = conn.exec(
+            "SELECT device_id, algorithm, certificate_chain_pem, private_key_pem_cipher,
+                    active, machine_id, created_at
+             FROM device_server_identity WHERE active = 1
+             ORDER BY (machine_id LIKE 'auto%') DESC, created_at DESC, device_id LIMIT 1",
+            (),
+        )?;
+        match rows.into_iter().next() {
+            Some(r) => {
+                let mut d = Self::device_identity_from_row(r)?;
+                d.private_key_pem_cipher =
+                    crate::crypto::decrypt_private_pem(&d.private_key_pem_cipher);
+                Ok(Some(d))
+            }
+            None => Ok(None),
+        }
+    }
+
     /// Fetch any active identity for a device regardless of algorithm — a
     /// targeted lookup replacing a full `list_device_identities()` scan when
     /// the exact algorithm match is missing.

@@ -389,9 +389,10 @@ fn try_keybox_layer_sync(
     task_type: &str,
     body: &Value,
     device_id: &str,
+    prefer_slot: bool,
 ) -> Option<Value> {
     match task_type {
-        "attest" => fulfill.try_handle_attest(device_id, body),
+        "attest" => fulfill.try_handle_attest(device_id, body, prefer_slot),
         "sign" => fulfill.try_handle_sign(device_id, body),
         "decrypt" => fulfill.try_handle_decrypt(device_id, body),
         _ => None,
@@ -419,12 +420,16 @@ async fn run_layer_keybox(
     task_type: &str,
     body: &Value,
     device_id: &str,
+    prefer_slot: bool,
 ) -> Option<Value> {
     let fulfill = state.fulfill.clone();
     let tt = task_type.to_string();
     let b = body.clone();
     let did = device_id.to_string();
-    match tokio::task::spawn_blocking(move || try_keybox_layer_sync(&fulfill, &tt, &b, &did)).await
+    match tokio::task::spawn_blocking(move || {
+        try_keybox_layer_sync(&fulfill, &tt, &b, &did, prefer_slot)
+    })
+    .await
     {
         Ok(v) => v,
         Err(e) => Some(json!({ "error": format!("spawn_blocking join error: {e}") })),
@@ -508,7 +513,7 @@ async fn run_smart_strongbox_attest(
     let task_type = "attest";
 
     if serverbox {
-        if let Some(v) = run_layer_keybox(state, task_type, body, device_id).await {
+        if let Some(v) = run_layer_keybox(state, task_type, body, device_id, false).await {
             if v.get("error").is_none() && !attest_chain_empty(task_type, &v) {
                 tracing::info!(
                     "run_smart_strongbox: server keybox layer fulfilled StrongBox attest for device {device_id}"
@@ -569,7 +574,7 @@ async fn run_smart_strongbox_attest(
     }
 
     if !serverbox {
-        if let Some(v) = run_layer_keybox(state, task_type, body, device_id).await {
+        if let Some(v) = run_layer_keybox(state, task_type, body, device_id, false).await {
             if v.get("error").is_none() && !attest_chain_empty(task_type, &v) {
                 tracing::info!(
                     "run_smart_strongbox: server keybox fallback fulfilled StrongBox attest for device {device_id}"
@@ -772,10 +777,13 @@ async fn run_a_side_task(state: &AppState, task_type: &str, body: &Value) -> Res
     // 从而决定在原地重建或回确定错误码；只在 self_signed 那层含糊地写一句
     // 「produced no result」会把原因丢掉，A 端就只能当普通失败无限重试。
     let mut key_missing: Option<String> = None;
+    // 「这次请求是被黑名单打下来的」：B 那一跳没走，直接落到服务端密钥层；
+    // 那种情况下密钥层的身份查找要先看自动源槽位（见 `identity_for`）。
+    let mut blacklist_hit = false;
     for &layer in order {
         let result = match layer {
             "b" => try_b_device_layer(state, task_type, body, &device_id, any_b_online).await,
-            "keybox" => run_layer_keybox(state, task_type, body, &device_id).await,
+            "keybox" => run_layer_keybox(state, task_type, body, &device_id, blacklist_hit).await,
             "self_signed" => run_layer_self_signed(state, task_type, body, &device_id).await,
             _ => None,
         };
@@ -827,6 +835,9 @@ async fn run_a_side_task(state: &AppState, task_type: &str, body: &Value) -> Res
                         );
                     }
                 }
+                if layer == "b" && msg.starts_with("skip-list:") {
+                    blacklist_hit = true;
+                }
                 if key_missing.is_none()
                     && (msg.contains("no key for alias")
                         || msg.contains("no server_keybox session"))
@@ -847,7 +858,8 @@ async fn run_a_side_task(state: &AppState, task_type: &str, body: &Value) -> Res
                     // ——它只在 session 已经存在时才签（`try_handle_sign` 不会现造一把），
                     // 真没 session 就还是照原来的路子把原因退回 A 端。
                     if task_type == "sign" || task_type == "decrypt" {
-                        if let Some(v) = run_layer_keybox(state, task_type, body, &device_id).await
+                        if let Some(v) =
+                            run_layer_keybox(state, task_type, body, &device_id, false).await
                         {
                             if v.get("error").is_none() {
                                 tracing::info!(

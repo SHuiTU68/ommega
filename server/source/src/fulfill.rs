@@ -433,20 +433,55 @@ impl Fulfill {
 
     /// Lookup a stored identity for `(device_id, algorithm)`.
     ///
-    /// The identity is chosen **per device, not per algorithm**. A real device
-    /// attests EC and RSA keys with the *same* keybox chain, so both algorithms
-    /// have to be signed by one stored identity; picking a different row per
-    /// algorithm made the two chains carry different intermediates / issuers and
-    /// the app sees the two attestations of one device disagree
-    /// (TrustAttestor: `hardware.attestation.algorithm_differential`). The leaf's
-    /// algorithm is independent of the issuer's key type (`build_attested_chain`
-    /// mints the requested EC/RSA leaf and signs it with the identity's key), so a
-    /// single identity serves both.
+    /// 顺序：`prefer_slot`（这次请求是被黑名单打下来的）时先槽位 `device-b-2`，
+    /// 再按请求的 device id；都不是就挑一条能用的（见 `identity_for_id` /
+    /// `get_any_usable_identity`）。serverbox 模式的正常流程和普通失败后的
+    /// 兜底回落都不传 `prefer_slot`，就是「先按请求的 id」。
     ///
-    /// `algorithm` is therefore only used for the last-resort lookup, which
-    /// covers a device whose rows are all inactive (that query keeps the old
-    /// per-algorithm behaviour so such a device can still be served).
-    fn identity_for(&self, device_id: &str, algorithm: &str) -> Option<DeviceIdentity> {
+    /// 身份按**设备**选、不按算法选。一台真设备的 EC / RSA 两条认证用的是同一份
+    /// keybox 链，两次各取一行不同身份会让中间证书 / 签发者不一样 —— 检测方报的
+    /// `hardware.attestation.algorithm_differential` 就是这么来的。叶子用哪种算法
+    /// 与签发者的密钥类型无关，一份身份可以同时铸 EC 和 RSA 叶子。
+    ///
+    /// `algorithm` 只用在退一步的那条查询上（整台设备的行都不 active 时）。
+    fn identity_for(
+        &self,
+        device_id: &str,
+        algorithm: &str,
+        prefer_slot: bool,
+    ) -> Option<DeviceIdentity> {
+        if prefer_slot {
+            // 「这次请求是被黑名单打下来的」：先看自动源（public 采集）的专用槽位
+            // `device-b-2`，它没有才按请求里的设备 id 找。
+            if let Some(id) = self.identity_for_id(AUTO_PUBLIC_SLOT, algorithm) {
+                tracing::info!(
+                    "server_keybox: device={device_id} 命中黑名单，先取槽位 {AUTO_PUBLIC_SLOT}（machine_id={}）",
+                    id.machine_id
+                );
+                return Some(id);
+            }
+        }
+        if let Some(id) = self.identity_for_id(device_id, algorithm) {
+            return Some(id);
+        }
+        // 都没有就挑一条能用的顶上。自动采集的那些优先 —— 它们本来就是给所有设备
+        // 共用的；手动上传 / 真机自己传上来的那份是人家的真身份，只当最后手段。
+        match self.db.as_ref()?.get_any_usable_identity() {
+            Ok(Some(id)) => {
+                tracing::info!(
+                    "server_keybox: device={device_id} 找不到身份，改用 {} 的（machine_id={}）",
+                    id.device_id,
+                    id.machine_id
+                );
+                Some(id)
+            }
+            _ => None,
+        }
+    }
+
+    /// 按设备 id 找一份存下的身份：先不挑算法（一台设备的 EC / RSA 两条算法本来就
+    /// 共用同一份身份），再退到指定算法那条（处理整台设备的行都不 active 的情况）。
+    fn identity_for_id(&self, device_id: &str, algorithm: &str) -> Option<DeviceIdentity> {
         let db = self.db.as_ref()?;
         if let Some(id) = db.get_any_device_identity(device_id).ok().flatten() {
             return Some(id);
@@ -889,34 +924,25 @@ impl Fulfill {
     /// a child cert, the A-side forwards the TBS signing back to this relay
     /// (`/api/sign/`), which signs with the session leaf key held here.
     /// Rejecting would break that flow.
-    pub fn try_handle_attest(&self, device_id: &str, body: &Value) -> Option<Value> {
+    pub fn try_handle_attest(
+        &self,
+        device_id: &str,
+        body: &Value,
+        prefer_slot: bool,
+    ) -> Option<Value> {
         let ctx = body
             .get("device_attest_context")
             .cloned()
             .unwrap_or(Value::Null);
         let algorithm = Self::ctx_algorithm_str(&ctx);
-        let identity = match self.identity_for(device_id, &algorithm) {
+        let identity = match self.identity_for(device_id, &algorithm, prefer_slot) {
             Some(id) => id,
             None => {
-                // 这台设备一份身份都没存过时，退一步用自动源（public）的专用槽位
-                // `device-b-2`，别直接掉到 self_signed 那条自签链上：自签链的颁发者
-                // 一眼就是假的，而这份至少是采集回来的真 keybox 材料。
-                match self.identity_for(AUTO_PUBLIC_SLOT, &algorithm) {
-                    Some(id) => {
-                        tracing::info!(
-                            "server_keybox: device={device_id} 没有存身份，改从槽位 {AUTO_PUBLIC_SLOT} 取（machine_id={}）",
-                            id.machine_id
-                        );
-                        id
-                    }
-                    None => {
-                        return Some(json!({
-                            "error": format!(
-                                "server_keybox: no stored server identity for device {device_id} (algorithm {algorithm})"
-                            )
-                        }));
-                    }
-                }
+                return Some(json!({
+                    "error": format!(
+                        "server_keybox: no stored server identity for device {device_id} (algorithm {algorithm})"
+                    )
+                }));
             }
         };
         self.attest_from_identity(body, &identity, "server_keybox")
