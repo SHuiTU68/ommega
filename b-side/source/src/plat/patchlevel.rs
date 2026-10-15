@@ -224,11 +224,23 @@ pub fn follow_a_side(payload: &Value, on: bool) -> Option<String> {
 
     // 属性改了还不够，HAL 不重读 TEE 那边还是老值。
     let note = match restart_keymint_hal() {
-        Ok(note) => {
+        Ok(mut note) => {
             // 老句柄跟着进程一起没了，清掉缓存让下一笔重新连。
             clear_system_keymint(SYSTEM_KEYMINT_DEFAULT);
             clear_system_keymint(SYSTEM_KEYMINT_STRONGBOX);
-            note
+            // keystore2 手里那个旧句柄不会自己重连，不换掉它，本机 App 的密钥操作
+            // 就全废（见 restart_keystore2 的注释）。
+            match restart_keystore2() {
+                Ok(k) => {
+                    note.push_str("; ");
+                    note.push_str(&k);
+                    note
+                }
+                Err(e) => {
+                    log::warn!("patchlevel follow: keystore2 重启失败: {e:#}");
+                    format!("{note}; keystore2 重启失败({e:#})")
+                }
+            }
         }
         Err(e) => {
             log::warn!("patchlevel follow: keymint HAL 重启失败: {e:#}");
@@ -338,6 +350,44 @@ fn restart_keymint_hal() -> Result<String> {
         ));
     }
     Ok(notes.join("; "))
+}
+
+/// 重启 keystore2。弹完 KeyMint HAL 必须跟着做这一步。
+///
+/// 为什么：HAL 被 `ctl.restart` 换掉之后，keystore2 手里那个句柄就是死的，它不会自己
+/// 重连 —— 之后本机所有 App 的生成/签名都回 `SYSTEM_ERROR(4)`（keystore2 日志里是
+/// `Binder exception code TRANSACTION_FAILED, 0`），密钥认证这类 App 直接报「无法认证」。
+/// 2026-10-15 在 PLC110 上实测：只弹 HAL 不加这一步，之后 keygen 一直失败；把
+/// keystore2 一重启立刻恢复（连测两次 GenerateKey 都成功）。
+///
+/// 只在本笔真改过属性、真弹过 HAL 的时候跑，平时一分一毫都不多花。
+fn restart_keystore2() -> Result<String> {
+    const SVC: &str = "keystore2";
+    const PID_PROP: &str = "init.svc_debug_pid.keystore2";
+    let before = getprop(PID_PROP).unwrap_or_default();
+    Command::new("setprop")
+        .args(["ctl.restart", SVC])
+        .output()
+        .with_context(|| format!("setprop ctl.restart {SVC}"))?;
+    let mut restarted = false;
+    let mut now = before.clone();
+    // keystore2 起来很快，最多等 3 秒；等不到也照常出链。
+    for _ in 0..12 {
+        sleep(Duration::from_millis(250));
+        now = getprop(PID_PROP).unwrap_or_default();
+        if !now.is_empty() && now != before {
+            restarted = true;
+            break;
+        }
+    }
+    Ok(format!(
+        "{SVC} {} ({before} -> {now})",
+        if restarted {
+            "已重启"
+        } else {
+            "重启没等到"
+        }
+    ))
 }
 
 #[cfg(test)]
