@@ -65,6 +65,16 @@ pub(crate) fn client_ip(headers: &HeaderMap) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+/// 这个认证请求的包名（tag 709）。取不到就是空串。
+fn request_package(body: &Value) -> String {
+    body.get("device_attest_context")
+        .unwrap_or(body)
+        .get("attestation_application_id")
+        .and_then(Value::as_str)
+        .map(aaid_package)
+        .unwrap_or_default()
+}
+
 /// tag 709 里的包名（只给日志用）。AAID 是 DER，包名是里面一段 OCTET STRING，
 /// 直接取里面最长的可打印 ASCII 串就是它；签名摘要那 32 字节是二进制，会被滤掉。
 fn aaid_package(b64: &str) -> String {
@@ -247,6 +257,22 @@ async fn try_b_device_layer(
         return Some(json!({ "error": "no B-side device online" }));
     }
     let target = state.store.resolve_online_target(device_id).await;
+    // 这台 B 明确说了“这些包我不跟随”（relay.conf 的黑名单，心跳里报上来）：
+    // 连这一跳都不走，直接交给下一层 —— 物理模式下就是服务端 keybox 层。
+    if task_type == "attest" {
+        let pkg = request_package(body);
+        if !pkg.is_empty() {
+            let skip = state.store.skip_pkgs_for(&target).await;
+            if skip.iter().any(|s| s == &pkg) {
+                tracing::info!(
+                    "b_layer: {pkg} 在 {target} 的 skip 名单里，不走 B 这一跳，交给下一层（keybox）"
+                );
+                return Some(
+                    json!({ "error": format!("skip-list: {pkg} is excluded on {target}") }),
+                );
+            }
+        }
+    }
     // Trace line: the requested device and the device that will actually serve
     // the task. They differ exactly when the requested one is not online and
     // the balancer picked another live B端 — the chain will then come from that
@@ -2280,6 +2306,10 @@ pub struct PollQuery {
     /// 设备能力声明（逗号分隔，例如 `soter,strongbox`）。缺失 = 没上报，
     /// 空串 = 上报了一个都没有。见 `queue::DeviceCaps::parse`。
     pub caps: Option<String>,
+    /// 这台 B 的「不跟随补丁日期」名单（逗号分隔的包名，来自 relay.conf
+    /// 的 OMMEGA_RELAY_PATCHLEVEL_SKIP_PKGS）。缺失 = 老版本 relay 没上报，
+    /// 沿用上次的结论。
+    pub skip_pkgs: Option<String>,
 }
 
 pub async fn b_poll(
@@ -2307,6 +2337,14 @@ pub async fn b_poll(
 
     let timeout_secs = q.timeout.unwrap_or(state.cfg.poll_timeout_secs);
     let timeout = Duration::from_secs(timeout_secs.min(120));
+
+    // 这台上报的「不跟随补丁日期」名单先记下来：命中名单的认证请求不再往它派。
+    if let Some(raw) = q.skip_pkgs.as_deref() {
+        state
+            .store
+            .set_skip_pkgs(&q.device_id, crate::queue::parse_pkg_list(raw))
+            .await;
+    }
 
     match state
         .store

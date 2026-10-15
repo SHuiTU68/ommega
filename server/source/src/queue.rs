@@ -125,6 +125,14 @@ pub struct DeviceEntry {
     pub supports_strongbox: Option<bool>,
 }
 
+/// 逗号分隔的包名列表（心跳里的 `skip_pkgs`）。
+pub fn parse_pkg_list(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
 /// B 端心跳里带的能力声明。
 ///
 /// `None` = 这台设备没上报这个能力（老版本 relay 不会带 `caps`），跟
@@ -244,6 +252,9 @@ struct Inner {
     /// Failed tasks ordered by completion time: (failed_at_ms, task_id).
     failed_queue: VecDeque<(u64, String)>,
     devices: HashMap<String, DeviceEntry>,
+    /// device_id -> 这台心跳里报上来的「不跟随补丁日期」包名名单（relay.conf 的
+    /// OMMEGA_RELAY_PATCHLEVEL_SKIP_PKGS）。命中名单的认证请求不再派给它。
+    skip_pkgs: HashMap<String, Vec<String>>,
     /// device_id -> (machine_id, last_seen_ms) that most recently served it (for concurrency check).
     active_machine: HashMap<String, (String, u64)>,
     /// per-device recent activity for load estimation: (timestamp_ms, weight).
@@ -1349,6 +1360,22 @@ impl TaskStore {
     pub async fn get_device_load(&self, device_id: &str) -> u64 {
         let inner = self.inner.lock().await;
         Self::window_activity_locked(&inner, device_id)
+    }
+
+    /// 记下这台设备心跳里上报的「不跟随补丁日期」名单。空名单 = 撤销之前的登记。
+    pub async fn set_skip_pkgs(&self, device_id: &str, pkgs: Vec<String>) {
+        let mut inner = self.inner.lock().await;
+        if pkgs.is_empty() {
+            inner.skip_pkgs.remove(device_id);
+        } else {
+            inner.skip_pkgs.insert(device_id.to_string(), pkgs);
+        }
+    }
+
+    /// 这台设备上报的「不跟随补丁日期」名单（包名）。
+    pub async fn skip_pkgs_for(&self, device_id: &str) -> Vec<String> {
+        let inner = self.inner.lock().await;
+        inner.skip_pkgs.get(device_id).cloned().unwrap_or_default()
     }
 
     /// Resolve the target device_id for a new task, with load-balancing
