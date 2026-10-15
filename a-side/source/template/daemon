@@ -109,6 +109,30 @@ consume_restart_request() {
 
 cd "$MODDIR" || exit 1
 mkdir -p "$STATE_DIR"
+
+# 单实例：同一个守护脚本只允许一份活。service.sh 那层看门循环有可能同时存在多份
+# （管理器把 service.sh 拉起多次、或旧循环没清干净），每份都会 fork 一个本脚本，
+# 而本脚本每轮开头都会 `pkill -9 -f <keymint 路径>` —— 多份并存时彼此把对方的
+# shadow 反复 SIGKILL（daemon.log 里一串 exited with code 137）。抢不到锁的直接退。
+LOCK_DIR=$STATE_DIR/keymint-daemon.lock
+acquire_singleton() {
+  mkdir -p "$STATE_DIR" 2>/dev/null
+  if mkdir "$LOCK_DIR" 2>/dev/null; then
+    :
+  else
+    holder=$(cat "$LOCK_DIR/pid" 2>/dev/null)
+    if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
+      log "[keymint-daemon] another instance (pid $holder) is running; exiting"
+      exit 0
+    fi
+    rm -rf "$LOCK_DIR" 2>/dev/null
+    mkdir "$LOCK_DIR" 2>/dev/null || exit 0
+  fi
+  echo $$ > "$LOCK_DIR/pid"
+  trap 'rm -rf "$LOCK_DIR"' EXIT INT TERM HUP
+}
+acquire_singleton
+
 LOG_ON=0
 
 while true; do
