@@ -195,12 +195,25 @@ pub fn into_logged_binder(e: anyhow::Error) -> BinderStatus {
     into_binder(e)
 }
 
+/// 把客户端可见报错文本里的源码路径换成 AOSP keystore2 的相对路径。
+///
+/// 我们这份影子本来就是 keystore2 那棵树改出来的，报错链里的 `file:line` 本来也就
+/// 来自那些文件；但构建机是 Windows，路径长成 `src\keymaster\security_level.rs`。
+/// 完整性检测器（TrustAttestor 的 `parameter_fingerprint` / `backend_provenance`）
+/// 就是拿这个字符串认「软件转发」的（它匹配 `src/keymaster/security_level.rs` 判
+/// OMK、匹配 `system/security/keystore2/src/security_level.rs` 判 AOSP）。写回
+/// AOSP 的相对路径：跟真机一致，也不再把自己的推导链摆给调用方看。
+fn normalize_source_path(text: &str) -> String {
+    text.replace("src\\keymaster\\", "system/security/keystore2/src/")
+        .replace("src/keymaster/", "system/security/keystore2/src/")
+}
+
 /// This function turns an anyhow error into an optional CString.
 /// This is especially useful to add a message string to a service specific error.
 /// If the formatted string was not convertible because it contained a nul byte,
 /// None is returned and a warning is logged.
 pub fn anyhow_error_to_cstring(e: &anyhow::Error) -> Option<String> {
-    let formatted = format!("{e:?}");
+    let formatted = normalize_source_path(&format!("{e:?}"));
     if formatted.contains('\0') {
         warn!("Cannot convert error message to String. It contained a nul byte.");
         None
