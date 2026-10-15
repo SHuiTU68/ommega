@@ -4,6 +4,7 @@
 
 ## 1.7.0
 
+- 调用方没有唯一 ID 权限（`REQUEST_UNIQUE_ID_ATTESTATION` / `keystore_key:gen_unique_id`）却带 `INCLUDE_UNIQUE_ID` 时，改成整笔回权限错误，不再把这个 tag 摘掉让请求成功。以前那套会被完整性检测读成「权限被绕过」（TrustAttestor 的 `unique_id_permission`）。
 - 伪装参数页只留「哈希」和「启动补丁」两项：系统补丁与 vendor 补丁不再由面板改写，避免上报的日期跟机器实际状态对不上。
 - 上报的 vendor / boot 补丁级别改成规范的 8 位格式，走服务器密钥库出的链不再缺那个「日」。
 - 认证请求会带上本端版本号，B 端据此决定是否按本端声明的日期出链。
