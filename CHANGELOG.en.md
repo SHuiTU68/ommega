@@ -2,6 +2,12 @@
 
 [中文](CHANGELOG.md)
 
+## 1.7.0
+
+- The spoofing page keeps only two fields (boot hash and boot patch level); the OS and vendor patch levels are no longer written from the panel, so what the device reports cannot drift from its real state.
+- The vendor / boot patch levels we report now use the 8-digit form the spec requires, so chains minted by the server keybox no longer lose the day.
+- Attestation requests now carry this client's version, which the B side uses to decide whether to mint with the dates this client declares.
+
 ## 1.6.9
 
 - A rebuilt settings panel: four swipeable pages (Config / Scope / Local keys / Spoofing) with live keymint, keystore2, adbr and SOTER status along the top.
