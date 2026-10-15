@@ -568,29 +568,16 @@ impl KeystoreSecurityLevel {
         }
 
         if params.iter().any(|kp| kp.tag == Tag::INCLUDE_UNIQUE_ID) {
-            if check_key_permission(KeyPerm::GenUniqueId, key, None, ctx).is_err()
-                && check_unique_id_attestation_permissions(ctx).is_err()
-            {
-                // 没权限就把这个 tag 摸掉，别拒整笔 —— 这是真机 TEE 的行为，也是钱包要的：
-                // Google Wallet 建 attestation key 时带着 INCLUDE_UNIQUE_ID，却既不持有
-                // SELinux 的 keystore_key:gen_unique_id 也没有
-                // REQUEST_UNIQUE_ID_ATTESTATION；照 AOSP 那套回 PERMISSION_DENIED 的话，
-                // 钱包直接报「这台手机不满足安全要求」。摸掉之后 key 照常生成，attestation
-                // extension 里就是不带 unique_id（TA 那边没有这个 tag 就返回空）。
-                //
-                // 也不能「干脆不查、直接放过」：GMS 那些 attestation 流程会把 tag 带
-                // 下去，extension 里多出一个跟调用方对不上的 unique_id，Play Integrity
-                // 反而会判三红（同行项目实测）。
-                let before = result.len();
-                result.retain(|kp| kp.tag != Tag::INCLUDE_UNIQUE_ID);
-                if result.len() != before {
-                    log::warn!(
-                        "INCLUDE_UNIQUE_ID stripped: uid={} holds neither \
-                         keystore_key:gen_unique_id nor REQUEST_UNIQUE_ID_ATTESTATION",
-                        uid.0
-                    );
-                }
-            } else if self
+            // 没权限就整笔拒（跟 AOSP 一致）。以前这里是「把 tag 摸掉、让请求成功」，
+            // TrustAttestor 那个 bit34 unique_id_permission 检测项就是看这一点：它发两笔
+            // 带 INCLUDE_UNIQUE_ID(202) 的 generateKey，拿到成功就判「权限被绕过」；
+            // 真机上同样是不持权限的调用方（GMS / Play 商店也不持）一样回错。
+            if check_key_permission(KeyPerm::GenUniqueId, key, None, ctx).is_err() {
+                check_unique_id_attestation_permissions(ctx).context(ks_err!(
+                    "Caller does not have the permission to include a unique ID."
+                ))?;
+            }
+            if self
                 .id_rotation_state
                 .had_factory_reset_since_id_rotation(&creation_datetime)
                 .context(ks_err!(
