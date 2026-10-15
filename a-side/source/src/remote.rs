@@ -848,6 +848,13 @@ impl RemoteRelay {
         if os_version > 0 {
             ctx.insert("os_version".to_string(), Value::from(os_version));
         }
+        // A 端自己的版本。B 端拿它当闸门：低于 1.7.0 的老客户端不认识「跟随补丁日期」
+        // 这套（上报的 vendor/boot 格式也还是旧的 YYYYMM），遇到就只当普通请求处理，
+        // 不去改属性、不弹 HAL。
+        ctx.insert(
+            "client_version".to_string(),
+            Value::from(env!("CARGO_PKG_VERSION")),
+        );
         // 本机对外宣称的 KeyMint 版本也带上。服务端 keybox 层读不到这两个字段时
         // 只能按 `os_version` 猜，猜出来的 attestationVersion/keymasterVersion 未必
         // 等于本机 HAL 的；同一台设备的 EC/RSA 两条认证只要一条走 keybox、另一条
@@ -886,7 +893,7 @@ impl RemoteRelay {
         let vendor_patch_level =
             crate::plat::resetprop::read_string_property("ro.vendor.build.security_patch")
                 .as_deref()
-                .and_then(patch_level_to_yyyymm)
+                .and_then(patch_level_to_yyyymmdd)
                 .or_else(|| match config::config().read() {
                     Ok(g) => patch_level_to_yyyymm(&g.trust.vendor_patchlevel),
                     Err(_) => None,
@@ -898,7 +905,7 @@ impl RemoteRelay {
         let boot_patch_level =
             crate::plat::resetprop::read_string_property("ro.boot.build.security_patch")
                 .as_deref()
-                .and_then(patch_level_to_yyyymm)
+                .and_then(patch_level_to_yyyymmdd)
                 .or_else(|| match config::config().read() {
                     Ok(g) => patch_level_to_yyyymm(&g.trust.boot_patchlevel),
                     Err(_) => None,
@@ -999,6 +1006,39 @@ fn patch_level_to_yyyymm(value: &str) -> Option<u32> {
         }
     }
     None
+}
+
+/// Convert a "YYYY-MM-DD" patch level string to the YYYYMMDD integer the relay
+/// expects for KM_TAG_VENDOR_PATCH_LEVEL / KM_TAG_BOOT_PATCH_LEVEL (718/719).
+///
+/// 这两个 tag 的格式是 YYYYMMDD，跟 706 的 YYYYMM 不一样。以前这里也用
+/// `patch_level_to_yyyymm`，上报出去就成了 202606 —— 落到服务端 keybox 层，
+/// 链上 tag 718 就只有年到月，没那个日。
+fn patch_level_to_yyyymmdd(value: &str) -> Option<u32> {
+    let s = value.trim();
+    if s.as_bytes().get(4) == Some(&b'-') {
+        let year = s[0..4].parse::<u32>().ok()?;
+        let month = s[5..7].parse::<u32>().ok()?;
+        let day = s
+            .as_bytes()
+            .get(8)
+            .and_then(|_| s[8..10].parse::<u32>().ok())
+            .unwrap_or(0);
+        if (1..=12).contains(&month) && (1..=31).contains(&day) {
+            return Some(year * 10000 + month * 100 + day);
+        }
+        return None;
+    }
+    // 裸 YYYYMMDD
+    if s.len() == 8 {
+        let v = s.parse::<u32>().ok()?;
+        let (month, day) = ((v / 100) % 100, v % 100);
+        if (1..=12).contains(&month) && (1..=31).contains(&day) {
+            return Some(v);
+        }
+    }
+    // 只写到月的（"YYYY-MM" / "YYYYMM"）就补 01，跟模块里 auto 的继承口径一致。
+    patch_level_to_yyyymm(s).map(|v| v * 100 + 1)
 }
 
 /// Convenience: `true` if remote relay is enabled in config.
