@@ -2386,6 +2386,14 @@ pub async fn b_poll(
             .await;
     }
 
+    // 模块 relay 的心跳固定带 `skip_pkgs`（空名单也带）和 `ver`，手机 App
+    // （`org.ommega.deviceb`）两个都不带；用这个把两类设备分开，A 端面板
+    // 「留空自己获取」只挑模块那种。
+    state
+        .store
+        .set_device_from_module(&q.device_id, q.skip_pkgs.is_some() || q.ver.is_some())
+        .await;
+
     match state
         .store
         .pop_for_b(

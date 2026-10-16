@@ -5,5 +5,5 @@
 ## 1.7.1
 
 - The panel and the status page show the version of the B-side device the phone is paired with.
-- With the device id left empty, the panel prefers a B-side device whose boot patch falls in the same year as the phone, whose version is close, and whose other patch dates are close too.
+- With the device id left empty, the panel prefers a B-side device whose boot patch falls in the same year as the phone, whose version is close, and whose other patch dates are close too; the phone-app B devices are never picked.
 - On the status page, devices that pass the self-check are listed first and failures last.

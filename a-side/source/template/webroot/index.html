@@ -1006,6 +1006,7 @@ function pickBestDevice(list, curBoot){
   for (var i = 0; i < list.length; i++){
     var d = list[i];
     if (!d || !d.boot || d.tee_error) continue;
+    if (d.module === false) continue;   /* 手机 App（org.ommega.deviceb）那种 B 端不参与 */
     if (d.boot.device_locked !== true) continue;
     if (Number(d.boot.verified_boot_state) !== 0) continue;
     ok.push(d);

@@ -126,6 +126,11 @@ pub struct DeviceEntry {
     /// 心跳里上报的 relay 版本号（模块版本，例如 `1.7.0`）。`None` = 老版本 relay
     /// 没上报。状态页显示它；A 端面板「留空自己获取」也拿它挑同版本的 B。
     pub version: Option<String>,
+    /// 这台是「模块 relay」还是手机 App（`org.ommega.deviceb`）。模块的心跳固定带
+    /// `skip_pkgs`（1.7.0 起，空名单也带）和 `ver`（1.7.1 起），App 两种都不带，
+    /// 所以这条只看本次心跳带没带那两个参数。A 端面板「留空自己获取」只挑模块那种，
+    /// App 一个连不上、也不该被当成 B 端顶上去。
+    pub from_module: bool,
 }
 
 /// 逗号分隔的包名列表（心跳里的 `skip_pkgs`）。
@@ -542,6 +547,7 @@ impl TaskStore {
                     known_soter_stuck,
                     known_supports_strongbox,
                     known_version,
+                    known_from_module,
                 ) = match inner.devices.get(device_id) {
                     Some(d) => (
                         d.boot.clone(),
@@ -554,8 +560,11 @@ impl TaskStore {
                         d.soter_stuck,
                         d.supports_strongbox,
                         d.version.clone(),
+                        d.from_module,
                     ),
-                    None => (None, None, None, 0, None, None, None, None, None, None),
+                    None => (
+                        None, None, None, 0, None, None, None, None, None, None, false,
+                    ),
                 };
                 let has_tee_verdict = known_boot.is_some() || known_tee_error.is_some();
                 inner.devices.insert(
@@ -577,6 +586,7 @@ impl TaskStore {
                         supports_strongbox: caps.strongbox.or(known_supports_strongbox),
                         // 老版本 relay 不带 ver，保留上次记下的版本。
                         version: version.map(str::to_string).or(known_version),
+                        from_module: known_from_module,
                     },
                 );
                 self.mark_online_sync(device_id, hb_now);
@@ -1377,6 +1387,15 @@ impl TaskStore {
             inner.skip_pkgs.remove(device_id);
         } else {
             inner.skip_pkgs.insert(device_id.to_string(), pkgs);
+        }
+    }
+
+    /// 记下这次心跳是不是模块 relay 发的（见 `DeviceEntry::from_module`）。
+    /// 设备还没进表时什么都不做：同一轮 poll 马上会把它建出来。
+    pub async fn set_device_from_module(&self, device_id: &str, from_module: bool) {
+        let mut inner = self.inner.lock().await;
+        if let Some(d) = inner.devices.get_mut(device_id) {
+            d.from_module = from_module;
         }
     }
 
