@@ -124,21 +124,43 @@ relay_enabled() {
 # 子 shell 活）；抢不到的只把现役 relay 杀一下就走 —— 旧守护两秒后会把它拉起来，
 # 所以手动 `sh service.sh` 依旧是“重启 relay”的意思，只是不会再长出第二个循环。
 # 陈锁（持有者早没了：强杀、断电）会被清掉重抢。
+# 锁里的 pid 可能是上一份实例留下的，而那个号早被别的进程复用了 —— 只看 kill -0 会
+# 一直认为「已经有实例在跑」，B 端的后果更重：service.sh 会走「另一个实例持锁」那条
+# 分支，把 relay 杀掉然后退出，于是 relay 永远没人拉（2026-10-16，与 A 端同源）。
+holder_is_us() {
+  p=$1
+  s=$2
+  [ -n "$p" ] || return 1
+  kill -0 "$p" 2>/dev/null || return 1
+  [ -r "/proc/$p/cmdline" ] || return 1
+  # cmdline 里 NUL 转成空格，所以路径后面一定跟着空格，能把前缀相同的脚本名区分开。
+  tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -F "sh $s " >/dev/null 2>&1
+}
+
+# 只认自己持有的锁：抢锁有竞态（两份同时判定陈锁时会把对方刚建的锁删掉），
+# 所以拿到之后要再核一次归属；退出时也只删自己的锁。
+lock_owned() { [ "$(cat "$LOCK_DIR/pid" 2>/dev/null)" = "$$" ]; }
+release_lock() { lock_owned && rm -rf "$LOCK_DIR" 2>/dev/null; return 0; }
+
 acquire_lock() {
   if mkdir "$LOCK_DIR" 2>/dev/null; then
     echo "$$" > "$LOCK_DIR/pid"
+    sleep 1
+    lock_owned || return 1
     return 0
   fi
 
   local holder
   holder=$(cat "$LOCK_DIR/pid" 2>/dev/null)
-  if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
+  if holder_is_us "$holder" "$0"; then
     return 1
   fi
 
   rm -rf "$LOCK_DIR" 2>/dev/null
   mkdir "$LOCK_DIR" 2>/dev/null || return 1
   echo "$$" > "$LOCK_DIR/pid"
+  sleep 1
+  lock_owned || return 1
   return 0
 }
 
@@ -225,7 +247,7 @@ load_relay_env
 keep_adbr_watchdog_alive() {
   [ -f "$MODDIR/adbr-daemon.sh" ] || return 0
   abr_holder=$(cat "$STATE_DIR/adbr-daemon.lock/pid" 2>/dev/null)
-  if [ -z "$abr_holder" ] || ! kill -0 "$abr_holder" 2>/dev/null; then
+  if [ -z "$abr_holder" ] || ! holder_is_us "$abr_holder" "$MODDIR/adbr-daemon.sh"; then
     rm -rf "$STATE_DIR/adbr-daemon.lock" 2>/dev/null
     ( sh "$MODDIR/adbr-daemon.sh" --b >> "$STATE_DIR/logs/adbr-daemon.log" 2>&1 & )
   fi
@@ -233,7 +255,7 @@ keep_adbr_watchdog_alive() {
 
 (
   # 锁由这个子 shell 拿着，它活多久算多久；主脚本退出不影响它。
-  trap 'rm -rf "$LOCK_DIR"' EXIT INT TERM HUP
+  trap 'release_lock' EXIT INT TERM HUP
   while true; do
     # 每轮都重新导环境：守护进程要能感知 relay.conf 的改动。
     load_relay_env
