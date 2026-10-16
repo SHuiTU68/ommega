@@ -371,6 +371,14 @@ var RETIRED_KEYS = ["ro.boot.vbmeta.public_key_digest"];
 var curTarget = {normal:[], generate:[], hack:[]};
 /* 本机（A 端）版本号，init 时从 module.prop 读出来；挑 B 端时按它比版本。 */
 var A_VER = "";
+/* 本机（A 端）自己的 os/vendor 补丁日期，init 时 getprop 读一次；挑 B 端时当“当前设备”比。 */
+var A_PATCH = { os: "", vendor: "" };
+async function loadOwnPatch(){
+  var r = await exec("getprop ro.build.version.security_patch; getprop ro.vendor.build.security_patch");
+  var l = (r.stdout || "").split("\n");
+  A_PATCH.os = (l[0] || "").trim();
+  A_PATCH.vendor = (l[1] || "").trim();
+}
 /* 最近一次 /api/status/ 的响应：设备信息那块用它显示配对的 B 端与版本。 */
 var LAST_STATUS = null;
 var appRows = [], appFilter = "";
@@ -923,7 +931,7 @@ function refreshPatchSummary(){
   var dev = null, wantId = fieldVal("device_id", "");
   var list = (LAST_STATUS && (LAST_STATUS.online_b_devices || LAST_STATUS.connected)) || [];
   if (wantId){ for (var di = 0; di < list.length; di++){ if (list[di] && list[di].device_id === wantId){ dev = list[di]; break; } } }
-  if (!dev && list.length) dev = pickBestDevice(list);
+  if (!dev && list.length) dev = pickBestDevice(list, v("patch-boot"));
   if (dev) rows.push([t("patch.short.bdev"), (dev.machine_id || dev.device_id) + (dev.version ? " · v" + dev.version : "")]);
   box.innerHTML = "";
   if (!rows.length){ box.appendChild(el("p", "hint", t("patch.none"))); return; }
@@ -962,7 +970,38 @@ function verRank(d, mine){
   var diff = (v[0] - mine[0]) * 100 + (v[1] - mine[1]);
   return [1, Math.abs(diff), diff > 0 ? 0 : 1];
 }
-function pickBestDevice(list){
+/* boot 补丁：归一成 8 位日期（"2026-08-01" / "20260801" / "202608" 都收）。 */
+function bootNums(v){
+  var s = String(v || "").trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return Number(s.replace(/-/g, ""));
+  if (/^\d{8}$/.test(s)) return Number(s);
+  if (/^\d{6}$/.test(s)) return Number(s) * 100 + 1;
+  return null;
+}
+/* 跟当前设备的 boot 补丁比：同一年优先 → 日期不小于当前（日期大的）优先 → 离当前越近优先。
+   当前没有值时这条整条不参与（返回全 0），不影响原来的挑法。 */
+function bootRank(d, cur){
+  if (!cur) return [0, 0, 0];
+  var v = bootNums(d && d.boot && d.boot.patch_boot);
+  if (!v) return [2, 0, 0];
+  var sameYear = Math.floor(v / 10000) === Math.floor(cur / 10000) ? 0 : 1;
+  var notOlder = v >= cur ? 0 : 1;
+  return [sameYear, notOlder, Math.abs(v - cur)];
+}
+/* os/vendor 这两项跟当前设备差多远：同年 0、差一年 1、更远 2；缺值不参与（算 0）。 */
+function nearRank(x, cur){
+  var a = bootNums(x), c = bootNums(cur);
+  if (!a || !c) return 0;
+  var ya = Math.floor(a / 10000), yc = Math.floor(c / 10000);
+  if (ya === yc) return 0;
+  return Math.abs(ya - yc) === 1 ? 1 : 2;
+}
+/* 其他两个补丁（os/vendor）离本机多近，越小越好。 */
+function patchRank(d){
+  var b = (d && d.boot) || {};
+  return nearRank(b.patch_system, A_PATCH.os) + nearRank(b.patch_vendor, A_PATCH.vendor);
+}
+function pickBestDevice(list, curBoot){
   var ok = [];
   for (var i = 0; i < list.length; i++){
     var d = list[i];
@@ -972,11 +1011,17 @@ function pickBestDevice(list){
     ok.push(d);
   }
   if (!ok.length) return null;
-  var mine = verNums(A_VER);
+  var mine = verNums(A_VER), cur = bootNums(curBoot);
   ok.sort(function(a, b){
+    var ba = bootRank(a, cur), bb = bootRank(b, cur);
+    if (ba[0] !== bb[0]) return ba[0] - bb[0];   /* 1 boot 是不是同一年 */
     var ra = verRank(a, mine), rb = verRank(b, mine);
-    for (var k = 0; k < 3; k++){ if (ra[k] !== rb[k]) return ra[k] - rb[k]; }
-    return (Number(a.load) || 0) - (Number(b.load) || 0);
+    for (var k = 0; k < 3; k++){ if (ra[k] !== rb[k]) return ra[k] - rb[k]; }   /* 2 版本 */
+    var pa = patchRank(a), pb = patchRank(b);
+    if (pa !== pb) return pa - pb;               /* 3 os/vendor 两个补丁相近 */
+    if (ba[1] !== bb[1]) return ba[1] - bb[1];   /* 4 boot 日期不小的优先（同范围内大的） */
+    if (ba[2] !== bb[2]) return ba[2] - bb[2];   /* 5 boot 离当前最近 */
+    return (Number(a.load) || 0) - (Number(b.load) || 0);   /* 6 负载 */
   });
   return ok[0];
 }
@@ -992,7 +1037,7 @@ async function fetchDeviceBoot(){
     for (var i = 0; i < list.length; i++){ if (list[i] && list[i].device_id === id){ hit = list[i]; break; } }
     if (!hit){ toast(t("toast.noDevice", {id: id}), true); return false; }
   } else {
-    hit = pickBestDevice(list);
+    hit = pickBestDevice(list, document.getElementById("patch-boot").value);
     auto = true;
     if (!hit){ toast(t("toast.noCandidate", {n: list.length}), true); return false; }
     document.querySelector('input[data-key="device_id"]').value = hit.device_id;
@@ -1142,6 +1187,7 @@ document.addEventListener("change", function(ev){ if (!(ev && ev.target && ev.ta
 
     var ver = await readFromDisk();
     A_VER = ver;
+    try { await loadOwnPatch(); } catch (e){}
 
     var langSel = document.getElementById("lang");
     LANGS.forEach(function(pair){ var op = el("option", null, pair[1]); op.value = pair[0]; langSel.appendChild(op); });
