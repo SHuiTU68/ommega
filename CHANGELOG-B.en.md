@@ -2,16 +2,6 @@
 
 [中文](CHANGELOG-B.md)
 
-## 1.7.0
+## 1.7.1
 
-- New: mint with the patch dates the A side declares. When an attestation request carries dates, the relay writes them locally, has the keymint HAL re-read them, and only then mints the key; the switch `OMMEGA_RELAY_PATCHLEVEL_FOLLOW_A` is off by default.
-- Older clients (A-side below 1.7.0) are left alone: a request without a version is served with the local values as-is, touching no property and restarting nothing.
-- New skip list `OMMEGA_RELAY_PATCHLEVEL_SKIP_PKGS`: the packages listed there are always served with the local values (the relay reports the list on every poll, so the server does not even send those requests over).
-- The panel now has two pages, Home and Skip list; the skip list page lets you view, add and remove package names.
-- Fixed a blind spot in the daemon lock: a lock left by an unclean reboot plus a reused process id kept the relay / adbr daemons reading the lock as "already held", so the relay would not come up (and could be killed by mistake). The lock now judges the real holder and rebuilds itself.
-
-## 1.6.9
-
-- A settings panel in six languages: the status card shows relay, adbrd, the keystore service and the SOTER service, and opens the server status page in one tap.
-- Forwarding, SOTER key material and adbr remote control, plus the server address, device id, logging and network settings, are all editable in the panel - press "Save" to apply.
-- The debug process ships with the module; no separate adbr install is needed.
+- The relay reports its own version, so the status page and the A-side panel show which release a B-side device runs.
