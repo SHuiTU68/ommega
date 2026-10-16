@@ -243,6 +243,8 @@ pub async fn admin_devices(State(state): State<AppState>, headers: HeaderMap) ->
                 // 这是暂态，设备侧会自己试着重启整机；这个名字亮着就是「重启也没
                 // 搞定，得人工看一眼」。
                 "soter_stuck": d.soter_stuck,
+                // relay 上报的版本号（模块版本）。
+                "version": d.version,
                 "strongbox": d.supports_strongbox,
             }),
             load,
@@ -1229,6 +1231,8 @@ pub async fn public_status(State(state): State<AppState>) -> Response {
                 // 再一条：TA 卡在 TEE 里（`soter_stuck`），导出/建料会一直回 -5。
                 // 跟上面两条不同，它是暂态，重启整机就能恢复。
                 "soter_stuck": d.soter_stuck,
+                // relay 上报的版本号（模块版本）。
+                "version": d.version,
                 "strongbox": d.supports_strongbox,
             }),
             load,

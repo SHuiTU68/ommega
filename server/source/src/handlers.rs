@@ -2347,6 +2347,9 @@ pub struct PollQuery {
     /// 的 OMMEGA_RELAY_PATCHLEVEL_SKIP_PKGS）。缺失 = 老版本 relay 没上报，
     /// 沿用上次的结论。
     pub skip_pkgs: Option<String>,
+    /// relay 自己的版本号（模块版本，例如 `1.7.0`）。缺失 = 老版本 relay 没上报。
+    /// 状态页拿它显示，A 端「留空自己获取」拿它按版本挑设备。
+    pub ver: Option<String>,
 }
 
 pub async fn b_poll(
@@ -2390,6 +2393,7 @@ pub async fn b_poll(
             &machine_id,
             crate::queue::DeviceCaps::parse(q.caps.as_deref()),
             timeout,
+            q.ver.as_deref(),
         )
         .await
     {

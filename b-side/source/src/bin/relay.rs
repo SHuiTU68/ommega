@@ -666,9 +666,12 @@ fn poll_tasks(cfg: &RelayConfig) -> Result<Option<(String, String, Value)>> {
     // 把这台的「不跟随补丁日期」名单一起报上去：服务端拿到之后，命中名单的认证请求
     // 就不再往这台派，直接让 keybox 层构造返回（少一跳）。
     let skip = cfg.patchlevel_skip_pkgs.join(",");
+    // 把自己的版本也报上去：状态页要显示、A 端「留空自己获取」要按版本挑设备。
+    // 版本号就是模块版本（build.py 断言过 Cargo.toml 与 VERSION 一致）。
+    let ver = env!("CARGO_PKG_VERSION");
     let url = format!(
-        "{}/api/b/poll/?device_id={}&machine_id={}&timeout={}&caps={}&skip_pkgs={}",
-        cfg.server, cfg.device_id, cfg.machine_id, POLL_TIMEOUT_SEC, caps, skip
+        "{}/api/b/poll/?device_id={}&machine_id={}&timeout={}&caps={}&skip_pkgs={}&ver={}",
+        cfg.server, cfg.device_id, cfg.machine_id, POLL_TIMEOUT_SEC, caps, skip, ver
     );
     let headers = vec![("X-Relay-Token".to_string(), cfg.token.clone())];
     let (status, body) =

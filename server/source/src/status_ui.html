@@ -100,8 +100,8 @@ td.id-cell { padding: 6px 18px; }
   <div class="panel">
     <h2>在线 B 端设备<span>按负载升序排列</span></h2>
     <div class="table-wrap"><table>
-      <thead><tr><th>设备 ID</th><th>机型</th><th>负载</th><th>最后在线</th></tr></thead>
-      <tbody id="bBody"><tr><td colspan="4" class="empty">加载中…</td></tr></tbody>
+      <thead><tr><th>设备 ID</th><th>机型</th><th>版本</th><th>负载</th><th>最后在线</th></tr></thead>
+      <tbody id="bBody"><tr><td colspan="5" class="empty">加载中…</td></tr></tbody>
     </table></div>
   </div>
 
@@ -146,7 +146,7 @@ async function load() {
     _devices = b;
     $('#onlineBadge').textContent = '在线设备：' + b.length;
     $('#bBody').innerHTML = b.length
-      ? b.map((x, i) => `<tr><td class="id-cell"><span class="id-link" onclick="showBoot(${i})" title="点击查看该设备的详情">${esc(x.device_id)}</span>${x.tee_error ? ' <span class="tag off" title="TEE 自检失败，点开看原因">自检失败</span>' : ''}${x.soter === true ? ' <span class="tag on" title="支持 SOTER 转发">SOTER</span>' : ''}${x.strongbox === true ? ' <span class="tag on" title="有 StrongBox HAL">SB</span>' : ''}</td><td>${esc(x.machine_id || '—')}</td><td>${x.load ?? 0}</td><td>${fmtTime(x.last_seen_ms)}</td></tr>`).join('')
+      ? b.map((x, i) => `<tr><td class="id-cell"><span class="id-link" onclick="showBoot(${i})" title="点击查看该设备的详情">${esc(x.device_id)}</span>${x.tee_error ? ' <span class="tag off" title="TEE 自检失败，点开看原因">自检失败</span>' : ''}${x.soter === true ? ' <span class="tag on" title="支持 SOTER 转发">SOTER</span>' : ''}${x.strongbox === true ? ' <span class="tag on" title="有 StrongBox HAL">SB</span>' : ''}</td><td>${esc(x.machine_id || '—')}</td><td>${esc(x.version || '—')}</td><td>${x.load ?? 0}</td><td>${fmtTime(x.last_seen_ms)}</td></tr>`).join('')
       : '<tr><td colspan="4" class="empty">暂无 B 端设备在线</td></tr>';
 
     const c = d.cert_devices || [];
@@ -218,6 +218,7 @@ function showBoot(i) {
   $('#bootBody').innerHTML = b
     ? [
         kvRow('机型', d.machine_id || '—'),
+        kvRow('版本', d.version || '—'),
         kvRow('认证应用（AAID）', d.aaid || '—'),
         kvRow('锁定状态', b.device_locked === true ? '已锁定（locked）' : b.device_locked === false ? '未锁定（unlocked）' : '—'),
         kvRow('启动校验', VB_STATE[b.verified_boot_state] ?? (b.verified_boot_state ?? '—')),
@@ -232,12 +233,13 @@ function showBoot(i) {
     : (d.tee_error
         ? [
             kvRow('机型', d.machine_id || '—'),
+            kvRow('版本', d.version || '—'),
             kvRow('认证应用（AAID）', d.aaid || '—'),
             kvRow('TEE 自检', '失败'),
             kvRow('失败原因', d.tee_error),
             ...caps,
           ].join('')
-        : '<div class="k">状态</div><div class="v">该设备还没上报启动状态（连上服务端后会自动自检一次）</div>' + caps.join(''));
+        : '<div class="k">状态</div><div class="v">该设备还没上报启动状态（连上服务端后会自动自检一次）</div>' + kvRow('版本', d.version || '—') + caps.join(''));
   $('#bootModal').classList.add('open');
 }
 

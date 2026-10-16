@@ -123,6 +123,9 @@ pub struct DeviceEntry {
     /// 心跳里上报的 StrongBox 能力（有没有那个 HAL 实例）。只看展示，
     /// StrongBox 出证走的是 strongbox 模式那套逻辑。
     pub supports_strongbox: Option<bool>,
+    /// 心跳里上报的 relay 版本号（模块版本，例如 `1.7.0`）。`None` = 老版本 relay
+    /// 没上报。状态页显示它；A 端面板「留空自己获取」也拿它挑同版本的 B。
+    pub version: Option<String>,
 }
 
 /// 逗号分隔的包名列表（心跳里的 `skip_pkgs`）。
@@ -516,6 +519,7 @@ impl TaskStore {
         machine_id: &str,
         caps: DeviceCaps,
         timeout: Duration,
+        version: Option<&str>,
     ) -> Option<Task> {
         let deadline = Instant::now() + timeout;
         // 订阅版本号：入队那一刻不管我们有没有注册上，`changed()` 都会立刻返回。
@@ -537,6 +541,7 @@ impl TaskStore {
                     known_soter_nosign,
                     known_soter_stuck,
                     known_supports_strongbox,
+                    known_version,
                 ) = match inner.devices.get(device_id) {
                     Some(d) => (
                         d.boot.clone(),
@@ -548,8 +553,9 @@ impl TaskStore {
                         d.soter_nosign,
                         d.soter_stuck,
                         d.supports_strongbox,
+                        d.version.clone(),
                     ),
-                    None => (None, None, None, 0, None, None, None, None, None),
+                    None => (None, None, None, 0, None, None, None, None, None, None),
                 };
                 let has_tee_verdict = known_boot.is_some() || known_tee_error.is_some();
                 inner.devices.insert(
@@ -569,6 +575,8 @@ impl TaskStore {
                         soter_nosign: caps.soter_nosign.or(known_soter_nosign),
                         soter_stuck: caps.soter_stuck.or(known_soter_stuck),
                         supports_strongbox: caps.strongbox.or(known_supports_strongbox),
+                        // 老版本 relay 不带 ver，保留上次记下的版本。
+                        version: version.map(str::to_string).or(known_version),
                     },
                 );
                 self.mark_online_sync(device_id, hb_now);
