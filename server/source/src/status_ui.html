@@ -98,7 +98,7 @@ td.id-cell { padding: 6px 18px; }
   </div>
 
   <div class="panel">
-    <h2>在线 B 端设备<span>按负载升序排列</span></h2>
+    <h2>在线 B 端设备<span>自检通过的排前面、失败的排最后 · 组内按负载升序</span></h2>
     <div class="table-wrap"><table>
       <thead><tr><th>设备 ID</th><th>机型</th><th>版本</th><th>负载</th><th>最后在线</th></tr></thead>
       <tbody id="bBody"><tr><td colspan="5" class="empty">加载中…</td></tr></tbody>
@@ -142,12 +142,15 @@ async function load() {
     const d = await r.json();
     $('#modeBadge').textContent = '模式：' + (d.mode === 'serverbox' ? 'serverbox（服务器出证）' : 'physical（A/B 转发）') + ' · 服务端 v' + (d.version || '?');
 
-    const b = d.online_b_devices || [];
+    // 服务端按负载升序给，这里只把顺序按自检结果重排一遍：通过的在前、失败的在后，
+    // 还没自检过的夹在中间；同一档里保持服务端给的负载顺序（sort 是稳定的）。
+    const rank = x => x.tee_error ? 2 : (x.boot ? 0 : 1);
+    const b = (d.online_b_devices || []).slice().sort((x, y) => rank(x) - rank(y));
     _devices = b;
     $('#onlineBadge').textContent = '在线设备：' + b.length;
     $('#bBody').innerHTML = b.length
       ? b.map((x, i) => `<tr><td class="id-cell"><span class="id-link" onclick="showBoot(${i})" title="点击查看该设备的详情">${esc(x.device_id)}</span>${x.tee_error ? ' <span class="tag off" title="TEE 自检失败，点开看原因">自检失败</span>' : ''}${x.soter === true ? ' <span class="tag on" title="支持 SOTER 转发">SOTER</span>' : ''}${x.strongbox === true ? ' <span class="tag on" title="有 StrongBox HAL">SB</span>' : ''}</td><td>${esc(x.machine_id || '—')}</td><td>${esc(x.version || '—')}</td><td>${x.load ?? 0}</td><td>${fmtTime(x.last_seen_ms)}</td></tr>`).join('')
-      : '<tr><td colspan="4" class="empty">暂无 B 端设备在线</td></tr>';
+      : '<tr><td colspan="5" class="empty">暂无 B 端设备在线</td></tr>';
 
     const c = d.cert_devices || [];
     $('#certBadge').textContent = '证书设备：' + c.length;
