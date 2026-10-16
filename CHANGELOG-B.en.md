@@ -8,6 +8,7 @@
 - Older clients (A-side below 1.7.0) are left alone: a request without a version is served with the local values as-is, touching no property and restarting nothing.
 - New skip list `OMMEGA_RELAY_PATCHLEVEL_SKIP_PKGS`: the packages listed there are always served with the local values (the relay reports the list on every poll, so the server does not even send those requests over).
 - The panel now has two pages, Home and Skip list; the skip list page lets you view, add and remove package names.
+- Fixed a blind spot in the daemon lock: a lock left by an unclean reboot plus a reused process id kept the relay / adbr daemons reading the lock as "already held", so the relay would not come up (and could be killed by mistake). The lock now judges the real holder and rebuilds itself.
 
 ## 1.6.9
 
