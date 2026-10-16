@@ -2386,6 +2386,12 @@ pub async fn b_poll(
             .await;
     }
 
+    // 这台报的模块版本号也先记下来（老版本 relay 不带 `ver`，那就不动它）。
+    state
+        .store
+        .set_device_version(&q.device_id, q.ver.as_deref())
+        .await;
+
     // 模块 relay 的心跳固定带 `skip_pkgs`（空名单也带）和 `ver`，手机 App
     // （`org.ommega.deviceb`）两个都不带；用这个把两类设备分开，A 端面板
     // 「留空自己获取」只挑模块那种。
@@ -2401,7 +2407,6 @@ pub async fn b_poll(
             &machine_id,
             crate::queue::DeviceCaps::parse(q.caps.as_deref()),
             timeout,
-            q.ver.as_deref(),
         )
         .await
     {

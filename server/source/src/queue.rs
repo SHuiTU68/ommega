@@ -28,9 +28,10 @@ pub enum TaskStatus {
 /// 就永远等不到 pending TTL。
 const MAX_ASSIGN_ATTEMPTS: u32 = 5;
 
-/// 自检的结果回来之前，隔多久才允许重新排一次（毫秒）。设备刚连上时会立刻排
-/// 一次，正常情况下一个来回就出结论（`tee_error` 或 `boot`），不会再排。
-const SELFCHECK_RETRY_MS: u64 = 120_000;
+/// 没有启动信息（从来没出过链）的设备隔多久再排一次自检（毫秒）。这只是兜底：
+/// 出过链的设备不再自检 —— 它的启动信息靠真实请求的链来刷，B 端按 A 端声明的属性
+/// 出链，补丁日期这类值本来就随请求变，拿自检去盖反而会把真实请求下的值盖掉。
+const SELFCHECK_RETRY_MS: u64 = 30 * 60 * 1000;
 
 /// 两次「清理」之间至少隔多久（毫秒）。`reclaim_locked` / `expire_locked` 都是
 /// 对 `tasks` 的全表扫描，而 `pop_for_b` 的长轮询里每 250 ms 就回退醒一次
@@ -546,7 +547,6 @@ impl TaskStore {
         machine_id: &str,
         caps: DeviceCaps,
         timeout: Duration,
-        version: Option<&str>,
     ) -> Option<Task> {
         let deadline = Instant::now() + timeout;
         // 订阅版本号：入队那一刻不管我们有没有注册上，`changed()` 都会立刻返回。
@@ -588,7 +588,7 @@ impl TaskStore {
                         None, None, None, 0, None, None, None, None, None, None, false,
                     ),
                 };
-                let has_tee_verdict = known_boot.is_some() || known_tee_error.is_some();
+                let no_boot_yet = known_boot.is_none();
                 inner.devices.insert(
                     device_id.to_string(),
                     DeviceEntry {
@@ -607,7 +607,7 @@ impl TaskStore {
                         soter_stuck: caps.soter_stuck.or(known_soter_stuck),
                         supports_strongbox: caps.strongbox.or(known_supports_strongbox),
                         // 老版本 relay 不带 ver，保留上次记下的版本。
-                        version: version.map(str::to_string).or(known_version),
+                        version: known_version,
                         from_module: known_from_module,
                     },
                 );
@@ -617,14 +617,12 @@ impl TaskStore {
                         .active_machine
                         .insert(device_id.to_string(), (machine_id.to_string(), hb_now));
                 }
-                // 自检：设备一连上就替它排一次认证，把 TEE 状态（启动信息）落到
-                // 状态页 —— 否则得等它恰好接到一次 A 端请求才有人认识它，服务端
-                // 重启后这段空白期更长，而那些从来没接到过请求的设备（比如 TEE
-                // 出问题、认证一直失败的那台）在页面上永远是一片空白。已经有结论
-                // 就不再排（成功解析出启动信息、或已经失败并记了原因），结论还没
-                // 回来之前的重排由 `SELFCHECK_RETRY_MS` 限流。
+                // 自检只是兜底：给从来没有出过链的设备（刚装的、或者之前铸证一直
+                // 失败的那台）排一次，好让状态页有东西可看，也让它有机会报上真实
+                // 能力。链一旦出过就不再排 —— 那之后的启动信息、补丁日期靠真实请求
+                // 的链自己刷（B 端按 A 端声明的属性出链，本来就随请求变），不去盖掉。
                 if self.b_selfcheck
-                    && !has_tee_verdict
+                    && no_boot_yet
                     && hb_now.saturating_sub(known_probe_at) > SELFCHECK_RETRY_MS
                 {
                     let task_id = uuid::Uuid::new_v4().to_string();
@@ -1409,6 +1407,16 @@ impl TaskStore {
             inner.skip_pkgs.remove(device_id);
         } else {
             inner.skip_pkgs.insert(device_id.to_string(), pkgs);
+        }
+    }
+
+    /// 记下这台设备心跳里上报的模块版本号（见 `DeviceEntry::version`）。
+    /// 设备还没进表时什么都不做：同一轮 poll 马上会把它建出来，下一次心跳就带上了。
+    pub async fn set_device_version(&self, device_id: &str, version: Option<&str>) {
+        let Some(version) = version else { return };
+        let mut inner = self.inner.lock().await;
+        if let Some(d) = inner.devices.get_mut(device_id) {
+            d.version = Some(version.to_string());
         }
     }
 

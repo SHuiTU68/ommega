@@ -1,3 +1,13 @@
+//! vendored 的上游属性实现（Magisk 那套）。
+//!
+//! CI 拿 `-D warnings` 跑整个 workspace，而这几条在上游的写法里是有意为之的，
+//! 不为 lint 改它的形状（改了下一次同步上游还得再改回去）。
+#![allow(
+    clippy::too_many_arguments,
+    clippy::unnecessary_cast,
+    clippy::needless_range_loop
+)]
+
 mod persistent_prop;
 mod prop_area;
 mod prop_info;
