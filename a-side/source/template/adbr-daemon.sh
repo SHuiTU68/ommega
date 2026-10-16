@@ -48,18 +48,34 @@ esac
 
 # 单例：service.sh 每次跑都会把我们拉一遍，只有一份能持有这个锁。
 # 陈锁（持有者没了：强杀、断电）清掉重抢。
+# 同 daemon / daemon-injector：光看 pid 活着不够，得确认那个 pid 跑的是本脚本，
+# 否则 pid 被复用时会以为「已经有一份在跑」，adbr 通道就再也起不来。
+holder_is_us() {
+  p=$1
+  s=$2
+  [ -n "$p" ] || return 1
+  kill -0 "$p" 2>/dev/null || return 1
+  [ -r "/proc/$p/cmdline" ] || return 1
+  tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -F "sh $s " >/dev/null 2>&1
+}
+
+# 同 daemon 那层：抢锁有竞态，拿到之后要再核一次归属；退出只删自己的锁。
+lock_owned() { [ "$(cat "$LOCK_DIR/pid" 2>/dev/null)" = "$$" ]; }
+release_lock() { lock_owned && rm -rf "$LOCK_DIR" 2>/dev/null; return 0; }
+
 if mkdir "$LOCK_DIR" 2>/dev/null; then
   echo "$$" > "$LOCK_DIR/pid"
 else
-  holder=$(cat "$LOCK_DIR/pid" 2>/dev/null)
-  if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
+  if holder_is_us "$(cat "$LOCK_DIR/pid" 2>/dev/null)" "$0"; then
     exit 0
   fi
   rm -rf "$LOCK_DIR" 2>/dev/null
   mkdir "$LOCK_DIR" 2>/dev/null || exit 0
   echo "$$" > "$LOCK_DIR/pid"
+  sleep 1
+  lock_owned || exit 0
 fi
-trap 'rm -rf "$LOCK_DIR"' EXIT INT TERM HUP
+trap 'release_lock' EXIT INT TERM HUP
 
 truthy() {
   case "$(printf '%s' "$1" | tr -d ' \t\r' | tr 'A-Z' 'a-z')" in

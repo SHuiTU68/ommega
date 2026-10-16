@@ -115,13 +115,35 @@ mkdir -p "$STATE_DIR"
 # 而本脚本每轮开头都会 `pkill -9 -f <keymint 路径>` —— 多份并存时彼此把对方的
 # shadow 反复 SIGKILL（daemon.log 里一串 exited with code 137）。抢不到锁的直接退。
 LOCK_DIR=$STATE_DIR/keymint-daemon.lock
+
+# 锁里的 pid 可能是上一个实例留下的，而那个 pid 号早被别的进程复用了 —— 只看 kill -0
+# 会一直以为「还有人在跑」，守护就永久起不来（2026-10-16 在 NX721J / OPD2409 上都踩到：
+# 锁里留着 1666，重启后那个号被内核线程占了，keymint 静默 exit 0，看门循环空转）。
+# 所以除了「还活着」，还要确认这个 pid 现在跑的确实是本脚本。
+holder_is_us() {
+  p=$1
+  s=$2
+  [ -n "$p" ] || return 1
+  kill -0 "$p" 2>/dev/null || return 1
+  [ -r "/proc/$p/cmdline" ] || return 1
+  # cmdline 里的 NUL 转成空格，所以脚本路径后面一定跟着空格，正好把 daemon 和
+  # daemon-injector 这种前缀相同的名字区分开。
+  tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -F "sh $s " >/dev/null 2>&1
+}
+
+# 只认自己持有的锁：抢锁有竞态（两个实例同时认定「这是陈锁」时，先清后建的那份会把
+# 对方刚建的锁删掉，结果两份都在跑、互相 pkill），所以拿到之后要再核一次归属，
+# 退出时也只删自己的，别把下一任持有者的锁带走。
+lock_owned() { [ "$(cat "$LOCK_DIR/pid" 2>/dev/null)" = "$$" ]; }
+release_lock() { lock_owned && rm -rf "$LOCK_DIR" 2>/dev/null; return 0; }
+
 acquire_singleton() {
   mkdir -p "$STATE_DIR" 2>/dev/null
   if mkdir "$LOCK_DIR" 2>/dev/null; then
     :
   else
     holder=$(cat "$LOCK_DIR/pid" 2>/dev/null)
-    if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
+    if holder_is_us "$holder" "$0"; then
       log "[keymint-daemon] another instance (pid $holder) is running; exiting"
       exit 0
     fi
@@ -129,7 +151,10 @@ acquire_singleton() {
     mkdir "$LOCK_DIR" 2>/dev/null || exit 0
   fi
   echo $$ > "$LOCK_DIR/pid"
-  trap 'rm -rf "$LOCK_DIR"' EXIT INT TERM HUP
+  # 抢锁竞态兜底：再核一次，确实归自己才往下跑。
+  sleep 1
+  lock_owned || exit 0
+  trap 'release_lock' EXIT INT TERM HUP
 }
 acquire_singleton
 

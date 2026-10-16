@@ -489,17 +489,36 @@ tick_sleep() {
 # 单实例：同 daemon 那层 —— service.sh 的看门循环可能同时存在多份，每份 fork 一个
 # 注入器；多份并存时每轮都会 pkill 掉对方正在用的 keystore2/注入进程。抢不到锁就退。
 LOCK_DIR=$STATE_DIR/injector-daemon.lock
+
+# 同 daemon 那层：pid 复用会让锁看着「一直有人」，光 kill -0 不够，还要确认是本脚本。
+holder_is_us() {
+  p=$1
+  s=$2
+  [ -n "$p" ] || return 1
+  kill -0 "$p" 2>/dev/null || return 1
+  [ -r "/proc/$p/cmdline" ] || return 1
+  tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -F "sh $s " >/dev/null 2>&1
+}
+
+# 同 daemon 那层：抢锁有竞态，拿到之后要再核一次归属；退出只删自己的锁。
+lock_owned() { [ "$(cat "$LOCK_DIR/pid" 2>/dev/null)" = "$$" ]; }
+release_lock() { lock_owned && rm -rf "$LOCK_DIR" 2>/dev/null; return 0; }
+
 if mkdir "$LOCK_DIR" 2>/dev/null; then
   :
-elif [ -n "$(cat "$LOCK_DIR/pid" 2>/dev/null)" ] && kill -0 "$(cat "$LOCK_DIR/pid" 2>/dev/null)" 2>/dev/null; then
-  log "[injector-daemon] another instance (pid $(cat "$LOCK_DIR/pid" 2>/dev/null)) is running; exiting"
-  exit 0
 else
+  holder=$(cat "$LOCK_DIR/pid" 2>/dev/null)
+  if holder_is_us "$holder" "$0"; then
+    log "[injector-daemon] another instance (pid $holder) is running; exiting"
+    exit 0
+  fi
   rm -rf "$LOCK_DIR" 2>/dev/null
   mkdir "$LOCK_DIR" 2>/dev/null || exit 0
 fi
 echo $$ > "$LOCK_DIR/pid"
-trap 'rm -rf "$LOCK_DIR"' EXIT INT TERM HUP
+sleep 1
+lock_owned || exit 0
+trap 'release_lock' EXIT INT TERM HUP
 
 while true; do
   # Config and target list live in the single data location
