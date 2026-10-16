@@ -126,11 +126,28 @@ pub struct DeviceEntry {
     /// 心跳里上报的 relay 版本号（模块版本，例如 `1.7.0`）。`None` = 老版本 relay
     /// 没上报。状态页显示它；A 端面板「留空自己获取」也拿它挑同版本的 B。
     pub version: Option<String>,
-    /// 这台是「模块 relay」还是手机 App（`org.ommega.deviceb`）。模块的心跳固定带
-    /// `skip_pkgs`（1.7.0 起，空名单也带）和 `ver`（1.7.1 起），App 两种都不带，
-    /// 所以这条只看本次心跳带没带那两个参数。A 端面板「留空自己获取」只挑模块那种，
-    /// App 一个连不上、也不该被当成 B 端顶上去。
+    /// 这条心跳是不是带了模块 relay 专属的参数（`skip_pkgs`，1.7.0 起；`ver`，1.7.1 起）。
+    /// 两个都不带的不一定是 App（老版本模块也不带），所以只是判据之一，
+    /// 对外该用 `module_kind()`。
     pub from_module: bool,
+}
+
+impl DeviceEntry {
+    /// 这台是模块 relay（`Some(true)`）、手机 App（`Some(false)`）还是分不出来（`None`）。
+    ///
+    /// 心跳带了模块专属参数的一定是模块 relay；没带的看它出过的链 —— App 铸的链
+    /// AAID 固定是它自己的包名（`org.ommega.deviceb`），而模块中继别人请求时这个
+    /// 字段是请求方的包名，自检那条是 `org.ommega.selfcheck`。两边都不确定时给
+    /// `None`，调用方按“能用”处理：宁可多算一个，不能把老版本模块漏掉。
+    pub fn module_kind(&self) -> Option<bool> {
+        if self.from_module {
+            return Some(true);
+        }
+        match self.last_aaid.as_deref() {
+            Some(a) if a.starts_with("org.ommega.deviceb") => Some(false),
+            _ => None,
+        }
+    }
 }
 
 /// 逗号分隔的包名列表（心跳里的 `skip_pkgs`）。
