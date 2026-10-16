@@ -137,15 +137,20 @@ impl DeviceEntry {
     ///
     /// 心跳带了模块专属参数的一定是模块 relay；没带的看它出过的链 —— App 铸的链
     /// AAID 固定是它自己的包名（`org.ommega.deviceb`），而模块中继别人请求时这个
-    /// 字段是请求方的包名，自检那条是 `org.ommega.selfcheck`。两边都不确定时给
-    /// `None`，调用方按“能用”处理：宁可多算一个，不能把老版本模块漏掉。
+    /// 字段是请求方的包名，自检那条是 `org.ommega.selfcheck`，所以只要出过链、又
+    /// 不是 App 那个包名，就是模块（老版本 relay 也能这么认出来）。
+    /// 只有根本没出过链的（比如自检就失败的）才给 `None`，调用方按“能用”处理。
     pub fn module_kind(&self) -> Option<bool> {
         if self.from_module {
             return Some(true);
         }
         match self.last_aaid.as_deref() {
+            // App 铸的链固定带它自己的包名；其余出过链的都能说明是模块：自检那条是
+            // `org.ommega.selfcheck`，中继别人请求时是请求方的包名。
             Some(a) if a.starts_with("org.ommega.deviceb") => Some(false),
-            _ => None,
+            Some(_) => Some(true),
+            // 连一条链都没有（比如自检就失败的）才真的分不出来。
+            None => None,
         }
     }
 }
