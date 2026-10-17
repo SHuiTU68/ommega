@@ -54,6 +54,21 @@ pub fn is_enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
+/// 管理接口改过的开关落在 statedb 的 meta 里，重启后以它为准（否则又退回 .env）。
+const META_KEY: &str = "keybox_refresh";
+
+/// 算出这台服务端开机后的实际开关：持久化的值优先，没有才用启动配置。
+pub fn desired_from_state(config_value: bool) -> bool {
+    match crate::statedb::shared().get_meta(META_KEY) {
+        Ok(Some(v)) => v == "1",
+        Ok(None) => config_value,
+        Err(e) => {
+            tracing::warn!("autokeybox: 读持久化开关失败，用启动配置: {e:#}");
+            config_value
+        }
+    }
+}
+
 /// 真正在跑：开关开着，而且后台线程确实启动了。状态页与管理接口报的是这个值。
 pub fn is_running() -> bool {
     STARTED.load(Ordering::Relaxed) && ENABLED.load(Ordering::Relaxed)
@@ -66,6 +81,10 @@ pub fn is_started() -> bool {
 
 pub fn set_enabled(v: bool) {
     ENABLED.store(v, Ordering::Relaxed);
+    // 写穿：重启后按它恢复，而不是回到 .env 里的启动值。
+    if let Err(e) = crate::statedb::shared().set_meta(META_KEY, if v { "1" } else { "0" }) {
+        tracing::warn!("autokeybox: 持久化开关失败: {e:#}");
+    }
 }
 
 /// Global enable flag for the auto-cover step: after an auto-keybox refresh
