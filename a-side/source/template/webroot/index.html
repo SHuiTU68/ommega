@@ -479,10 +479,13 @@ function pageCount(){ return document.querySelectorAll(".page").length || 4; }
 function applyPage(i, animate){
   var pages = document.getElementById("pages");
   if (!pages) return;
-  activeTab = Math.max(0, Math.min(pageCount() - 1, i));
+  var next = Math.max(0, Math.min(pageCount() - 1, i));
   pages.classList.toggle("dragging", !animate);
-  pages.style.transform = "translateX(" + (-activeTab * 100) + "%)";
-  setActiveTab(activeTab);
+  pages.style.transform = "translateX(" + (-next * 100) + "%)";
+  /* 先让高亮跟上：setActiveTab 开头有「下标没变就直接返回」的短路，所以不能先改
+     activeTab，否则这里永远进不去，标签就一直是初始那个。 */
+  setActiveTab(next);
+  activeTab = next;
 }
 /* 外部跳转（比如保存后回到某页）用这个 */
 function gotoPage(i){ applyPage(i, true); }
