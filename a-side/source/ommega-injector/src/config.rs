@@ -324,19 +324,32 @@ fn apply_clienta_overrides(base: Arc<InjectorConfig>) -> Arc<InjectorConfig> {
     let scope_changed = overrides
         .scope_override
         .is_some_and(|value| value != base.filter.global_scope);
-    let extras: Vec<&String> = overrides
-        .extras
-        .iter()
-        .filter(|pkg| !base.scoop.iter().any(|s| s == *pkg))
-        .collect();
-    if extras.is_empty() && !scope_changed {
+    // 作用域的唯一事实源是面板写的 `target.txt`：只要它里面有东西，就以它为准，
+    // 不再把 injector.toml 里的 `scoop` 默认套餐进来（否则面板里取消勾选的那几个
+    // 依然会生效，2026-10-17 在 PKG110 上被当成“没勾还生效”）。
+    // `target.txt` 不存在或为空时（刚装、没开过面板）才回退到 `scoop` 默认值。
+    let panel_scoped = !overrides.extras.is_empty();
+    let extras: Vec<&String> = if panel_scoped {
+        Vec::new()
+    } else {
+        overrides
+            .extras
+            .iter()
+            .filter(|pkg| !base.scoop.iter().any(|s| s == *pkg))
+            .collect()
+    };
+    if extras.is_empty() && !scope_changed && !panel_scoped {
         return base;
     }
     let mut merged = (*base).clone();
     if let Some(value) = overrides.scope_override {
         merged.filter.global_scope = value;
     }
-    merged.scoop.extend(extras.into_iter().cloned());
+    if panel_scoped {
+        merged.scoop = overrides.extras.clone();
+    } else {
+        merged.scoop.extend(extras.into_iter().cloned());
+    }
     Arc::new(merged)
 }
 
