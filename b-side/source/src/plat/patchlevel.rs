@@ -31,6 +31,21 @@ pub const FOLLOW_PKGS_KEY: &str = "OMMEGA_RELAY_PATCHLEVEL_SKIP_PKGS";
 const OS_PROP: &str = "ro.build.version.security_patch";
 const VENDOR_PROP: &str = "ro.vendor.build.security_patch";
 
+/// 用户存储（CE）是否已就绪。`true` 等于「开机后至少解过一次锁」。
+const CE_AVAILABLE_PROP: &str = "sys.user.0.ce_available";
+
+/// 没解锁就不许动 TEE：keystore2 在「开机后还没解过锁」的状态下被重启，解锁流程依赖
+/// 的认证绑定会失效 —— 密码输对了也解不开（2026-10-17 在 PLC110 上实测）。所以这两项
+/// 是能不能切补丁日期（会连带重启 keymint HAL + keystore2）的前置条件。
+fn user_storage_unlocked() -> bool {
+    ce_unlocked_from_prop(getprop(CE_AVAILABLE_PROP).ok().as_deref())
+}
+
+/// 单独拆出来好写单测。
+fn ce_unlocked_from_prop(value: Option<&str>) -> bool {
+    matches!(value, Some("true"))
+}
+
 /// 找 resetprop：KernelSU / APatch 都自带，模块目录里也可能放了一份。
 const RESETPROP_CANDIDATES: &[&str] = &[
     "/data/adb/ommega/resetprop",
@@ -196,6 +211,13 @@ pub fn follow_a_side(payload: &Value, on: bool) -> Option<String> {
         .and_then(Value::as_i64)
         .and_then(vendor_prop_value);
     if want_os.is_none() && want_vendor.is_none() {
+        return None;
+    }
+
+    // 锁屏期不动：这笔直接按本机当前值出链（跟「不带日期的老客户端」同一条降级路），
+    // 等解锁后的下一笔再切。否则会出现「输对密码进不了桌面」。
+    if !user_storage_unlocked() {
+        log::info!("patchlevel follow: 设备还没解锁（CE 未就绪），这笔跳过、不改补丁日期");
         return None;
     }
 
@@ -394,6 +416,15 @@ fn restart_keystore2() -> Result<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// CE 没就绪（开机后还没解锁）时绝不能往下走，否则重启 keystore2 会把解锁弄坏。
+    #[test]
+    fn ce_availability_gates_the_switch() {
+        assert!(ce_unlocked_from_prop(Some("true")));
+        assert!(!ce_unlocked_from_prop(Some("false")));
+        assert!(!ce_unlocked_from_prop(Some("")));
+        assert!(!ce_unlocked_from_prop(None));
+    }
 
     #[test]
     fn formats_patch_levels() {
