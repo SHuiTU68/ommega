@@ -9,3 +9,4 @@
 - On the status page, devices that pass the self-check are listed first and failures last.
 - The panel pages follow your finger: one swipe turns one page and the tab highlight slides along; the tab labels are legible in dark mode.
 - Turning off "Allow adbr remote control" now also closes the debug port it opened, with no reboot needed.
+- Unticking every app in the scope really intercepts none - the built-in defaults no longer come back.
