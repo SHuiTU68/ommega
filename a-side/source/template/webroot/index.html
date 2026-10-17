@@ -535,11 +535,12 @@ function pillTo(i, animate){
   var r = tabRect(i);
   if (r) movePill(r.x, r.w, r.y, r.h, animate);
 }
-/* frac：拖动位移占一页的比例，-1..1；高亮块按这个比例插到相邻那个标签上。 */
+/* frac：拖动位移占一页的比例，-1..1；高亮块按这个比例插到相邻那个标签上。
+   注意方向是反的：手指左滑（frac<0）页面往左走，翻到的是右边那个标签。 */
 function pillFollow(frac){
   var a = tabRect(activeTab);
   if (!a) return;
-  var t = Math.max(-1, Math.min(1, frac));
+  var t = Math.max(-1, Math.min(1, -frac));
   var b = tabRect(activeTab + (t > 0 ? 1 : -1));
   if (!b){ movePill(a.x, a.w, a.y, a.h, false); return; }
   var k = Math.abs(t);
