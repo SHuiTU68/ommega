@@ -349,6 +349,7 @@ function exec(cmd){
 
 var MOD      = "/data/adb/modules/ommega";
 var STATE    = "/data/adb/ommega";
+var MODDIR   = "/data/adb/modules/ommega";     // 模块目录（injector.toml 在那）
 var DATA     = STATE + "/ommegadata";          // 指向 /data/misc/keystore/ommega 的软链
 var CONF     = DATA + "/config";
 var TARGET   = DATA + "/target.txt";
@@ -751,10 +752,31 @@ async function reloadAppFiles(){
     else if (/\?$/.test(s)) hack.push(s.slice(0, -1));
     else norm.push(s);
   });
+  /* target.txt 根本不存在（面板从没保存过作用域）时，真正生效的是 injector.toml
+     里那份 scoop 默认值。这时候把默认值勾上，面板显示的范围才是实际被接管的范围；
+     文件空着（打开保存但一个都没勾）就是真的一个都不接管，不能拿默认值顶上。 */
+  if (!norm.length && !gen.length && !hack.length && !(await targetExists())) {
+    norm = await defaultScopePackages();
+  }
   var sysSet = {};
   (parts[1] || "").split("\n").forEach(function(line){ var s = line.trim(); if (s) sysSet[s] = true; });
   curTarget = {normal: norm, generate: gen, hack: hack};
   return sysSet;
+}
+/* 作用域文件在不在：决定「没勾」到底是没配过、还是配成了空的。 */
+async function targetExists(){
+  var r = await exec("test -f " + TARGET + " && echo yes");
+  return /yes/.test(r.stdout || "");
+}
+/* injector.toml 里的 scoop 默认值（跟模块自带配置同一个源）。 */
+async function defaultScopePackages(){
+  var r = await exec("sed -n '/^scoop/,/^]/p' " + MODDIR + "/injector.toml 2>/dev/null");
+  var out = [];
+  (r.stdout || "").split("\n").forEach(function(line){
+    var m = line.match(/"([A-Za-z0-9_.]+)"/);
+    if (m && out.indexOf(m[1]) < 0) out.push(m[1]);
+  });
+  return out;
 }
 async function loadApps(){
   var hint = document.getElementById("applist-hint");

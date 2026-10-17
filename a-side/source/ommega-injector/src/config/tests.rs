@@ -364,3 +364,35 @@ fn flat_config_bool_reads_the_webroot_spellings() {
         "文件读不到就是 None，由调用处决定要不要当关"
     );
 }
+
+#[test]
+fn target_file_tells_unset_from_empty() {
+    let path = temp_config_path("target-empty");
+    fs::write(&*path, "").expect("target file should be writable");
+    assert_eq!(
+        read_target_file(&path),
+        Some(Vec::new()),
+        "面板一个都没勾：空文件也是明确结果，不能当成没配过去回退默认 scoop"
+    );
+
+    fs::write(
+        &*path,
+        "com.foo\ncom.bar!\ncom.baz?\n# comment\n[scope]\ncom.foo\n\n",
+    )
+    .expect("target file should be writable");
+    assert_eq!(
+        read_target_file(&path),
+        Some(vec![
+            "com.foo".to_string(),
+            "com.bar".to_string(),
+            "com.baz".to_string()
+        ]),
+        "脱掉 !/? 后缀、去重、跳过注释和段名"
+    );
+
+    assert_eq!(
+        read_target_file(Path::new("/definitely/not/there/target.txt")),
+        None,
+        "文件不存在才返回 None，由调用处保留 injector.toml 的默认 scoop"
+    );
+}

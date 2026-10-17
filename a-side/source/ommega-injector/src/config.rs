@@ -120,6 +120,7 @@ fn default_scoop() -> Vec<String> {
         "com.google.android.gms",
         "com.android.vending",
         "com.eltavine.duckdetector",
+        "com.oplus.engineermode",
     ]
     .into_iter()
     .map(str::to_string)
@@ -269,10 +270,9 @@ pub fn get() -> Arc<InjectorConfig> {
 
 /// Applies the legacy A-side files to the effective config:
 ///
-/// * `/data/misc/keystore/ommega/target.txt` — packages toggled in the webroot
-///   UI are merged into `scoop`, so those apps are intercepted exactly as under
-///   the old client-a module (only package names are added; deny/scope details
-///   still come from `injector.toml`).
+/// * `/data/misc/keystore/ommega/target.txt` — the packages ticked in the webroot
+///   UI replace `scoop` outright (an empty file means "nothing ticked"); the file
+///   being absent leaves `scoop` alone.
 /// * `/data/misc/keystore/ommega/config` — its `global_scope` key switches on
 ///   "intercept every app" mode.
 ///
@@ -286,8 +286,13 @@ pub fn get() -> Arc<InjectorConfig> {
 const CLIENTA_OVERRIDE_TTL: Duration = Duration::from_millis(200);
 
 struct ClientaOverrides {
-    /// `target.txt` 里的包名（已去重、已脱掉 `!`/`?` 后缀），还没跟 base 取差异。
-    extras: Vec<String>,
+    /// `target.txt` 里的包名（已去重、已脱掉 `!`/`?` 后缀）。
+    ///
+    /// `None` = 文件不存在或读不出来 —— 面板没碰过作用域页，沿用 `injector.toml`
+    /// 的 `scoop` 默认值；`Some(vec![])` = 面板明确一个都没勾，这时候就该一个都
+    /// 不接管（之前空的也当“没配过”处理，结果默认那六个照样生效，2026-10-17 报
+    /// 上来「作用域全没勾、密钥认证还是被接管」）。
+    target: Option<Vec<String>>,
     scope_override: Option<bool>,
 }
 
@@ -306,7 +311,7 @@ fn clienta_overrides() -> Arc<ClientaOverrides> {
     }
     // 读文件放在锁外，别让一次慢读把别的 binder 线程堵在这把锁上。
     let fresh = Arc::new(ClientaOverrides {
-        extras: read_clienta_target_extras(),
+        target: read_clienta_target(),
         scope_override: clienta_global_scope_override(),
     });
     let mut guard = CLIENTA_OVERRIDE_CACHE
@@ -324,41 +329,29 @@ fn apply_clienta_overrides(base: Arc<InjectorConfig>) -> Arc<InjectorConfig> {
     let scope_changed = overrides
         .scope_override
         .is_some_and(|value| value != base.filter.global_scope);
-    // 作用域的唯一事实源是面板写的 `target.txt`：只要它里面有东西，就以它为准，
-    // 不再把 injector.toml 里的 `scoop` 默认套餐进来（否则面板里取消勾选的那几个
-    // 依然会生效，2026-10-17 在 PKG110 上被当成“没勾还生效”）。
-    // `target.txt` 不存在或为空时（刚装、没开过面板）才回退到 `scoop` 默认值。
-    let panel_scoped = !overrides.extras.is_empty();
-    let extras: Vec<&String> = if panel_scoped {
-        Vec::new()
-    } else {
-        overrides
-            .extras
-            .iter()
-            .filter(|pkg| !base.scoop.iter().any(|s| s == *pkg))
-            .collect()
-    };
-    if extras.is_empty() && !scope_changed && !panel_scoped {
+    // 作用域的唯一事实源是面板写的 `target.txt`：文件在（哪怕内容是空的）就以它为准，
+    // 不再把 `injector.toml` 里的 `scoop` 默认套餐进来。只有文件根本不存在时才回退
+    // 到默认值 —— 那样刚装完、还没开过面板的设备仍然有可用的默认作用域。
+    if overrides.target.is_none() && !scope_changed {
         return base;
     }
     let mut merged = (*base).clone();
     if let Some(value) = overrides.scope_override {
         merged.filter.global_scope = value;
     }
-    if panel_scoped {
-        merged.scoop = overrides.extras.clone();
-    } else {
-        merged.scoop.extend(extras.into_iter().cloned());
+    if let Some(list) = overrides.target.as_ref() {
+        merged.scoop = list.clone();
     }
     Arc::new(merged)
 }
 
-/// `target.txt` 里的包名（只做内部去重，不跟 base 比）；结果由
-/// `clienta_overrides` 缓存。
-fn read_clienta_target_extras() -> Vec<String> {
-    let Ok(contents) = fs::read_to_string(CLIENTA_TARGET_PATH) else {
-        return Vec::new();
-    };
+/// `target.txt` 里的包名（只做内部去重并保留顺序）；文件不存在或读不出来 → `None`。
+fn read_clienta_target() -> Option<Vec<String>> {
+    read_target_file(Path::new(CLIENTA_TARGET_PATH))
+}
+
+fn read_target_file(path: &Path) -> Option<Vec<String>> {
+    let contents = fs::read_to_string(path).ok()?;
     let mut extras: Vec<String> = Vec::new();
     for line in contents.lines() {
         let line = line.trim();
@@ -374,7 +367,7 @@ fn read_clienta_target_extras() -> Vec<String> {
             extras.push(pkg.to_string());
         }
     }
-    extras
+    Some(extras)
 }
 
 /// The flat A-side config's `global_scope` value, or `None` when the file or
