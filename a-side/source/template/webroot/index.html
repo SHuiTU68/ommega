@@ -35,10 +35,15 @@
   .dot{width:8px;height:8px;border-radius:50%;background:#c9ccd2;flex:0 0 8px}
   .dot.on{background:var(--ok)} .dot.off{background:var(--bad)} .dot.warn{background:var(--warn)}
   /* 标签栏 */
-  .tabs{display:flex;gap:4px;padding:0 14px 10px}
+  .tabs{display:flex;gap:4px;padding:0 14px 10px;position:relative}
+  .tab-pill{position:absolute;left:0;top:0;border-radius:10px;background:var(--card);
+      border:1px solid var(--line);pointer-events:none;
+      transition:transform .26s cubic-bezier(.22,.61,.36,1),width .26s cubic-bezier(.22,.61,.36,1)}
+  .tabs.dragging .tab-pill{transition:none}
   .tab{flex:1;padding:8px 4px;border-radius:10px;border:1px solid transparent;background:transparent;
+      position:relative;z-index:1}
       color:var(--dim);font-size:13px;font-family:inherit}
-  .tab.on{background:var(--card);border-color:var(--line);color:var(--fg);font-weight:600}
+  .tab.on{background:transparent;border-color:transparent;color:var(--fg);font-weight:600}
   /* 分页 */
   .pages{flex:1;position:relative;overflow:hidden;min-width:0}
   .pages.dragging .page{transition:none}
@@ -143,6 +148,7 @@
 </div>
 
 <div class="tabs" id="tabs">
+  <span class="tab-pill" id="tabPill"></span>
   <button class="tab on" data-tab="0" data-i18n="tab.remote"></button>
   <button class="tab" data-tab="1" data-i18n="tab.scope"></button>
   <button class="tab" data-tab="2" data-i18n="tab.keys"></button>
@@ -505,13 +511,47 @@ function applyPage(i, animate){
   setActiveTab(next);
   activeTab = next;
   layoutPages(0, false);
+  pillTo(next, animate);
 }
 /* 外部跳转（比如保存后回到某页）用这个 */
 function gotoPage(i){ applyPage(i, true); }
+/* 顶部那块高亮做成一根单独的元素，切页 / 拖动时跟着位移，而不是直接跳过去。 */
+function tabRect(i){
+  var tb = document.querySelectorAll(".tab")[i];
+  if (!tb) return null;
+  return {x: tb.offsetLeft, w: tb.offsetWidth, y: tb.offsetTop, h: tb.offsetHeight};
+}
+function movePill(x, w, y, h, animate){
+  var p = document.getElementById("tabPill");
+  if (!p) return;
+  var tabs = document.getElementById("tabs");
+  if (tabs) tabs.classList.toggle("dragging", !animate);
+  if (w) p.style.width = w + "px";
+  if (h) p.style.height = h + "px";
+  if (y || y === 0) p.style.top = y + "px";
+  p.style.transform = "translateX(" + x + "px)";
+}
+function pillTo(i, animate){
+  var r = tabRect(i);
+  if (r) movePill(r.x, r.w, r.y, r.h, animate);
+}
+/* frac：拖动位移占一页的比例，-1..1；高亮块按这个比例插到相邻那个标签上。 */
+function pillFollow(frac){
+  var a = tabRect(activeTab);
+  if (!a) return;
+  var t = Math.max(-1, Math.min(1, frac));
+  var b = tabRect(activeTab + (t > 0 ? 1 : -1));
+  if (!b){ movePill(a.x, a.w, a.y, a.h, false); return; }
+  var k = Math.abs(t);
+  movePill(a.x + (b.x - a.x) * k, a.w + (b.w - a.w) * k, a.y, a.h, false);
+}
+
 function wireTabs(){
   var pages = document.getElementById("pages");
   if (!pages) return;
   applyPage(activeTab, false);
+  pillTo(activeTab, false);
+  requestAnimationFrame(function(){ pillTo(activeTab, false); });
 
   document.querySelectorAll(".tab").forEach(function(tb){
     tb.onclick = function(){ applyPage(parseInt(tb.dataset.tab, 10) || 0, true); };
@@ -538,6 +578,7 @@ function wireTabs(){
     /* 到头的方向阻尼一下，避免拉出去一屏空白 */
     if ((activeTab === 0 && dx > 0) || (activeTab === pageCount() - 1 && dx < 0)) dx = dx / 3;
     layoutPages(dx, true);
+    pillFollow(dx / (pages.clientWidth || 1));
     e.preventDefault();
   }, {passive: false});
   function endDrag(){
