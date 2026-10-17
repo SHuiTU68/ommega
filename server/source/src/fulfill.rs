@@ -150,14 +150,27 @@ pub struct Fulfill {
 }
 
 impl Fulfill {
+    /// 运行期开关在 statedb 里的键。
+    const MODE_KEY: &'static str = "serverbox";
+
     pub fn new(enabled: bool, db: Option<Arc<Db>>) -> Arc<Self> {
+        let state = crate::statedb::shared();
+        // 界面切过的值优先于启动配置：不然一次重启就又退回 .env 里的启动值（2026-10-17 踩过）。
+        let enabled = match state.get_meta(Self::MODE_KEY) {
+            Ok(Some(v)) => v == "1",
+            Ok(None) => enabled,
+            Err(e) => {
+                tracing::warn!("fulfill: 读持久化开关失败，用启动配置: {e:#}");
+                enabled
+            }
+        };
         let f = Arc::new(Self {
             inner: Mutex::new(Inner::default()),
             enabled: AtomicBool::new(enabled),
             attest_gates: Mutex::new(HashMap::new()),
             self_signed_cache: Mutex::new(HashMap::new()),
             db,
-            state: crate::statedb::shared(),
+            state,
         });
         f.load_sessions();
         f
@@ -171,6 +184,13 @@ impl Fulfill {
 
     pub fn set_enabled(&self, on: bool) {
         self.enabled.store(on, Ordering::Relaxed);
+        // 写穿到 statedb：重启后按它恢复，而不是回到 .env 里的启动值。
+        if let Err(e) = self
+            .state
+            .set_meta(Self::MODE_KEY, if on { "1" } else { "0" })
+        {
+            tracing::warn!("fulfill: 持久化开关失败: {e:#}");
+        }
     }
 
     fn session_expired(s: &Session) -> bool {

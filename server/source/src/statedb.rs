@@ -164,7 +164,10 @@ impl StateDb {
                  first_seen_ms INTEGER NOT NULL,
                  last_seen_ms  INTEGER NOT NULL,
                  PRIMARY KEY(slot_id, family, token));
-             CREATE INDEX IF NOT EXISTS idx_owners_slot ON soter_slot_owners(slot_id, family);",
+             CREATE INDEX IF NOT EXISTS idx_owners_slot ON soter_slot_owners(slot_id, family);
+             CREATE TABLE IF NOT EXISTS meta(
+                 key   TEXT PRIMARY KEY,
+                 value TEXT NOT NULL);",
         )
         .context("state db schema")?;
         // v1 -> v2：老库的会话表没有 `used_epoch_ms`。补上，并拿创建时间顶上
@@ -256,6 +259,28 @@ impl StateDb {
             out.push(row?);
         }
         Ok(out)
+    }
+
+    /// 通用小键值：目前只用来把「运行期开关」落盘（比如 serverbox 模式），
+    /// 让重启后不退回配置文件里的启动值。
+    pub fn get_meta(&self, key: &str) -> Result<Option<String>> {
+        let conn = self.plain();
+        let value = conn
+            .query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {
+                r.get::<_, String>(0)
+            })
+            .optional()?;
+        Ok(value)
+    }
+
+    pub fn set_meta(&self, key: &str, value: &str) -> Result<()> {
+        let conn = self.plain();
+        conn.execute(
+            "INSERT INTO meta(key, value) VALUES(?1, ?2) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
     }
 
     /// 按 alias 单查一条（内存热缓存没命中时走这里）。
