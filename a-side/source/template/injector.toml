@@ -10,6 +10,9 @@ scoop = [
   "com.google.android.gms",
   "com.android.vending",
   "com.eltavine.duckdetector",
+  # 一加的工程模式：厂内自检会直接调 KeyMint 看链，不包进来就只能看到原生那套。
+  # 同族的 engineernetwork / engineercamera 默认不包，需要时在面板里单独勾。
+  "com.oplus.engineermode",
 ]
 
 [main]
