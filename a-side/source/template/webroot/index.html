@@ -476,25 +476,35 @@ function quoteShell(v){ return v === "" ? '""' : '"' + String(v).replace(/(["\\$
 
 /* ---------------------------- 分页（横向滑动） ---------------------------- */
 /* 不用 CSS 的 scroll-snap：在安卓 WebView 上轻扫一下会被惯性带着连跳好几页，
-   用户反馈「滑动一点能飘三里地」。改成按下标 + transform 的手写分页：一次手势最多
-   翻一页，位移不够就弹回去。 */
+   用户反馈「滑动一点能飘三里地」。改成下标 + 绝对定位的手写分页：拖动时当前页和
+   相邻页跟着手指走，松手后一页一页吸附。 */
 var activeTab = 0;
 function pageEls(){ return document.querySelectorAll(".page"); }
 function pageCount(){ return pageEls().length || 4; }
+
+/* dx：拖动位移（px）；dragMode：拖动中（相邻页也要露出来）。 */
+function layoutPages(dx, dragMode){
+  var ps = pageEls();
+  if (!ps.length) return;
+  for (var k = 0; k < ps.length; k++){
+    var rel = k - activeTab;
+    var show = dragMode ? Math.abs(rel) <= 1 : rel === 0;
+    ps[k].classList.toggle("on", show);
+    ps[k].style.opacity = show ? "1" : "0";
+    ps[k].style.transform = "translateX(calc(" + (rel * 100) + "% + " + dx + "px))";
+    ps[k].style.pointerEvents = rel === 0 ? "auto" : "none";
+  }
+}
+
 function applyPage(i, animate){
   var ps = pageEls();
   if (!ps.length) return;
   var next = Math.max(0, Math.min(ps.length - 1, i));
   var host = document.getElementById("pages");
   if (host) host.classList.toggle("dragging", !animate);
-  /* 绝对定位 + 每页自己的 transform：不再依赖容器宽度，转场也不会算偏。 */
-  for (var k = 0; k < ps.length; k++){
-    var on = k === next;
-    ps[k].classList.toggle("on", on);
-    ps[k].style.transform = on ? "translateX(0)" : (k < next ? "translateX(-12%)" : "translateX(12%)");
-  }
   setActiveTab(next);
   activeTab = next;
+  layoutPages(0, false);
 }
 /* 外部跳转（比如保存后回到某页）用这个 */
 function gotoPage(i){ applyPage(i, true); }
@@ -502,14 +512,13 @@ function wireTabs(){
   var pages = document.getElementById("pages");
   if (!pages) return;
   applyPage(activeTab, false);
-  requestAnimationFrame(function(){ applyPage(activeTab, true); });
 
   document.querySelectorAll(".tab").forEach(function(tb){
     tb.onclick = function(){ applyPage(parseInt(tb.dataset.tab, 10) || 0, true); };
   });
 
-  /* 手势：横向位移超过一页的 1/5（最少 48px）才翻页；纵向优先时不拦触摸，
-     页面自己的上下滚动照常。 */
+  /* 手势：拖动时跟手，松手时横向位移超过一页的 1/5（至少 48px）才翻页；
+     纵向优先时不拦触摸，页面内上下滚动照常。 */
   var x0 = null, y0 = null, dx = 0, axis = 0;   /* axis: 0 未定 / 1 横向 / 2 纵向 */
   pages.addEventListener("touchstart", function(e){
     if (e.touches.length !== 1) return;
@@ -526,10 +535,14 @@ function wireTabs(){
       if (axis === 2){ x0 = null; pages.classList.remove("dragging"); return; }
     }
     dx = nx;
+    /* 到头的方向阻尼一下，避免拉出去一屏空白 */
+    if ((activeTab === 0 && dx > 0) || (activeTab === pageCount() - 1 && dx < 0)) dx = dx / 3;
+    layoutPages(dx, true);
     e.preventDefault();
   }, {passive: false});
   function endDrag(){
     if (x0 === null) return;
+    pages.classList.remove("dragging");
     var w = pages.clientWidth || 1;
     var th = Math.max(48, w / 5);
     var next = activeTab;
