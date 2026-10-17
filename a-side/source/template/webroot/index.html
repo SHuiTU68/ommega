@@ -39,10 +39,9 @@
       color:var(--dim);font-size:13px;font-family:inherit}
   .tab.on{background:var(--card);border-color:var(--line);color:var(--fg);font-weight:600}
   /* 分页 */
-  .pages{flex:1;display:flex;overflow-x:auto;overflow-y:hidden;scroll-snap-type:x mandatory;
-      scroll-behavior:smooth;-webkit-overflow-scrolling:touch}
-  .pages::-webkit-scrollbar{display:none}
-  .page{flex:0 0 100%;width:100%;scroll-snap-align:start;overflow-y:auto;padding:0 14px 28px}
+  .pages{flex:1;display:flex;will-change:transform;transition:transform .26s cubic-bezier(.22,.61,.36,1)}
+  .pages.dragging{transition:none}
+  .page{flex:0 0 100%;width:100%;overflow-y:auto;padding:0 14px 28px}
   .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:12px}
   .card h2{margin:0 0 10px;font-size:14px;font-weight:600;color:var(--dim)}
   .row{display:flex;align-items:center;gap:10px;padding:7px 0;border-top:1px solid var(--line)}
@@ -472,30 +471,65 @@ function mergeKV(original, vals, managed, dropEmpty){
 function quoteShell(v){ return v === "" ? '""' : '"' + String(v).replace(/(["\\$`])/g, "\\$1") + '"'; }
 
 /* ---------------------------- 分页（横向滑动） ---------------------------- */
-/* 分页由 wireTabs 管；这个只给外部（比如后续跳转）用 */
-function gotoPage(i){
+/* 不用 CSS 的 scroll-snap：在安卓 WebView 上轻扫一下会被惯性带着连跳好几页，
+   用户反馈「滑动一点能飘三里地」。改成按下标 + transform 的手写分页：一次手势最多
+   翻一页，位移不够就弹回去。 */
+var activeTab = 0;
+function pageCount(){ return document.querySelectorAll(".page").length || 4; }
+function applyPage(i, animate){
   var pages = document.getElementById("pages");
-  pages.scrollLeft = i * pages.clientWidth;
-  setActiveTab(i);
+  if (!pages) return;
+  activeTab = Math.max(0, Math.min(pageCount() - 1, i));
+  pages.classList.toggle("dragging", !animate);
+  pages.style.transform = "translateX(" + (-activeTab * 100) + "%)";
+  setActiveTab(activeTab);
 }
+/* 外部跳转（比如保存后回到某页）用这个 */
+function gotoPage(i){ applyPage(i, true); }
 function wireTabs(){
   var pages = document.getElementById("pages");
-  var lock = 0;          // 程序化滚动期间不要用 scroll 位置反推下标：平滑滚动会路
-                         // 过中间页，反推出来的下标一闪一闪（先回旧页再上新页）
+  if (!pages) return;
+  applyPage(activeTab, false);
+  requestAnimationFrame(function(){ applyPage(activeTab, true); });
+
   document.querySelectorAll(".tab").forEach(function(tb){
-    tb.onclick = function(){
-      var i = parseInt(tb.dataset.tab, 10);
-      lock = Date.now() + 500;
-      pages.scrollLeft = i * pages.clientWidth;
-      setActiveTab(i);
-    };
+    tb.onclick = function(){ applyPage(parseInt(tb.dataset.tab, 10) || 0, true); };
   });
-  pages.addEventListener("scroll", function(){
-    if (Date.now() < lock) return;
-    setActiveTab(Math.round(pages.scrollLeft / Math.max(1, pages.clientWidth)));
-  });
+
+  /* 手势：横向位移超过一页的 1/5（最少 48px）才翻页；纵向优先时不拦触摸，
+     页面自己的上下滚动照常。 */
+  var x0 = null, y0 = null, dx = 0, axis = 0;   /* axis: 0 未定 / 1 横向 / 2 纵向 */
+  pages.addEventListener("touchstart", function(e){
+    if (e.touches.length !== 1) return;
+    x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; dx = 0; axis = 0;
+    pages.classList.add("dragging");
+  }, {passive: true});
+  pages.addEventListener("touchmove", function(e){
+    if (x0 === null || e.touches.length !== 1) return;
+    var nx = e.touches[0].clientX - x0;
+    var ny = e.touches[0].clientY - y0;
+    if (!axis){
+      if (Math.abs(nx) < 8 && Math.abs(ny) < 8) return;
+      axis = Math.abs(nx) > Math.abs(ny) ? 1 : 2;
+      if (axis === 2){ x0 = null; pages.classList.remove("dragging"); return; }
+    }
+    dx = nx;
+    pages.style.transform = "translateX(calc(" + (-activeTab * 100) + "% + " + dx + "px))";
+    e.preventDefault();
+  }, {passive: false});
+  function endDrag(){
+    if (x0 === null) return;
+    var w = pages.clientWidth || 1;
+    var th = Math.max(48, w / 5);
+    var next = activeTab;
+    if (dx <= -th) next = activeTab + 1;
+    else if (dx >= th) next = activeTab - 1;
+    x0 = null; dx = 0; axis = 0;
+    applyPage(next, true);
+  }
+  pages.addEventListener("touchend", endDrag, {passive: true});
+  pages.addEventListener("touchcancel", endDrag, {passive: true});
 }
-var activeTab = 0;
 function setActiveTab(i){
   if (i === activeTab) return;      // 同一个就别重写 class，免得闪
   activeTab = i;
