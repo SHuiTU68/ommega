@@ -1425,10 +1425,37 @@ async fn run_soter_task_inner(state: &AppState, body: &Value) -> Response {
         consistent_soter_target(requested_online, requested, None, resolved)
     };
 
+    // 点名那台不在线时：只用配置的兜底 B（不按负载乱挑），兜底也不可用才走服务端。
+    // 只对非写操作生效 —— 写操作（建料/导出/删）必须在点名那台上做，换设备会把
+    // 钥匙状态挪到别处（见下面 `soter_mutation_cross_served` 那段说明）。
+    let fallback_wanted = !requested_online
+        && !state.cfg.soter_fallback_device.is_empty()
+        && !soter_op_is_mutation(op);
+    let fallback_target = if fallback_wanted {
+        let want = state.cfg.soter_fallback_device.as_str();
+        connected
+            .iter()
+            .find(|d| d.device_id == want)
+            .filter(|d| {
+                d.supports_soter != Some(false) && !(needs_sign && d.soter_nosign == Some(true))
+            })
+            .map(|d| d.device_id.clone())
+    } else {
+        None
+    };
+    let used_fallback = fallback_target.is_some();
+    let b_target = if fallback_wanted {
+        fallback_target
+    } else {
+        b_target
+    };
+
     // 点名的 B 端能用就先走它，物理 / serverbox 两种模式一样：服务端那两层只在
     // 这台接不了（离线、能力不足、或这一笔做不下去）时才接管。没点名、或点名那台
     // 不可用时保持原来的模式顺序（serverbox 先服务端）。
-    let named_b_usable = !route_request.is_empty() && b_target.as_deref() == Some(route_request);
+    // 点名的 B 能用、或者落到了兜底 B，都先走 B；两者都没有才按模式顺序。
+    let named_b_usable =
+        (!route_request.is_empty() && b_target.as_deref() == Some(route_request)) || used_fallback;
     let order: &[&str] = if serverbox && !named_b_usable {
         &["keybox", "b", "self_signed"]
     } else {

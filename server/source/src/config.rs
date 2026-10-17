@@ -34,6 +34,10 @@ pub struct Config {
     /// `physical` (default) routes A/B tasks through the queue; `server_keybox`
     /// fulfils tasks locally using the stored DeviceServerIdentity.
     pub attest_source: String,
+    /// SOTER 点名那台 B 离线时统一落到哪台（空 = 保持原来的按负载挑）。
+    /// 也只在非写操作上生效：写操作仍严格跟着点名那台，不换设备。
+    /// `RELAY_SOTER_FALLBACK_DEVICE`
+    pub soter_fallback_device: String,
     /// Seconds a B-side assignment may stay pending before being reclaimed.
     ///
     /// “设备接到任务后多久必须交结果”的死线，超时就把任务放回队列，免得一台卡住
@@ -137,6 +141,7 @@ impl Default for Config {
             keybox_refresh_enabled: true,
             keybox_refresh_interval_secs: 7200,
             attest_source: "physical".to_string(),
+            soter_fallback_device: String::new(),
             assignment_timeout_secs: 3,
             wait_result_timeout_secs: 3,
             // SOTER 这条要的是「快 + 准」：真机那条链路健康时实测 70~190 毫秒就回来了,
@@ -278,6 +283,9 @@ impl Config {
         );
         if let Some(v) = env_or_dotenv(&dotenv, "RELAY_ATTEST_SOURCE") {
             cfg.attest_source = v;
+        }
+        if let Some(v) = env_or_dotenv(&dotenv, "RELAY_SOTER_FALLBACK_DEVICE") {
+            cfg.soter_fallback_device = v.trim().to_string();
         }
         cfg.assignment_timeout_secs = env_u64("RELAY_ASSIGNMENT_TIMEOUT", 3);
         cfg.wait_result_timeout_secs = env_u64("RELAY_WAIT_RESULT_TIMEOUT", 3);
