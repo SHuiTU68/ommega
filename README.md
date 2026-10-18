@@ -37,9 +37,11 @@ Ommega 是一个三端远程 TEE 认证系统：A 端是服务请求端，B 端�
 | B 端 Token | `Mytju8b0_lhLlqTKcEUhuwSbAsAtjom0` |
 | 设备 ID（B 端默认，也是官方预注册的那台） | `device-b-2` |
 
-### B 端配置（b-side 模块 + b-app）
+### B 端配置（装在**有锁**设备上）
 
-1. 安装 [Releases](https://github.com/jiyin004-jpg/ommega/releases) 里的 `client-b-app-release.apk`，刷入同页的 `ommega-b-release-<版本>.zip` 并重启（该 zip 同时包含 arm64-v8a 与 x86_64，安装时按设备架构自动选）
+> B 端只需要模块。`client-b-app-release.apk` 只是展示页面（玩具），没有实际出链作用，装不装都一样。
+
+1. 刷入 [Releases](https://github.com/jiyin004-jpg/ommega/releases) 里的 `ommega-b-release-<版本>.zip` 并重启（该 zip 同时包含 arm64-v8a 与 x86_64，安装时按设备架构自动选）
 2. 编辑 `/data/adb/ommega/relay.conf`，填入官方配置：
 
 ```

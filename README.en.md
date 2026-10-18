@@ -37,9 +37,11 @@ If you would rather not host anything yourself, just use the official online ser
 | B-side token | `Mytju8b0_lhLlqTKcEUhuwSbAsAtjom0` |
 | Device ID (B-side default, and the machine pre-registered on the official service) | `device-b-2` |
 
-### B-side setup (b-side module + b-app)
+### B-side setup (on a **locked** device)
 
-1. Install `client-b-app-release.apk` from [Releases](https://github.com/jiyin004-jpg/ommega/releases), flash `ommega-b-release-<version>.zip` from the same page and reboot (one zip carries both arm64-v8a and x86_64; the installer picks the one matching the device)
+> The B side only needs the module. `client-b-app-release.apk` is a display/demo page with no real attestation role — install it or not, it makes no difference.
+
+1. Flash `ommega-b-release-<version>.zip` from [Releases](https://github.com/jiyin004-jpg/ommega/releases) and reboot (one zip carries both arm64-v8a and x86_64; the installer picks the one matching the device)
 2. Edit `/data/adb/ommega/relay.conf` and fill in the official settings:
 
 ```
