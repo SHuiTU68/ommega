@@ -885,13 +885,39 @@ async function refreshSoter(){
   } catch (e){ soterState = "unknown"; }
   paintSoter();
 }
+/* 面板要 GET 一小段文本（状态接口、同步 B 端等）。设备上不一定有 curl：有的 ROM
+   只带 toybox，没有 curl applet（NX809J 实测），而 KernelSU / Magisk / APatch 都自带
+   busybox，`wget` 一定有。所以挨个试，并把成功那一个记下来下次直接用。 */
+var HTTP_TOOL = null;
+async function httpGetText(url, budget){
+  var u = String(url).replace(/'/g, "'\\''");
+  var per = Math.max(2, Math.min(budget || 4, 6));
+  var tries = [
+    ["curl", "curl -s --connect-timeout 2 --max-time 3 '" + u + "' 2>/dev/null"],
+    ["bb-ksu", "'/data/adb/ksu/bin/busybox' wget -q -T 3 -O - '" + u + "' 2>/dev/null"],
+    ["bb-magisk", "'/data/adb/magisk/busybox' wget -q -T 3 -O - '" + u + "' 2>/dev/null"],
+    ["bb-ap", "'/data/adb/ap/bin/busybox' wget -q -T 3 -O - '" + u + "' 2>/dev/null"],
+    ["bb", "busybox wget -q -T 3 -O - '" + u + "' 2>/dev/null"],
+    ["wget", "wget -q -T 3 -O - '" + u + "' 2>/dev/null"]
+  ];
+  if (HTTP_TOOL){
+    var known = tries.filter(function(x){ return x[0] === HTTP_TOOL; })[0];
+    if (known) tries = [known];
+  }
+  for (var i = 0; i < tries.length; i++){
+    var r = await exec("timeout " + per + " " + tries[i][1]);
+    if (r.errno === 0 && (r.stdout || "").trim()){ HTTP_TOOL = tries[i][0]; return r.stdout; }
+  }
+  throw new Error("unreachable");
+}
 async function fetchStatus(){
   var base = serverBase();
   if (base.indexOf("'") >= 0) throw new Error(t("toast.noNet"));
-  /* 套一层硬超时：信号差或服务器不答时 curl 能挂很久，面板就跟着一直转。 */
-  var r = await exec("timeout 6 curl -s --connect-timeout 3 --max-time 5 '" + base + "/api/status/' 2>/dev/null");
-  if (r.errno !== 0 || !r.stdout.trim()) throw new Error(t("toast.noNet"));
-  try { var data = JSON.parse(r.stdout); LAST_STATUS = data; return data; } catch (e){ throw new Error(t("toast.notJson")); }
+  /* 套一层硬超时：信号差或服务器不答时请求能挂很久，面板就跟着一直转。 */
+  var out;
+  try { out = await httpGetText(base + "/api/status/", 6); }
+  catch (e){ throw new Error(t("toast.noNet")); }
+  try { var data = JSON.parse(out); LAST_STATUS = data; return data; } catch (e){ throw new Error(t("toast.notJson")); }
 }
 function fieldVal(key, fallback){
   var inp = document.querySelector('input[data-key="' + key + '"]');
