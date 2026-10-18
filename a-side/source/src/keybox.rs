@@ -187,16 +187,23 @@ impl KeyBox {
     }
 
     fn signing_info(&self, key_type: SigningKeyType) -> Result<SigningInfoSnapshot, Error> {
+        // 证书里的「签发者用哪种钥匙」跟「叶子用哪种钥匙」是两件独立的事：RSA 叶
+        // 子完全可以由 EC 签发（反之亦然）。而大多数分发的 keybox 只有一个 EC 条目，
+        // 以前在这里只按 `algo_hint` 硬选，于是所有 RSA 钥匙的认证都报
+        // 「keybox has no Rsa signing key」—— Duck Detector 的 KeyMint crypto 项就
+        // 是靠这些 RSA 变体判红的。
+        //
+        // 所以：要的那一种没有就用另一种顶上（优先 EC），链路和身份都不换。
+        let wanted = match key_type.algo_hint {
+            SigningAlgorithm::Rsa => "RSA",
+            SigningAlgorithm::Ec => "EC",
+        };
         let info = match key_type.algo_hint {
-            SigningAlgorithm::Rsa => self.rsa_info.as_ref(),
-            SigningAlgorithm::Ec => self.ec_info.as_ref(),
+            SigningAlgorithm::Rsa => self.rsa_info.as_ref().or(self.ec_info.as_ref()),
+            SigningAlgorithm::Ec => self.ec_info.as_ref().or(self.rsa_info.as_ref()),
         };
         let info = info.ok_or_else(|| {
-            kmr_common::km_err!(
-                UnknownError,
-                "keybox has no {:?} signing key",
-                key_type.algo_hint
-            )
+            kmr_common::km_err!(UnknownError, "keybox has no {wanted} signing key")
         })?;
 
         Ok(SigningInfoSnapshot {
@@ -782,12 +789,18 @@ mod tests {
                 .cert_chain,
             keybox.ec_info.as_ref().unwrap().chain
         );
-        assert!(parsed
-            .signing_info(SigningKeyType {
-                which: SigningKey::Batch,
-                algo_hint: SigningAlgorithm::Rsa,
-            })
-            .is_err());
+        // 只有 EC 一枚时，RSA 请求也能拿到（用 EC 签）—— 证书签发者与叶子钥匙
+        // 算法本就是两件事，以前这里硬选才让 RSA 认证全部失败。
+        assert_eq!(
+            parsed
+                .signing_info(SigningKeyType {
+                    which: SigningKey::Batch,
+                    algo_hint: SigningAlgorithm::Rsa,
+                })
+                .unwrap()
+                .cert_chain,
+            keybox.ec_info.as_ref().unwrap().chain
+        );
         assert_eq!(parsed.to_xml_string().matches("<Key algorithm=").count(), 1);
         // Round-trips to a valid, single-keybox document.
         let round_tripped = KeyBox::from_xml_str(&parsed.to_xml_string()).unwrap();
