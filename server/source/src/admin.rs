@@ -1188,15 +1188,14 @@ pub async fn admin_default_device_status(
     } else {
         Some(connected.iter().any(|d| d.device_id == configured))
     };
-    let devices: Vec<Value> = connected
-        .iter()
-        .map(|d| json!({ "device_id": d.device_id, "machine_id": d.machine_id }))
-        .collect();
+    // 只回「配的那台在不在线」+ 在线总数。别把整张设备表倒出去：在线 B 是几百台级别，
+    // 这个接口每开一次面板就被拉一次，返回体会越长越大（2026-10-18 实测 200+ 台）。
+    // 需要具体 id 的地方自己走 `/api/admin/devices/` 或 `/api/status/`。
     Json(json!({
         "status": "ok",
         "device_id": configured,
         "online": online,
-        "connected": devices,
+        "online_total": connected.len(),
     }))
     .into_response()
 }
