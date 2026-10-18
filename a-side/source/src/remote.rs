@@ -655,12 +655,12 @@ impl RemoteRelay {
         Ok(r.token)
     }
 
+    /// 要落哪台 B。留空是正常状态：A 端装好默认就是空的，服务端会用控制台里配的
+    /// 「默认设备 id」，没配就按负载挑一台在线的。这里只做去空白，不再把它当错误
+    /// —— 以前空值直接报错，请求连发都不发，链就悄悄落回本地那条 AOSP 软件链。
     pub(crate) fn device_id() -> Result<String> {
         let r = Self::remote()?;
-        if r.device_id.is_empty() {
-            return Err(anyhow!("remote device_id not configured"));
-        }
-        Ok(r.device_id)
+        Ok(r.device_id.trim().to_string())
     }
 
     /// POST a JSON body to a relay endpoint.  Returns `Ok(Some(json))` on 2xx

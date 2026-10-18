@@ -498,6 +498,21 @@ h3.sec-title { font-size: 13px; color: var(--muted); text-transform: uppercase; 
   </div>
 </div>
 
+<!-- 默认设备 id（A 端留空时落到哪台 B） -->
+<div class="panel">
+  <h2>默认设备 ID <span class="hint">A 端远程模式留空 device_id 时用哪台 B。这里填了就固定落这台；留空则按负载挑一台在线的（A 端模块默认就是留空，不用再占位一台设备）</span></h2>
+  <div class="body">
+    <div class="token-gen" style="display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
+      <input id="ddInput" list="ddCandidates" placeholder="device-b-xxxxxxxx（留空 = 按负载挑）" autocapitalize="none"
+             style="flex:1;min-width:240px;background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:9px 12px;font-size:13px;">
+      <datalist id="ddCandidates"></datalist>
+      <button class="btn primary" onclick="saveDefaultDevice()">保存</button>
+      <button class="btn" onclick="clearDefaultDevice()">清空</button>
+    </div>
+    <p class="hint" id="ddStatus" style="margin:12px 0 0;line-height:1.7;">加载中…</p>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <div class="modal-mask" id="modalMask" onclick="if(event.target===this)closeModal()">
@@ -1114,8 +1129,41 @@ async function setStrongboxMode(mode) {
   } catch (e) { toast(e.message, 'err'); loadStrongbox(); }
 }
 
+async function loadDefaultDevice() {
+  try {
+    const d = await api('/api/admin/default_device/');
+    const list = d.connected || [];
+    $('#ddCandidates').innerHTML = list.map(x =>
+      `<option value="${x.device_id}">${x.machine_id || ''}</option>`).join('');
+    const cur = d.device_id || '';
+    if (document.activeElement !== $('#ddInput')) $('#ddInput').value = cur;
+    if (!cur) {
+      $('#ddStatus').innerHTML = `未设置：A 端留空的请求会按负载挑一台在线 B（当前在线 ${list.length} 台）。`;
+    } else if (d.online) {
+      $('#ddStatus').innerHTML = `当前默认：<b>${cur}</b>（在线）。A 端留空的请求优先落这台。`;
+    } else {
+      $('#ddStatus').innerHTML = `当前默认：<b>${cur}</b>（<span style="color:var(--warn,#f5a623)">当前离线</span>）。此时 A 端留空的请求会按负载落到别的在线 B。`;
+    }
+  } catch (e) { /* auth handled */ }
+}
+
+async function saveDefaultDevice() {
+  const id = $('#ddInput').value.trim();
+  try {
+    const d = await api('/api/admin/default_device/', { method: 'POST', body: JSON.stringify({ device_id: id }) });
+    $('#ddInput').value = d.device_id || '';
+    toast(d.device_id ? `默认设备已保存：${d.device_id}` : '已清空：改回按负载挑');
+    loadDefaultDevice();
+  } catch (e) { toast('保存失败: ' + e.message, 'err'); }
+}
+
+async function clearDefaultDevice() {
+  $('#ddInput').value = '';
+  await saveDefaultDevice();
+}
+
 function loadAll() {
-  loadOverview(); loadDevices(); loadTasks(); loadReports(); loadTokens(); loadAutoKeybox(); loadIpFilter(); loadStrongbox();
+  loadOverview(); loadDevices(); loadTasks(); loadReports(); loadTokens(); loadAutoKeybox(); loadIpFilter(); loadStrongbox(); loadDefaultDevice();
 }
 
 /* Upload */

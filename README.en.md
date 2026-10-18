@@ -58,17 +58,21 @@ OMMEGA_RELAY_TOKEN=Mytju8b0_lhLlqTKcEUhuwSbAsAtjom0
 ```
 url: http://110.40.170.96:10886
 token: aY7kRSDDR6PMmamlKwtgf7mQgr-X5uFd
-device_id: device-b-2
+device_id:
 tls_insecure: true
 remote: on
 ```
+
+> An empty `device_id` means "let the server pick a B device": the default device ID set in the
+> admin console (`/jiyin004/`) wins, otherwise the idlest online device is picked. Fill it in only
+> when you want to pin one specific device.
 
 > Path note: `ommegadata` is a symlink to `/data/misc/keystore/ommega`, and the daemon really reads
 > `/data/misc/keystore/ommega/config`. `/data/adb/ommega/config` — the path **without** the
 > `ommegadata` level — is a different file, and writing there has no effect (no restart is needed
 > after a change; the config is watched).
 
-After that, attestation / signing / decryption requests on the A side go through the official server and are executed by the real TEE of an online B-side device. `device_id` must be the ID of a B-side device that is **currently online** (check it under "online B-side devices" on the `/status/` page; appearing only under "devices with certificates on file" does not mean online). When the named device is offline the server hands the task to **the idlest online B-side** instead (the real-device layer allows another B side to stand in) and records the actual assignment in the log — in that case the certificate chain you get is that stand-in's, so do not treat an offline ID as a target.
+After that, attestation / signing / decryption requests on the A side go through the official server and are executed by the real TEE of an online B-side device. Leaving `device_id` empty is the default: the server uses the default device ID from the admin console, or the idlest online device. If you do fill it in, it must be the ID of a B-side device that is **currently online** (check it under "online B-side devices" on the `/status/` page; appearing only under "devices with certificates on file" does not mean online). When the named device is offline the server hands the task to **the idlest online B-side** instead (the real-device layer allows another B side to stand in) and records the actual assignment in the log — in that case the certificate chain you get is that stand-in's, so do not treat an offline ID as a target.
 
 ## Self-hosting
 

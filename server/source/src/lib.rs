@@ -9,6 +9,7 @@ pub mod cert;
 pub mod config;
 pub mod crypto;
 pub mod db;
+pub mod default_device;
 pub mod fulfill;
 pub mod geo;
 pub mod handlers;

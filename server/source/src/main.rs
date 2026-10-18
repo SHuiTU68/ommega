@@ -195,6 +195,10 @@ fn build_router(cfg: &Arc<Config>) -> Router {
         .route("/api/admin/reports/", get(admin::admin_reports))
         .route("/api/admin/keybox/", post(admin::admin_upload_keybox))
         .route("/api/admin/mode/", post(admin::admin_set_mode))
+        .route(
+            "/api/admin/default_device/",
+            get(admin::admin_default_device_status).post(admin::admin_default_device_set),
+        )
         .route("/api/admin/tokens/", get(admin::admin_tokens))
         .route("/api/admin/tokens/", post(admin::admin_generate_token))
         .route(
@@ -270,6 +274,8 @@ async fn main() -> anyhow::Result<()> {
     // 长期状态库（会话表 + 槽位登记表）先开出来：开不了就直接退出，别带着空会话表跑
     // —— 那等于 A 端所有远程钥匙当场判死（见 statedb::open_checked 里的理由）。
     relay_rs::statedb::open_checked()?;
+    // 「默认设备 id」：A 端留空时用哪台 B。文件/环境变量读一次，之后控制台可改。
+    relay_rs::default_device::init();
     tracing::info!(
         "relay_rs starting: version={} mode={} bind={} http={} https={} tls={}",
         relay_rs::config::VERSION,

@@ -6,6 +6,10 @@
 //!
 //! 回给 payload 的 blob 布局在 `kmr_common::soter_relay`，两边共用那一份实现。
 
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
 use kmr_common::soter_relay::{self, Outcome};
 use serde_json::Value;
 
@@ -84,6 +88,9 @@ fn forward_inner(request: &str) -> Vec<u8> {
     // 那条「刚见过探测别名」时间窗的否决，也跟着请求转给服务端按白名单判。
     let value = with_caller_pkg(value);
 
+    // App 拿着脏缓存自删自建（见 `note_churn_and_maybe_heal`）：第 2 次删 AuthKey 就判。
+    note_churn_and_maybe_heal(&value, &op);
+
     // 探测机（春秋 / 鸭子这类检测器）的这笔直接本地兜底，一次都不往 B 端转。
     //
     // 它们每跑一轮都新铸一把别名、签完也不收尾，在 B 端吃的是真 TEE 的空会话
@@ -121,8 +128,130 @@ fn forward_inner(request: &str) -> Vec<u8> {
     }
 }
 
-/// 一笔调用该不该只在本地兜底回答（连远程都不问）。命中时回一句「凭什么」给日志。
+// ---------------------------------------------------------------------------
+// 自动自愈：App 拿着脏缓存「自删自建」
+// ---------------------------------------------------------------------------
+
+/// 同一槽位第几次「删 AuthKey」开始自愈。健康流程（微信开通）正常最多删一次，
+/// 第 2 次（`> 1`）就是它在拿缓存里的旧状态打转，再等只会一直转。
+const CHURN_HEAL_AT: u32 = 2;
+/// 计数窗口。
+const CHURN_WINDOW: Duration = Duration::from_secs(30);
+/// 同一 uid 两次自愈之间的冷却：真出现「腾讯侧不认」时不能一直杀应用。
+const HEAL_COOLDOWN: Duration = Duration::from_secs(600);
+
+static CHURN: OnceLock<Mutex<HashMap<String, (u32, Instant)>>> = OnceLock::new();
+static HEALED: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+
+/// 看这一笔是不是「自删自建」，是且到了第 2 次就起一个线程把应用和槽位重置掉。
 ///
+/// 为什么必须重置**应用侧的缓存**：微信把「ASK / AuthKey 已存在」记在自己的
+/// `shared_prefs/soter_status.xml` 里，一旦写上就永远跳过「生成 ASK → 上报腾讯」，
+/// 我们把 B 上的料清了、重铸了它也不理，于是永远对不上腾讯那边的记录，只会自删
+/// 自建。分身是另一份 app 数据、没有这份缓存，所以「分身能修、主微信修不了」。
+///
+/// 重置三件事（跟人手工做的一样）：
+///   1. `am force-stop <pkg>`（先停，免得它退出时把缓存写回去）
+///   2. 备份并删掉 `shared_prefs/soter_status.xml`（主用户 + 分身目录）
+///   3. 让 B 把该 uid 的料清空（带 `force_scope_wipe`，绕过服务端「多账号不清」的保护）
+fn note_churn_and_maybe_heal(value: &Value, op: &str) {
+    if !matches!(op, "remove_auth_key" | "remove_all_uid_key") {
+        return;
+    }
+    let Some(uid) = value.get("uid").and_then(Value::as_i64) else {
+        return;
+    };
+    let pkg = value
+        .get("caller_pkg")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if pkg.is_empty() {
+        // 拿不到包名就不去动别人的数据。
+        return;
+    }
+    let key = format!("{pkg}|{uid}");
+    let now = Instant::now();
+    let count = {
+        let map = CHURN.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut guard = map.lock().unwrap_or_else(|e| e.into_inner());
+        guard.retain(|_, (_, at)| now.duration_since(*at) <= CHURN_WINDOW);
+        let entry = guard.entry(key.clone()).or_insert((0, now));
+        entry.0 += 1;
+        entry.1 = now;
+        entry.0
+    };
+    if count < CHURN_HEAL_AT {
+        return;
+    }
+    // 冷却：同一 uid 十分钟内只救一次。
+    {
+        let map = HEALED.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut guard = map.lock().unwrap_or_else(|e| e.into_inner());
+        guard.retain(|_, at| now.duration_since(*at) <= HEAL_COOLDOWN);
+        if guard.contains_key(&key) {
+            return;
+        }
+        guard.insert(key.clone(), now);
+    }
+    if let Ok(mut guard) = CHURN.get_or_init(|| Mutex::new(HashMap::new())).lock() {
+        guard.remove(&key);
+    }
+    log::warn!(
+        "event=soter selfheal pkg={pkg} uid={uid} 第 {count} 次删 AuthKey —— \
+         App 拿着缓存自删自建，自动重置一次（停应用 + 删 soter_status.xml + 清 B 槽位）"
+    );
+    let pkg_for_thread = pkg.clone();
+    std::thread::Builder::new()
+        .name("ommega-soter-selfheal".to_string())
+        .spawn(move || {
+            if let Err(error) = heal_soter_slot(&pkg_for_thread, uid) {
+                log::warn!("event=soter selfheal failed pkg={pkg_for_thread} uid={uid}: {error:#}");
+            }
+        })
+        .ok();
+}
+
+/// 把一个应用的 SOTER 缓存和 B 上的槽位一起重置。见 [`note_churn_and_maybe_heal`]。
+fn heal_soter_slot(pkg: &str, uid: i64) -> anyhow::Result<()> {
+    // 1) 停应用（不重新拉起：让用户自己点开通，那时缓存已经是空的）
+    let _ = std::process::Command::new("/system/bin/am")
+        .args(["force-stop", pkg])
+        .status();
+    // 2) 删缓存：主用户 + 所有分身用户
+    let mut paths = vec![format!("/data/data/{pkg}/shared_prefs/soter_status.xml")];
+    for user in 0..10 {
+        paths.push(format!(
+            "/data/user/{user}/{pkg}/shared_prefs/soter_status.xml"
+        ));
+    }
+    for path in paths {
+        if !std::path::Path::new(&path).exists() {
+            continue;
+        }
+        let _ = std::fs::copy(&path, format!("{path}.bak"));
+        match std::fs::remove_file(&path) {
+            Ok(()) => log::info!("event=soter selfheal removed {path}"),
+            Err(error) => log::warn!("event=soter selfheal cannot remove {path}: {error}"),
+        }
+    }
+    // 3) 清 B 上的槽位（带 force_scope_wipe，服务端只对这一笔放行）
+    let body = serde_json::json!({
+        "op": "remove_all_uid_key",
+        "uid": uid,
+        "force_scope_wipe": true,
+    });
+    match RemoteRelay::soter(&body) {
+        Ok(_) => log::info!("event=soter selfheal cleared B slot uid={uid}"),
+        Err(error) => {
+            log::warn!("event=soter selfheal clear B slot failed uid={uid}: {error:#}")
+        }
+    }
+    Ok(())
+}
+
+/// 一笔调用该不该只在本地兜底回答（连远程都不问）。命中时回一句「凭什么」给日志。
 /// 名单从配置里现读（`/data/misc/keystore/ommega/config` 的 `soter_local_only_prefixes` /
 /// `soter_local_only_uids`）：宿主是 uid 1000、读不到那个 0770 的 keystore 目录，
 /// 所以这个判断只能留在 daemon 这边，跟这个文件里其它开关同理。

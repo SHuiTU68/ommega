@@ -1165,6 +1165,80 @@ pub async fn admin_strongbox_toggle(
 }
 
 // ---------------------------------------------------------------------------
+// Default device id (A side leaves `device_id` empty).
+// ---------------------------------------------------------------------------
+
+/// GET /api/admin/default_device/ — 当前「默认设备 id」+ 在线情况。
+///
+/// A 端在远程模式下把 `device_id` 留空（模块装好就是空的，面板不用占位一台设备），
+/// 请求照样上来，服务端按这里配的值落 B；没配就按负载挑一台在线的。
+/// 返回里 `online` 是「配的那台现在在不在线」（`null` = 没配）。
+pub async fn admin_default_device_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(r) = check_auth(&state, &headers) {
+        return *r;
+    }
+    let configured = crate::default_device::get();
+    let mut connected = state.store.get_connected_devices().await;
+    connected.sort_by(|a, b| a.device_id.cmp(&b.device_id));
+    let online = if configured.is_empty() {
+        None
+    } else {
+        Some(connected.iter().any(|d| d.device_id == configured))
+    };
+    let devices: Vec<Value> = connected
+        .iter()
+        .map(|d| json!({ "device_id": d.device_id, "machine_id": d.machine_id }))
+        .collect();
+    Json(json!({
+        "status": "ok",
+        "device_id": configured,
+        "online": online,
+        "connected": devices,
+    }))
+    .into_response()
+}
+
+#[derive(serde::Deserialize)]
+pub struct DefaultDeviceBody {
+    /// 目标设备 id。空字符串 = 清掉（回到按负载挑）。
+    #[serde(default)]
+    pub device_id: String,
+}
+
+/// POST /api/admin/default_device/ — 保存「默认设备 id」。
+///
+/// 落盘到 `data/default_device.json`，重启后仍然生效；写空就是清掉。
+pub async fn admin_default_device_set(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<DefaultDeviceBody>,
+) -> Response {
+    if let Err(r) = check_auth(&state, &headers) {
+        return *r;
+    }
+    let saved = match crate::default_device::set(&body.device_id) {
+        Ok(v) => v,
+        Err(e) => return json_err(StatusCode::BAD_REQUEST, &e),
+    };
+    if !saved.is_empty() {
+        let connected = state.store.get_connected_devices().await;
+        if !connected.iter().any(|d| d.device_id == saved) {
+            tracing::warn!(
+                "default_device: 保存了 {saved}，但它当前不在线（A 端留空的请求会按负载落别的 B）"
+            );
+        }
+    }
+    Json(json!({
+        "status": "ok",
+        "device_id": saved,
+    }))
+    .into_response()
+}
+
+// ---------------------------------------------------------------------------
 // Public status page (no auth) — mirrors Django's `device_status`.
 // ---------------------------------------------------------------------------
 

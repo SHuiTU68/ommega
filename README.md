@@ -58,17 +58,20 @@ OMMEGA_RELAY_TOKEN=Mytju8b0_lhLlqTKcEUhuwSbAsAtjom0
 ```
 url: http://110.40.170.96:10886
 token: aY7kRSDDR6PMmamlKwtgf7mQgr-X5uFd
-device_id: device-b-2
+device_id:
 tls_insecure: true
 remote: on
 ```
+
+> `device_id` 留空就是「让服务端挑一台 B」：优先用控制台（`/jiyin004/`）里配的「默认设备 ID」，
+> 没配就按负载挑一台在线的。想固定落到某一台再手动填（填了之后控制台那个默认值就不管用了）。
 
 > 路径注意：`ommegadata` 是指向 `/data/misc/keystore/ommega` 的软链，守护进程真正读的就是
 > `/data/misc/keystore/ommega/config`。**没有 `ommegadata` 那一层**的
 > `/data/adb/ommega/config` 是另一个文件，写了不生效（改完不用重启，配置有 watch）。
 
 配置后 A 端认证/签名/解密请求即通过官方 server 中转，由在线 B 端设备的真实 TEE 执行。
-`device_id` 必须是**当前在线**那台 B 端的设备 ID（在 `/status/` 页面的「在线 B 端设备」里核对；
+`device_id` 留空即可（由服务端按控制台的默认设备或负载挑）。如果手动填，必须是**当前在线**那台 B 端的设备 ID（在 `/status/` 页面的「在线 B 端设备」里核对；
 只在「已保存证书的设备」里出现不算在线）。指定设备不在线时，服务器会把任务派给**当前最闲的在线 B 端**
 （真机层允许由别的 B 端顶替），并把实际派发写进日志——这时你拿到的证书链就是那台顶替设备的，
 所以别拿一个离线 ID 当目标。

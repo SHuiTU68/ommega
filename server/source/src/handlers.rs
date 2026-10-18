@@ -684,14 +684,19 @@ fn refuse_strongbox_body(kind: &str, msg: &str) -> Response {
 /// otherwise the next layer is tried, and only when every layer fails is an
 /// error returned.
 async fn run_a_side_task(state: &AppState, task_type: &str, body: &Value) -> Response {
+    // A 端远程模式默认不带 `device_id`（模块装好就是留空，面板也不再占位一台设备）。
+    // 留空 = 「服务端挑一台」：这里在入口一次归一（控制台配的默认设备），然后整条链
+    // 路——physical / serverbox 两种模式的层序、StrongBox 分流、身份查找、队列派发——
+    // 看见的都是同一台具体设备，跟「A 端自己带了这个 id」一字不差。没配默认设备就
+    // 保持空，由 `resolve_online_target("")` 按负载挑一台在线的 B。
+    let body = crate::default_device::fill_in_body(body);
+    let body = &body;
     let device_id = body
         .get("device_id")
         .and_then(Value::as_str)
         .unwrap_or("")
+        .trim()
         .to_string();
-    if device_id.is_empty() {
-        return json_err(StatusCode::BAD_REQUEST, "device_id required");
-    }
     let ctx = body
         .get("device_attest_context")
         .cloned()
@@ -1269,6 +1274,11 @@ async fn run_soter_task_inner(state: &AppState, body: &Value) -> Response {
     if !body.is_object() {
         return json_err(StatusCode::BAD_REQUEST, "json object body required");
     }
+    // 跟 attest 一个口径，而且同样在入口归一：A 端留空 + 配了默认设备 = 等同于
+    // 它带了那个 id，SOTER 的探测判据、槽位钉子、签名会话路由、写操作跨设备拦截
+    // 看见的 `requested` 都是同一台具体设备。
+    let body = crate::default_device::fill_in_body(body);
+    let body = &body;
     let requested = body.get("device_id").and_then(Value::as_str).unwrap_or("");
     let op = body.get("op").and_then(Value::as_str).unwrap_or("probe");
     let probe_uid = body
@@ -1587,7 +1597,19 @@ async fn run_soter_task_inner(state: &AppState, body: &Value) -> Response {
                 if op == "remove_all_uid_key" {
                     if let Some(uid) = uid {
                         let owners = crate::soter_mint::owner_count(requested, uid);
-                        if crate::soter_mint::scope_wipe_enabled() && owners >= 2 {
+                        // A 端自愈会带 `force_scope_wipe`：它已经先把应用侧那份
+                        // `soter_status.xml` 删了，就是要把这个槽位清干净重走一遍。
+                        // 这是运营侧看得见的一笔（下面一条 warn），普通请求不能伪造。
+                        let forced = body
+                            .get("force_scope_wipe")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false);
+                        if forced {
+                            tracing::warn!(
+                                "soter: op=remove_all_uid_key uid={probe_uid} requested={requested} \
+                                 A 端自愈要求真清（槽位上有 {owners} 个账号），放行这一笔"
+                            );
+                        } else if crate::soter_mint::scope_wipe_enabled() && owners >= 2 {
                             tracing::warn!(
                                 "soter: op=remove_all_uid_key uid={probe_uid} requested={requested} \
                                  这个槽位上有 {owners} 个账号，uid 级全清会连坐，只答成功不真清 \
