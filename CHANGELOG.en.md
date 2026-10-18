@@ -5,7 +5,8 @@
 ## 测试
 
 - Leaving the device id empty no longer errors out and no longer falls back to the phone's own software chain: the request still goes out and the server decides which B device serves it — the "default device id" configured on the server first, otherwise the idlest online one. A fresh install leaves it empty; `device-b-2` is no longer used as a placeholder.
-- The server backend gains a "default device id" setting you can fill in or clear.
+- The server backend gains a "default device id" setting you can fill in or clear; it survives restarts.
+- The panel's "sync from server" no longer depends on curl: some ROMs ship without it, and the panel used to report the server as unreachable.
 - When the SOTER setup keeps failing (the app rebuilds and deletes its own keys because of a stale local cache), it is reset automatically once: the app is stopped, its SOTER cache is cleared, and that uid's material on the B device is wiped — no manual step needed.
 
 ## 1.7.1
