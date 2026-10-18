@@ -63,8 +63,7 @@ tls_insecure: true
 remote: on
 ```
 
-> `device_id` 留空就是「让服务端挑一台 B」：优先用控制台（`/jiyin004/`）里配的「默认设备 ID」，
-> 没配就按负载挑一台在线的。想固定落到某一台再手动填（填了之后控制台那个默认值就不管用了）。
+> `device_id` 留空就是「让服务端挑一台 B」：优先用服务端配置的「默认设备 ID」，没配就按负载挑一台在线的。想固定落到某一台再手动填（填了之后服务端那个默认值就不管用了）。
 
 > 路径注意：`ommegadata` 是指向 `/data/misc/keystore/ommega` 的软链，守护进程真正读的就是
 > `/data/misc/keystore/ommega/config`。**没有 `ommegadata` 那一层**的

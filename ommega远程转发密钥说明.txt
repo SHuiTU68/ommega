@@ -235,8 +235,8 @@ keysttestation 等开源项目源码，主要基于 OhMyKeymint
 
    1. 服务器地址:  http://你的服务器IP:10886
    2. Token:      与服务器 .env 中 RELAY_TOKEN 保持一致
-   3. 设备ID:     可留空（推荐）—— 留空就由服务端挑一台：优先用控制台
-                  /jiyin004/ 里配的「默认设备 ID」，没配就按负载挑在线的。
+   3. 设备ID:     可留空（推荐）—— 留空就由服务端挑一台：优先用服务端后台配的
+                  「默认设备 ID」，没配就按负载挑在线的。
                   要固定落到某一台才填，值必须与那台 B 端 relay.conf 里的
                   OMMEGA_RELAY_DEVICE_ID 完全一致。
    4. 远程模式:   开启（默认），请求经服务器转发
@@ -395,7 +395,7 @@ keysttestation 等开源项目源码，主要基于 OhMyKeymint
   后台入口:
 
    状态页（公开）:   http://服务器IP:10886/status
-   管理后台:         http://服务器IP:10886/jiyin004/
+   管理后台:         http://服务器IP:10886/（路径按部署侧约定）
    登录页:           http://服务器IP:10886/login/
 
   登录凭证: 部署时在 .env 中设置的 RELAY_ADMIN_USER / RELAY_ADMIN_PASSWORD

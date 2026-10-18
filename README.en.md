@@ -63,8 +63,8 @@ tls_insecure: true
 remote: on
 ```
 
-> An empty `device_id` means "let the server pick a B device": the default device ID set in the
-> admin console (`/jiyin004/`) wins, otherwise the idlest online device is picked. Fill it in only
+> An empty `device_id` means "let the server pick a B device": the default device ID configured on
+> the server wins, otherwise the idlest online device is picked. Fill it in only
 > when you want to pin one specific device.
 
 > Path note: `ommegadata` is a symlink to `/data/misc/keystore/ommega`, and the daemon really reads
