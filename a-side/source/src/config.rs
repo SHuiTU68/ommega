@@ -126,10 +126,15 @@ fn bootstrap_config_file_to_path(path: &Path) -> Result<ConfigFile> {
         .lock()
         .map_err(|_| anyhow!("config file write lock poisoned"))?;
     let (contents, parsed) = match fs::read_to_string(path) {
-        Ok(contents) => {
-            let parsed = parse_config_file(&contents, true)?;
-            (Some(contents), parsed)
-        }
+        Ok(contents) => match parse_config_file(&contents, true) {
+            Ok(parsed) => (Some(contents), parsed),
+            Err(error) => {
+                // 配置被写坏时不能每 5 秒崩一次装死，先试 .bak。
+                let restored = recover_from_broken_config(path, &error)?;
+                let parsed = parse_config_file(&restored, true)?;
+                (Some(restored), parsed)
+            }
+        },
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             log::warn!("config file missing during startup: {error}; seeding defaults");
             let config_file = ConfigFile::default();
@@ -171,6 +176,55 @@ fn bootstrap_config_file_to_path(path: &Path) -> Result<ConfigFile> {
         log::info!("migrated config.toml to version {CURRENT_CONFIG_VERSION}");
     }
     Ok(config_file)
+}
+
+/// 配置被写坏时的兜底：把坏文件改名留档，拿 `config.toml.bak` 顶上。
+///
+/// 旧版面板曾经把平铺格式（`url: xxx` 而不是 `url = "xxx"`）写进 `config.toml`，
+/// keymint 启动时 TOML 解析失败就退出，守护每 5 秒重拉一次、永远起不来，而模块
+/// 在管理器里还显示「运行中」—— 现场表现为工程模式的 Key 状态列到一半就空了。
+/// 这里恢复不了就直接把错往上抛，不静默兜底成一份空配置。
+fn recover_from_broken_config(path: &Path, error: &anyhow::Error) -> Result<String> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("config.toml")
+        .to_string();
+    let backup = path.with_file_name(format!("{file_name}.bak"));
+    let contents = fs::read_to_string(&backup).unwrap_or_default();
+    if contents.trim().is_empty() {
+        return Err(anyhow!(
+            "config file is broken and {} is missing or empty: {error:#}",
+            backup.display()
+        ));
+    }
+    // 先确认 .bak 自己也是好的，拿另一份坏的顶上去没有意义。
+    parse_config_file(&contents, true).with_context(|| {
+        format!(
+            "config file is broken and {} is broken too",
+            backup.display()
+        )
+    })?;
+    let broken = path.with_file_name(format!("{file_name}.broken"));
+    if let Err(rename_error) = fs::rename(path, &broken) {
+        log::warn!(
+            "failed to keep the broken config at {}: {rename_error}",
+            broken.display()
+        );
+    }
+    fs::copy(&backup, path).with_context(|| {
+        format!(
+            "failed to restore {} from {}",
+            path.display(),
+            backup.display()
+        )
+    })?;
+    log::warn!(
+        "config file was unparsable ({error}); restored it from {} (broken copy kept at {})",
+        backup.display(),
+        broken.display()
+    );
+    Ok(contents)
 }
 
 fn persist_config_file_to_path(path: &Path, config_file: &ConfigFile) -> Result<()> {
