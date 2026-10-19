@@ -43,6 +43,58 @@ const VERIFY_ATTK_KEY_PAIR: u32 = 14;
 /// 记成空列表，之后 vendor 客户端按（名字 + 接口名）取服务一律 null。
 const INTERFACE_TRANSACTION: u32 = 0x5f4e_5446;
 
+/// 不同设备 / 不同 SoterService 版本的 HAL 号码排布不一样：
+/// - **4 槽排布（2/6/14 空号）**：NX721J 这类，实测 soterserver 发 9/5 时只带 uid；
+/// - **1–11 连号**：APK 里另一种 `ISoter`，9 是 initSign、7 是 hasAskAlready。
+///
+/// 两者对同一个号的含义相反，光看 code 分不出来。但**参数长度能分**：首笔
+/// `hasAskAlready` 在 4 槽里是 9、连号里是 7，而且都只带一个 int（4 字节）。
+/// 于是第一次见到它就定下布局并缓存，之后把连号的号换算成 4 槽的规范号，
+/// 后续所有逻辑只用一套写法。
+static LAYOUT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+const LAYOUT_UNKNOWN: u8 = 0;
+const LAYOUT_14: u8 = 1;
+const LAYOUT_11: u8 = 2;
+
+fn note_layout(code: u32, avail: usize) {
+    use std::sync::atomic::Ordering;
+    if LAYOUT.load(Ordering::Relaxed) != LAYOUT_UNKNOWN {
+        return;
+    }
+    match (code, avail) {
+        // hasAskAlready / generateAskKeyPair：两种排布里都只带一个 int，号却不同。
+        (9, 4) | (5, 4) => {
+            LAYOUT.store(LAYOUT_14, Ordering::Relaxed);
+        }
+        (7, 4) | (4, 4) => {
+            LAYOUT.store(LAYOUT_11, Ordering::Relaxed);
+        }
+        _ => {}
+    }
+}
+
+/// 把任意排布的号码换成 4 槽的规范号（后面的逻辑只认这套）。
+fn canonical_code(code: u32, avail: usize) -> u32 {
+    use std::sync::atomic::Ordering;
+    note_layout(code, avail);
+    if LAYOUT.load(Ordering::Relaxed) != LAYOUT_11 {
+        return code;
+    }
+    match code {
+        2 => 3,   // exportAuthKeyPublicKey
+        3 => 4,   // finishSign
+        4 => 5,   // generateAskKeyPair
+        5 => 7,   // generateAuthKeyPair
+        6 => 8,   // getDeviceId
+        7 => 9,   // hasAskAlready
+        8 => 10,  // hasAuthKey
+        9 => 11,  // initSign
+        10 => 12, // removeAllUidKey
+        11 => 13, // removeAuthKey
+        other => other,
+    }
+}
+
 fn op_name(code: u32) -> &'static str {
     match code {
         EXPORT_ASK_PUBLIC_KEY => "exportAskPublicKey",
@@ -141,6 +193,8 @@ impl Remotable for SoterTa {
         // 错位 4 字节（soterserver 把方法返回值当 status、把非空标记当返回值，
         // exportAsk 的 exportData 就解不出来，Duck/微信卡在 askModel）。
         reply.write_i32(0)?;
+        // 号码先归一到「4 槽规范号」：不同设备的排布不一样（见 LAYOUT）。
+        let code = canonical_code(code, reader.data_avail());
         // 先按 AIDL 定义把入参读干净：读错位的话后面拿到的 uid/alias 全是垃圾。
         let mut uid = None;
         let mut alias = None;
