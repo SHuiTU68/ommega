@@ -306,6 +306,15 @@ fn reason_without_caller(
         .map(|uid| uid_listed(device, uid, cfg.soter_local_only_uids.as_str()))
         .unwrap_or(false);
 
+    // 只认包名（2026-10-20 定）：带 uid 但没包名 = 老 A 端，没有可信判据，
+    // 一律服务端作答；想落到真机就自己更新 A 端。
+    // 没 uid 的那几笔（`finish_sign` / `getDeviceId`）不在这里拍板：它们是会话类
+    // 调用，必须回到开会话的那一侧，由 handler 的会话路由决定。
+    // `soter_local_only_uids` 点名的 uid 当人工逃生口，仍然走真机。
+    if uid.is_some() && !force_real {
+        return Some("调用方没携带可识别的包名（老 A 端），服务端就地作答".to_string());
+    }
+
     let mut guard = NOTES.lock().ok()?;
     let notes = guard.get_or_insert_with(Notes::default);
     // 上一笔是谁答的：ASK 与 AuthKey 必须同源（两把 ASK 不是同一把，混着给 App 就验不过）。

@@ -11,3 +11,4 @@
 - Fixed the SOTER service restarting in a loop on some devices, which made WeChat fingerprint fail.
 - The Local keys page gains a "Fix RKP" button: one tap writes the device ID into persist, after which the vendor TEE's RKP works and the engineering-mode RKP default line goes green.
 - A broken module config is now restored from its backup automatically, so the panel can no longer say "running" while the key service is actually down.
+- SOTER requests now report the caller package resolved on the device: anything outside the real-app list (detectors) is answered by the server instead of taking up a real device, which keeps fingerprint payments steady.
