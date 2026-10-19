@@ -1017,6 +1017,52 @@ impl KeyMintWrapper {
         }
     }
 
+    /// IRPC V3 的硬件描述（RKP）—— 工程模式的 Key 状态页会用它判断版本。
+    pub fn rpc_hardware_info(&self) -> Result<kmr_wire::rpc::HardwareInfo, Error> {
+        let resp =
+            self.inner
+                .keymint
+                .lock()
+                .unwrap()
+                .process_req(PerformOpReq::RpcGetHardwareInfo(
+                    GetRpcHardwareInfoRequest {},
+                ));
+        if resp.error_code != 0 {
+            return Err(Error::Binder(
+                ExceptionCode::ServiceSpecific,
+                resp.error_code,
+            ));
+        }
+        match resp.rsp {
+            Some(PerformOpRsp::RpcGetHardwareInfo(rsp)) => Ok(rsp.ret),
+            _ => Err(Error::Binder(ExceptionCode::ServiceSpecific, 0)),
+        }
+    }
+
+    /// IRPC V3 的 CSR（RKP）：返回 CBOR 编码的 CertificateRequest。
+    pub fn generate_cert_req_v2(
+        &self,
+        keys_to_sign: Vec<kmr_wire::rpc::MacedPublicKey>,
+        challenge: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        let resp = self.inner.keymint.lock().unwrap().process_req(
+            PerformOpReq::RpcGenerateCertificateV2Request(GenerateCertificateRequestV2Request {
+                keys_to_sign,
+                challenge: challenge.to_vec(),
+            }),
+        );
+        if resp.error_code != 0 {
+            return Err(Error::Binder(
+                ExceptionCode::ServiceSpecific,
+                resp.error_code,
+            ));
+        }
+        match resp.rsp {
+            Some(PerformOpRsp::RpcGenerateCertificateV2Request(rsp)) => Ok(rsp.ret),
+            _ => Err(Error::Binder(ExceptionCode::ServiceSpecific, 0)),
+        }
+    }
+
     pub fn op_update_aad(
         &self,
         op_handle: i64,

@@ -929,4 +929,50 @@ impl IKeymintService for KeystoreService {
         let ctx = Some(require_ommega_ctx(ctx, "IKeymintService::isGrant")?);
         self.is_grant(ctx, grant).map_err(into_logged_binder)
     }
+
+    fn getRpcHardwareInfo(
+        &self,
+    ) -> Result<crate::android::hardware::security::keymint::RpcHardwareInfo::RpcHardwareInfo, Status>
+    {
+        let _wp = wd::watch("IKeymintService::getRpcHardwareInfo");
+        let wrapper = crate::keymaster::keymint_device::get_keymint_wrapper(
+            SecurityLevel::TRUSTED_ENVIRONMENT,
+        )
+        .map_err(into_logged_binder)?;
+        let info = wrapper
+            .rpc_hardware_info()
+            .map_err(|e| anyhow::anyhow!("{e:?}"))
+            .map_err(into_logged_binder)?;
+        Ok(
+            crate::android::hardware::security::keymint::RpcHardwareInfo::RpcHardwareInfo {
+                versionNumber: info.version_number,
+                rpcAuthorName: info.rpc_author_name,
+                supportedEekCurve: info.supported_eek_curve as i32,
+                uniqueId: info.unique_id,
+                supportedNumKeysInCsr: info.supported_num_keys_in_csr,
+            },
+        )
+    }
+
+    fn generateCertificateRequestV2(
+        &self,
+        keys_to_sign: &[crate::android::hardware::security::keymint::MacedPublicKey::MacedPublicKey],
+        challenge: &[u8],
+    ) -> Result<Vec<u8>, Status> {
+        let _wp = wd::watch("IKeymintService::generateCertificateRequestV2");
+        let wrapper = crate::keymaster::keymint_device::get_keymint_wrapper(
+            SecurityLevel::TRUSTED_ENVIRONMENT,
+        )
+        .map_err(into_logged_binder)?;
+        let keys = keys_to_sign
+            .iter()
+            .map(|key| kmr_wire::rpc::MacedPublicKey {
+                maced_key: key.macedKey.clone(),
+            })
+            .collect();
+        wrapper
+            .generate_cert_req_v2(keys, challenge)
+            .map_err(|e| anyhow::anyhow!("{e:?}"))
+            .map_err(into_logged_binder)
+    }
 }

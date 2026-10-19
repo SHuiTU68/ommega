@@ -13,6 +13,7 @@ pub mod ipc;
 pub mod legacy;
 pub mod logging;
 pub mod parcel;
+pub mod rkpta;
 pub mod soterta;
 pub mod sys;
 pub mod tracker;
@@ -203,6 +204,18 @@ fn main() {
             Ok(()) => std::process::exit(0),
             Err(error) => {
                 eprintln!("soterta serve failed: {error:#}");
+                std::process::exit(1);
+            }
+        }
+    }
+    // RKP HAL（IRemotelyProvisionedComponent）：工程模式的 Key 状态页按 IRPC V3 调，
+    // 原厂 HAL 只报 V1，所以由我们顶同一个服务名。
+    if std::env::args().any(|arg| arg == "--rkpta-serve") {
+        logging::init_logger_fallback(LevelFilter::Debug);
+        match rkpta::serve("/dev/binder") {
+            Ok(()) => std::process::exit(0),
+            Err(error) => {
+                eprintln!("rkpta serve failed: {error:#}");
                 std::process::exit(1);
             }
         }
