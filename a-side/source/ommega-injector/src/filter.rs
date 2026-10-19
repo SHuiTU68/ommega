@@ -126,10 +126,34 @@ fn sid_allows_system_uid(sid: &str, config: &FilterConfig) -> bool {
     if !domain.ends_with("_app") {
         return false;
     }
-    config
+    if config
         .allow_system_sids
         .iter()
         .any(|prefix| !prefix.is_empty() && domain.contains(prefix.as_str()))
+    {
+        return true;
+    }
+    config
+        .system_sid_packages
+        .keys()
+        .any(|prefix| !prefix.is_empty() && domain.contains(prefix.as_str()))
+}
+
+/// 系统 uid 的 app 域对应的包名（见 [`FilterConfig::system_sid_packages`]）。
+///
+/// `getKeyAttestationApplicationId` 对 uid 1000 返回空，包名解析不出来，按包
+/// 判定的 scope 就永远命不中；这里把域映射回包名，后面照常走 scope 判定。
+fn sid_mapped_packages(sid: &str, config: &FilterConfig) -> Vec<String> {
+    let domain = sid.split(':').nth(2).unwrap_or("");
+    if domain.is_empty() {
+        return Vec::new();
+    }
+    config
+        .system_sid_packages
+        .iter()
+        .filter(|(prefix, _)| !prefix.is_empty() && domain.contains(prefix.as_str()))
+        .flat_map(|(_, packages)| packages.iter().cloned())
+        .collect()
 }
 
 pub fn evaluate(
@@ -150,6 +174,15 @@ pub fn evaluate_with_sid(
     sid: &str,
     resolution: PackageResolution,
 ) -> FilterDecision {
+    let mut resolution = resolution;
+    // 系统 uid 的 ROM app：uid 1000 解析出来的是「所有系统包 + android」，直接按它
+    // 判定两头不占好——`android` 前缀会把每笔调用当平台流量拒掉，scoop 里也永远
+    // 对不上。sid 命中映射时就用映射的包名整个换掉，之后照常走 scope 判定。
+    let mapped = sid_mapped_packages(sid, config);
+    if !mapped.is_empty() {
+        resolution = PackageResolution::Known(mapped);
+    }
+
     if !config.enabled {
         return FilterDecision {
             allowed: true,
@@ -179,7 +212,6 @@ pub fn evaluate_with_sid(
             },
         };
     }
-
     // Global scope ("全局作用域", toggled in the A-side WebUI's remote config)
     // intercepts ordinary apps, and *also* whatever is listed in the scope
     // explicitly (so Google Play / GMS components keep being handled).  ROM
@@ -218,7 +250,10 @@ pub fn evaluate_with_sid(
         };
     }
 
-    if config.block_android_package && uid % AID_USER_OFFSET < AID_APP_START {
+    if config.block_android_package
+        && uid % AID_USER_OFFSET < AID_APP_START
+        && !sid_allows_system_uid(sid, config)
+    {
         return FilterDecision {
             allowed: false,
             reason: FilterReason::RejectedAndroidPackage,
