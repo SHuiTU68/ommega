@@ -408,13 +408,16 @@ impl Db {
     ) -> anyhow::Result<()> {
         let mut conn = self.conn()?;
         conn.exec_drop(
-            "INSERT INTO api_token (token, role, duration_seconds, note)
-             VALUES (:token, :role, :duration_seconds, :note)",
+            "INSERT INTO api_token (token, role, duration_seconds, note, enabled, created_at)
+             VALUES (:token, :role, :duration_seconds, :note, :enabled, NOW())",
             params! {
                 "token" => token,
                 "role" => role,
                 "duration_seconds" => duration_seconds,
                 "note" => note,
+                // enabled / created_at 在线上库里都是 NOT NULL 且没有默认值，少写一个
+                // MySQL 严格模式就报 ERROR 1364（控制台生成 token 失败）。
+                "enabled" => 1i64,
             },
         )?;
         Ok(())
@@ -743,8 +746,8 @@ impl Db {
         };
         let note = format!("card:{card_type}");
         if let Err(e) = conn.exec_drop(
-            "INSERT INTO api_token (token, role, duration_seconds, note)
-             VALUES (:t, :r, :d, :n)",
+            "INSERT INTO api_token (token, role, duration_seconds, note, enabled, created_at)
+             VALUES (:t, :r, :d, :n, 1, NOW())",
             params! { "t" => &token, "r" => role, "d" => duration, "n" => &note },
         ) {
             let _ = conn.query_drop("ROLLBACK");
