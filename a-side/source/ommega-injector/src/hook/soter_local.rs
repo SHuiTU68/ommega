@@ -242,39 +242,14 @@ struct CpuIdCache {
 
 static CPU_ID: Mutex<Option<CpuIdCache>> = Mutex::new(None);
 
-/// 这台机器该报的 cpu_id：daemon 写下的那份 > 按本机真实序列号现派生。
+/// 本地兜底这条路上该报的 cpu_id：**只按本机真实序列号派生**。
 ///
-/// 两处都是真实来源。一个都拿不到就返回空串 —— 那种机器我们没有任何真身份可报，
-/// 不许编（编出来的号在业务侧一眼假），本地这条路也就不报身份（见 [`answer`]）。
+/// 不能读 `/data/misc/ommega/soter_cpu_id` 那份：那是转发给服务端用的 **B 端真机号**
+/// （见 `src/soter_cpu_id.rs`）。本地兜底是 A 端自己的软件 TA，跟 B 不是同一台设备，
+/// 拿 B 的号会让同一个 uid 下出现两个不同的 cpu_id —— 检测器一条「两次 cpuid 不一致」
+/// 直接判红。两份身份各用各的：转发走 B 的号，本地走本机号。
 fn cpu_id() -> String {
-    let Ok(mut slot) = CPU_ID.lock() else {
-        return device_info().derived_cpu_id.clone().unwrap_or_default();
-    };
-    if let Some(cached) = slot.as_ref() {
-        if cached.read_at.elapsed() < CPU_ID_TTL {
-            return cached.value.clone();
-        }
-    }
-    let previous = slot.as_ref().map(|cached| cached.value.clone());
-    let (learned, origin) = load_cpu_id();
-    let value = learned
-        .or_else(|| device_info().derived_cpu_id.clone())
-        .unwrap_or_default();
-    if previous.as_deref() != Some(value.as_str()) {
-        if value.is_empty() {
-            log::warn!("soter local cpu_id -> <none> (no learned value, no real serialno)");
-        } else {
-            log::info!(
-                "soter local cpu_id {} -> {value} ({origin})",
-                previous.as_deref().unwrap_or("<unset>")
-            );
-        }
-    }
-    *slot = Some(CpuIdCache {
-        value: value.clone(),
-        read_at: std::time::Instant::now(),
-    });
-    value
+    device_info().derived_cpu_id.clone().unwrap_or_default()
 }
 
 /// 找一份学来的 cpu_id：环境变量 > 两个候选文件。找不到返回 `(None, "derived")`，

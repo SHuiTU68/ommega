@@ -41,18 +41,25 @@ pub fn start() {
         return;
     }
     std::thread::spawn(|| loop {
-        match derive() {
-            Some(value) => {
-                if let Err(error) = write_mirror(&value) {
-                    log::warn!(
-                        "soter cpu_id could not be written to {}: {error:#}",
-                        kmr_common::soter_relay::CPU_ID_WRITE_PATH
-                    );
+        // 手上已经有号（服务端学过 / 人工写的）就不要拿本地序列号算的那个覆盖它：
+        // SOTER 身份必须是真机（B 端 TEE）那个号，本地派生的是另一串，两边不一致
+        // 腾讯就会判「设备换了」→ 微信直接报系统错误。只有什么都没有时才现算一个兜底。
+        if let Some((value, source)) = read_mirror() {
+            store(value, &source);
+        } else {
+            match derive() {
+                Some(value) => {
+                    if let Err(error) = write_mirror(&value) {
+                        log::warn!(
+                            "soter cpu_id could not be written to {}: {error:#}",
+                            kmr_common::soter_relay::CPU_ID_WRITE_PATH
+                        );
+                    }
+                    store(value, "derived");
                 }
-                store(value, "derived");
+                // 读不到真实序列号：把之前那份也撤了，转发不带 cpu_id，让服务端按时间造。
+                None => forget(),
             }
-            // 读不到真实序列号：把之前那份也撤了，转发不带 cpu_id，让服务端按时间造。
-            None => forget(),
         }
         std::thread::sleep(TICK);
     });

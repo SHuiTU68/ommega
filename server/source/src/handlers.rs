@@ -1373,22 +1373,21 @@ async fn run_soter_task_inner(state: &AppState, body: &Value) -> Response {
     )
     .or_else(|| forced_local.then(|| "这轮会话是内置料上开的".to_string()))
     {
-        let reply = run_layer_soter(state, "builtin", body, requested).await;
-        if let Some(v) = reply.filter(|v| v.get("error").is_none()) {
-            if op == "init_sign" {
-                if let Some(session) = v.get("session").and_then(Value::as_i64) {
-                    crate::soter_probe::note_session_side(requested, session, false);
-                }
-            }
-            tracing::info!(
-                "soter: op={op} uid={probe_uid} alias={probe_alias} 探测机（{why}）\
-                 用服务端内置物料作答，不落 B"
-            );
-            return Json(v).into_response();
-        }
-        // 内置层不认这个 op（`generate_app_secure_key` 之类）：照原来的路走，别把探测机
-        // 变成 503。
-        tracing::warn!("soter: op={op} uid={probe_uid} 探测机（{why}）内置层不认这笔，照原路走");
+        // 白名单外（检测器一类）：**不造料**，直接告诉 A 端「这笔你自己本地答」。
+        // 造料要现签名，几十台检测器一起刷就把 CPU 占满，真应用的请求只能排队；
+        // 退回 A 端本地后，工作负载分散到各台手机上，服务端只负责转发真应用。
+        // 旧 A 端不认识 `local_only`，会当成「答复形状不认识」放给真 HAL，
+        // 也就是本地能答就答 —— 方向一致，不会把人卡住。
+        tracing::info!(
+            "soter: op={op} uid={probe_uid} alias={probe_alias} 探测机（{why}）\
+             直接退回 A 端本地作答，不造料、不落 B"
+        );
+        return Json(json!({
+            "op": op,
+            "local_only": true,
+            "error_code": -1001,
+        }))
+        .into_response();
     }
 
     let gate_uid = body.get("uid").and_then(Value::as_i64).map(|v| v as i32);

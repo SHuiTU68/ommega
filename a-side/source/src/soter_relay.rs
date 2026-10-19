@@ -110,6 +110,12 @@ fn forward_inner(request: &str) -> Vec<u8> {
 
     match RemoteRelay::soter(&request_value(&value, op.as_str())) {
         Ok(Some(reply)) => {
+            // 服务端说「这笔你自己本地答」（白名单外/检测器一类）：它不造料、不占真机，
+            // 把工作交给本机自己的 SOTER 能力。直接在本地这条路上答即可。
+            if reply.get("local_only").and_then(Value::as_bool) == Some(true) {
+                log::info!("event=soter relay op={op} server asked for a local answer");
+                return Outcome::Local.encode();
+            }
             // Trustonic 在 ASK 已存在时会把重复的 generate 回 -5（ASK_NOT_READY），而 App
             // 把 generate 的失败当成「ASK 没准备好」，于是一路自删自建、永远走不到签名
             // （微信看到的就是「系统错误」）。这里补查一次 has_ask_already：ASK 在就把
