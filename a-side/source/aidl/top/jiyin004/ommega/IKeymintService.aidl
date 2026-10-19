@@ -3,8 +3,6 @@ package top.jiyin004.ommega;
 import android.hardware.security.keymint.SecurityLevel;
 import android.hardware.security.keymint.Certificate;
 import android.hardware.security.keymint.Tag;
-import android.hardware.security.keymint.MacedPublicKey;
-import android.hardware.security.keymint.RpcHardwareInfo;
 import android.system.keystore2.Domain;
 import android.system.keystore2.IKeystoreSecurityLevel;
 import android.system.keystore2.KeyDescriptor;
@@ -51,11 +49,4 @@ interface IKeymintService {
     void updateRsaKeybox(in @nullable CallerInfo ctx, in byte[] key, in List<Certificate> chain);
 
     boolean isGrant(in @nullable CallerInfo ctx, in KeyDescriptor grant);
-
-    // RKP（IRemotelyProvisionedComponent）透传：工程模式的 Key 状态页会按 IRPC V3
-    // 调 generateCertificateRequestV2，而原厂 HAL 只报 V1、没这个方法。这条 RPC 把
-    // TA 自己的 RKP 能力交给 injector 那边顶上去的 HAL 服务用。
-    RpcHardwareInfo getRpcHardwareInfo();
-
-    byte[] generateCertificateRequestV2(in MacedPublicKey[] keysToSign, in byte[] challenge);
 }
