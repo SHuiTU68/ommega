@@ -1368,6 +1368,8 @@ async fn run_soter_task_inner(state: &AppState, body: &Value) -> Response {
         probe_alias_arg,
         body.get(crate::soter_probe::CALLER_PKG_FIELD)
             .and_then(Value::as_str),
+        body.get(crate::soter_probe::CALLER_PKG_SRC_FIELD)
+            .and_then(Value::as_str),
     )
     .or_else(|| forced_local.then(|| "这轮会话是内置料上开的".to_string()))
     {

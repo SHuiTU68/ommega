@@ -104,6 +104,25 @@ fn request_with_table(call: &SoterCall, table: Option<&str>) -> Option<String> {
             out.push_str(",\"caller_pkg\":");
             push_json_string(&mut out, &pkg);
         }
+    } else if let Some(uid) = call.uid.filter(|uid| *uid > 0) {
+        // 没有内核给的 sender_euid：我们接管的是 HAL 层，到这里调用方已经是
+        // soterserver（系统进程），App 的身份早就不在 binder 头里了。只能拿 SOTER 参数
+        // 里那个 uid（App 自己填的）翻一把。它**不可信** —— 探测机（春秋/鸭子）故意填
+        // 假 uid —— 所以必须带 `caller_pkg_src=arg`：服务端只拿它做负向判断（包名不在
+        // 真应用白名单就服务端作答、不落 B），绝不用它放行真机。
+        let pkg = match table {
+            Some(table) => lookup_in_table(table, uid as u32),
+            None => caller_package_for_uid(uid as u32),
+        };
+        log::info!(
+            "event=soter arg uid={uid} pkg={}",
+            pkg.as_deref().unwrap_or("-")
+        );
+        if let Some(pkg) = pkg {
+            out.push_str(",\"caller_pkg\":");
+            push_json_string(&mut out, &pkg);
+            out.push_str(",\"caller_pkg_src\":\"arg\"");
+        }
     }
     out.push('}');
     Some(out)
