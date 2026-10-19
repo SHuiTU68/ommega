@@ -37,6 +37,14 @@ fn resolve(call: &SoterCall) -> Outcome {
         // 号码不在转发表里（空号、app 侧那套号码）：老规矩，本地能答就本地答。
         return Outcome::Local;
     };
+    // 只读 op 的短 TTL 缓存：微信一轮支付会把 has_auth_key / export_* 反复问好几遍，
+    // 每次都走一趟 B（那边偶发三秒多的抖动），而答案几秒内不会变。写操作来了直接清空。
+    let cache_key = cache_slot(call);
+    if let Some(key) = cache_key.as_deref() {
+        if let Some(blob) = cache_get(key) {
+            return Outcome::decode(&blob).unwrap_or(Outcome::Local);
+        }
+    }
     let blob = match crate::ipc::forward_soter(&request) {
         Ok(blob) => blob,
         Err(error) => {
@@ -44,7 +52,75 @@ fn resolve(call: &SoterCall) -> Outcome {
             return Outcome::Local;
         }
     };
-    Outcome::decode(&blob).unwrap_or(Outcome::Local)
+    let outcome = Outcome::decode(&blob).unwrap_or(Outcome::Local);
+    match cache_key {
+        Some(key) => cache_put(&key, &blob, &outcome),
+        None => cache_clear(),
+    }
+    outcome
+}
+
+/// 只读 op 的缓存槽名；写 op / 签名类返回 `None`（同时意味着要清缓存）。
+fn cache_slot(call: &SoterCall) -> Option<String> {
+    let op = soter_relay::op_for_code(call.code)?;
+    let readable = matches!(
+        op,
+        "has_auth_key" | "has_ask_already" | "export_ask_public_key" | "export_auth_key_public_key"
+    );
+    if !readable {
+        return None;
+    }
+    let uid = call.uid.unwrap_or(-1);
+    let alias = call.alias.as_deref().unwrap_or("");
+    Some(format!("{op}|{uid}|{alias}"))
+}
+
+/// 缓存条目：原始答复字节 + 写入时刻。
+static READ_CACHE: std::sync::Mutex<
+    Option<std::collections::HashMap<String, (std::time::Instant, Vec<u8>)>>,
+> = std::sync::Mutex::new(None);
+/// 只读答复在几秒内不会变；再长就会让「刚建的钥匙」看起来还不存在。
+const READ_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(3);
+
+fn cache_get(key: &str) -> Option<Vec<u8>> {
+    let mut guard = READ_CACHE.lock().ok()?;
+    let map = guard.as_mut()?;
+    match map.get(key) {
+        Some((at, blob)) if at.elapsed() <= READ_CACHE_TTL => Some(blob.clone()),
+        Some(_) => {
+            map.remove(key);
+            None
+        }
+        None => None,
+    }
+}
+
+fn cache_put(key: &str, blob: &[u8], outcome: &Outcome) {
+    // 只缓存「成功且非空」的答复：失败码（比如 -8 没这把钥匙）不能存，
+    // 否则刚生成的钥匙会被旧答案盖住。
+    let ok = matches!(outcome, Outcome::Buffer { code, .. } if *code == 0)
+        || matches!(outcome, Outcome::Code(0));
+    let mut guard = match READ_CACHE.lock() {
+        Ok(guard) => guard,
+        Err(_) => return,
+    };
+    let map = guard.get_or_insert_with(std::collections::HashMap::new);
+    if !ok {
+        map.remove(key);
+        return;
+    }
+    if map.len() > 256 {
+        map.clear();
+    }
+    map.insert(key.to_string(), (std::time::Instant::now(), blob.to_vec()));
+}
+
+fn cache_clear() {
+    if let Ok(mut guard) = READ_CACHE.lock() {
+        if let Some(map) = guard.as_mut() {
+            map.clear();
+        }
+    }
 }
 
 /// 拼 daemon 要的 JSON。号码不在转发表里返回 `None`（不转发）。
