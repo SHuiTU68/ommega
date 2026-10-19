@@ -1459,21 +1459,19 @@ document.addEventListener("change", function(ev){ if (!(ev && ev.target && ev.ta
         var script = [
           "MOD=" + MOD + ";",
           "LIB=/vendor/lib64:/vendor/lib64/hw;",
-          "if [ -x /vendor/bin/rkp_factory_extraction_tool ]; then",
-          "  timeout 15 env LD_LIBRARY_PATH=$LIB /vendor/bin/rkp_factory_extraction_tool default 8 2>/dev/null | grep -q csr && { echo RKP_ALREADY_OK; exit 0; };",
+          "if [ -x /vendor/bin/rkp_factory_extraction_tool ]; then timeout 15 env LD_LIBRARY_PATH=$LIB /vendor/bin/rkp_factory_extraction_tool default 8 2>/dev/null | grep -q csr && { echo RKP_ALREADY_OK; exit 0; };",
           "elif [ \"$(getprop remote_provisioning.enable_rkpd)\" = true ]; then echo RKP_USES_RKP; exit 0; fi;",
-          "if [ -x /vendor/bin/KmInstallKeybox ]; then BIN=/vendor/bin/KmInstallKeybox;",
-          "elif [ -x $MOD/KmInstallKeybox ]; then BIN=$MOD/KmInstallKeybox; LIB=/vendor/lib64/hw:/vendor/lib64;",
-          "else echo RKP_NOBIN; exit 0; fi;",
-          "LD_LIBRARY_PATH=$LIB $BIN Keybox_file Device_ID true rkp 2>&1"
+          "try() { OUT=$(LD_LIBRARY_PATH=\"$1\" \"$2\" Keybox_file Device_ID true rkp 2>&1); echo \"$OUT\"; echo \"$OUT\" | grep -qi -e 'is done' -e 'provisioning complete'; };",
+          "if [ -x /vendor/bin/KmInstallKeybox ]; then try /vendor/lib64:/vendor/lib64/hw /vendor/bin/KmInstallKeybox && exit 0; fi;",
+          "if [ -x $MOD/KmInstallKeybox ]; then try /vendor/lib64/hw:/vendor/lib64 $MOD/KmInstallKeybox && exit 0; fi;",
+          "echo RKP_WRITE_FAIL"
         ].join(" ");
         return exec(script).then(function(r){
           var out = ((r.stdout || "") + (r.stderr || "")).trim();
           if (out.indexOf("RKP_ALREADY_OK") >= 0){ toast(t("kb.rkp.already")); return; }
           if (out.indexOf("RKP_USES_RKP") >= 0){ toast(t("kb.rkp.usesrkp")); return; }
           if (out.indexOf("RKP_NOBIN") >= 0){ toast(t("kb.rkp.nobin"), true); return; }
-          /* 绝不把真 keybox 写进设备：能报这个说明那台的工具只支持 keybox 方式，到此为止 */
-          if (out.indexOf("Unable to open xml keyfile") >= 0){ toast(t("kb.rkp.needkb"), true); return; }
+          if (out.indexOf("RKP_WRITE_FAIL") >= 0){ toast(t("kb.rkp.fail", {msg: out.replace("RKP_WRITE_FAIL", "").trim().slice(-140) || "-"}), true); return; }
           if (/provision.{0,40}complete/i.test(out)){ toast(t("kb.rkp.ok")); return; }
           toast(t("kb.rkp.fail", {msg: out.slice(-160) || ("errno " + r.errno)}), true);
         });
