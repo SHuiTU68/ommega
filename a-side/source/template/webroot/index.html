@@ -1465,8 +1465,7 @@ document.addEventListener("change", function(ev){ if (!(ev && ev.target && ev.ta
           "if [ -x /vendor/bin/KmInstallKeybox ]; then BIN=/vendor/bin/KmInstallKeybox;",
           "elif [ -x $MOD/KmInstallKeybox ]; then BIN=$MOD/KmInstallKeybox; LIB=/vendor/lib64/hw:/vendor/lib64;",
           "else echo RKP_NOBIN; exit 0; fi;",
-          "OUT=$(LD_LIBRARY_PATH=$LIB $BIN Keybox_file Device_ID true true 2>&1); echo \"$OUT\";",
-          "case \"$OUT\" in *'Unable to open xml keyfile'*|*'-2000'*) LD_LIBRARY_PATH=$LIB $BIN Keybox_file Device_ID true rkp 2>&1 ;; esac"
+          "LD_LIBRARY_PATH=$LIB $BIN Keybox_file Device_ID true rkp 2>&1"
         ].join(" ");
         return exec(script).then(function(r){
           var out = ((r.stdout || "") + (r.stderr || "")).trim();
