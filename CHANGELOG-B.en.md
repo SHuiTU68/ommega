@@ -1,9 +1,8 @@
-# B-side module changelog
+# B-side changelog
 
 [中文](CHANGELOG-B.md)
 
-## 1.7.1
+## 1.7.4
 
-- The relay reports its own version, so the status page and the A-side panel show which release a B-side device runs.
-- The patch-date follow-up no longer fires before the first unlock: while the device has not been unlocked since boot, the request is served with the local values - no property writes, no keymint/keystore2 restart - so the lock screen cannot end up rejecting a correct password.
-- Turning off adbr remote control now also closes the debug port it opened, with no reboot needed.
+- Task pickup interval dropped from seconds to 80 ms: no more fixed delay where a task waited for the real device to poll.
+- The uplink is only bound when a VPN is up, so long polls are no longer dragged down by the tunnel (which made the relay restart itself).
