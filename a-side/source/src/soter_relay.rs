@@ -109,20 +109,38 @@ fn forward_inner(request: &str) -> Vec<u8> {
     }
 
     match RemoteRelay::soter(&request_value(&value, op.as_str())) {
-        Ok(Some(reply)) => match encode_reply(&op, &reply) {
-            Some(outcome) => {
-                let code = reply.get("error_code").and_then(Value::as_i64).unwrap_or(0);
-                log::info!(
-                    "event=soter relay op={op} answered remotely code={code} out_bytes={}",
-                    out_bytes(&outcome)
-                );
-                outcome.encode()
+        Ok(Some(reply)) => {
+            // Trustonic 在 ASK 已存在时会把重复的 generate 回 -5（ASK_NOT_READY），而 App
+            // 把 generate 的失败当成「ASK 没准备好」，于是一路自删自建、永远走不到签名
+            // （微信看到的就是「系统错误」）。这里补查一次 has_ask_already：ASK 在就把
+            // 这一笔改答成功，对 App 来说就是幂等的建料。
+            let mut reply = reply;
+            let mut code = reply.get("error_code").and_then(Value::as_i64).unwrap_or(0);
+            if op == "generate_ask_key_pair" && code == -5 {
+                if let Some(present) = relay_ask_present(&value) {
+                    log::info!(
+                        "event=soter relay op={op} -5 but has_ask_already=0; answering success (idempotent)"
+                    );
+                    reply = present;
+                    code = 0;
+                }
             }
-            None => {
-                log::warn!("event=soter relay op={op} reply shape unrecognised; letting the real HAL answer");
-                Outcome::Passthrough.encode()
+            match encode_reply(&op, &reply) {
+                Some(outcome) => {
+                    log::info!(
+                        "event=soter relay op={op} answered remotely code={code} out_bytes={}",
+                        out_bytes(&outcome)
+                    );
+                    outcome.encode()
+                }
+                None => {
+                    log::warn!(
+                        "event=soter relay op={op} reply shape unrecognised; letting the real HAL answer"
+                    );
+                    Outcome::Passthrough.encode()
+                }
             }
-        },
+        }
         Ok(None) => no_remote_answer(&op, "no B-side answer"),
         Err(error) => no_remote_answer(&op, &format!("{error:#}")),
     }
@@ -143,7 +161,39 @@ const HEAL_COOLDOWN: Duration = Duration::from_secs(600);
 static CHURN: OnceLock<Mutex<HashMap<String, (u32, Instant)>>> = OnceLock::new();
 static HEALED: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
 
-/// 看这一笔是不是「自删自建」，是且到了第 2 次就起一个线程把应用和槽位重置掉。
+/// 只查「这个 uid 上有没有 ASK」，有就回一份成功答复。给 generate 的幂等用。
+fn relay_ask_present(value: &Value) -> Option<Value> {
+    let mut probe = value.clone();
+    if let Some(obj) = probe.as_object_mut() {
+        obj.insert(
+            "op".to_string(),
+            Value::String("has_ask_already".to_string()),
+        );
+        obj.remove("alias");
+        obj.remove("challenge");
+        obj.remove("session");
+    }
+    let body = request_value(&probe, "has_ask_already");
+    match RemoteRelay::soter(&body) {
+        Ok(Some(mut reply)) => {
+            let present = reply
+                .get("error_code")
+                .and_then(Value::as_i64)
+                .unwrap_or(-1);
+            if present == 0 {
+                if let Some(obj) = reply.as_object_mut() {
+                    obj.insert("error_code".to_string(), serde_json::json!(0));
+                }
+                Some(reply)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// 只看这一笔是不是「自删自建」，是且到了第 2 次就起一个线程把应用和槽位重置掉。
 ///
 /// 为什么必须重置**应用侧的缓存**：微信把「ASK / AuthKey 已存在」记在自己的
 /// `shared_prefs/soter_status.xml` 里，一旦写上就永远跳过「生成 ASK → 上报腾讯」，

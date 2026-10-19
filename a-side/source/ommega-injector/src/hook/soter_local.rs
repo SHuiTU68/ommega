@@ -34,7 +34,7 @@
 //! 参数校验、错误码这些都跟着真机宿主那套走（-5 是"这把钥匙不在这台设备上"，
 //! 实测宿主也是这么回的），这样上层看不出区别。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 
 use rsa::pkcs8::{DecodePrivateKey, EncodePublicKey};
@@ -141,6 +141,12 @@ struct State {
     auth: Mutex<HashMap<String, Key>>,
     /// uid -> 签名计数器（ASK JSON 里的 counter）。
     counters: Mutex<HashMap<i32, u64>>,
+    /// 哪些 uid 上已经「建过 ASK」。
+    ///
+    /// 9 号以前写死答 NOT_FOUND（防毒化，2026-10-11 那次事故），后果是 5 号刚建完、
+    /// 再问还是「没有」，App 和检测器（Duck 的 keyPrep）就永远卡在「ASK 没准备好」，
+    /// 只能一遍遍重来。这里记一笔，让本地这条路的 ASK 生命周期自洽。
+    ask_built: Mutex<HashSet<i32>>,
     /// 会话号 -> 这一次要签的挑战。
     sessions: Mutex<HashMap<i64, SignSession>>,
     /// 下一个会话号。起点用当前毫秒，看起来像真的。
@@ -201,6 +207,7 @@ fn state() -> Option<&'static State> {
                 ask,
                 auth: Mutex::new(HashMap::new()),
                 counters: Mutex::new(HashMap::new()),
+                ask_built: Mutex::new(HashSet::new()),
                 sessions: Mutex::new(HashMap::new()),
                 next_session: Mutex::new(now_millis()),
             })
@@ -541,6 +548,11 @@ pub(crate) fn answer(call: &soter::SoterCall) -> Option<Answer> {
             if let Ok(mut map) = state.counters.lock() {
                 map.insert(uid, 0);
             }
+            // 记下来，下一次 9 号就要答「有」。以前不记，9 号又写死答没有，
+            // App 就会在这两步之间无限循环（Duck 的 keyPrep ask 永远是 false）。
+            if let Ok(mut set) = state.ask_built.lock() {
+                set.insert(uid);
+            }
             Some(Answer::Code(OK))
         }
         // generateAuthKeyPair(uid, alias)
@@ -562,7 +574,17 @@ pub(crate) fn answer(call: &soter::SoterCall) -> Option<Answer> {
         // 被腾讯拒了再自删重试 —— 一次本地兜底就把这个槽位毒化了（2026-10-11 实测；
         // 服务端 `soter_mint` 那两层同一个毛病，已一并改掉）。
         // 答 NOT_FOUND 之后应用会老实重新生成并上报；真机那条路一回来就能走通。
-        9 => Some(Answer::Code(NOT_FOUND)),
+        9 => {
+            // 本地这把 ASK 一直在（内置或自定义），但「这个 uid 上报过没有」得按 5 号
+            // 的真实建料记录答，否则 App 永远在「建完→问→没有」之间循环。
+            let uid = call.uid?;
+            let built = state
+                .ask_built
+                .lock()
+                .map(|set| set.contains(&uid))
+                .unwrap_or(false);
+            Some(Answer::Code(if built { OK } else { NOT_FOUND }))
+        }
         // hasAuthKey(uid, alias)
         10 => {
             let (uid, alias) = (call.uid?, call.alias.as_deref()?);
@@ -602,6 +624,10 @@ pub(crate) fn answer(call: &soter::SoterCall) -> Option<Answer> {
             let prefix = format!("{uid}|");
             if let Ok(mut map) = state.auth.lock() {
                 map.retain(|k, _| !k.starts_with(&prefix));
+            }
+            // 删干净了，下次 9 号就得答「没有」，让 App 重新走一遍建料。
+            if let Ok(mut set) = state.ask_built.lock() {
+                set.remove(&uid);
             }
             Some(Answer::Code(OK))
         }

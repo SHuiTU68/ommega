@@ -35,10 +35,12 @@ pub const KIND_INIT: u32 = 2;
 /// `Buffer` 的空数据标记 —— 状态码照给，out 参数为空。
 pub const NO_DATA: u32 = u32::MAX;
 
-/// HAL 号码 ↔ op 名，HAL 那侧的全部真号码。
+/// HAL 号码 ↔ op 名。
 ///
-/// 空号 2 / 6 / 14 不在里面：见 `aidl/vendor/qti/hardware/soter/ISoter.aidl`，那三个只是
-/// 占位，用来把后面的号码顶到正确位置。
+/// **14 槽排布（2 / 6 / 14 是空号）**：这是 NX721J 上 soterserver 实际发的形状 ——
+/// 实测它发 code 5 / 9 时只带 uid，正好对应 `generateAskKeyPair(int)` 和
+/// `hasAskAlready(int)`。APK 里那份 `ISoter.java`（1–11 连号）是没被用到的类，
+/// 按它读会把该带的 alias/challenge 读丢（日志里 alias=None）。
 pub const HAL_OPS: [(u32, &str); 11] = [
     (1, "export_ask_public_key"),
     (3, "export_auth_key_public_key"),

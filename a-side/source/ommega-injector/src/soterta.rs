@@ -21,6 +21,9 @@ pub const SERVICE_NAME: &str = "vendor.qti.hardware.soter.ISoter/default";
 const DESCRIPTOR: &str = "vendor.qti.hardware.soter.ISoter";
 
 /// 原厂 HAL 声明的 14 个号码。
+/// 号码表：**4 槽排布（2 / 6 / 14 空号）**，这是 NX721J 上 soterserver 实际发的形状。
+/// 依据：实测它发 code 5 / 9 时只带 uid（= generateAskKeyPair / hasAskAlready）；
+/// APK 里那份 1–11 连号的 `ISoter.java` 是没被用到的类，按它读会丢 alias。
 const EXPORT_ASK_PUBLIC_KEY: u32 = 1;
 const EXPORT_ATTK_PUBLIC_KEY: u32 = 2;
 const EXPORT_AUTH_KEY_PUBLIC_KEY: u32 = 3;
@@ -63,9 +66,45 @@ fn op_name(code: u32) -> &'static str {
 /// `int xxx(out byte[] data)` 那一类：返回值 + AIDL 原生 byte[]。
 /// 不是 `SoterBufferReturn` parcelable —— cryptoeng（C++ ndk 客户端）的反汇编里就是
 /// 一个 vector<uint8_t> out 加一个 int 返回，按 parcelable 拼它会在解析时越界崩。
+/// 调用方是不是 SOTER 宿主（`com.tencent.soter.soterserver`）。
+///
+/// 两家客户端读同一条 AIDL 的回复形状不一样：宿主的 Java 代理按 `SoterBufferReturn`
+/// **parcelable** 读（[非空标记][总长][byte[]][dataLength]），oplus 的 cryptoeng（C++）
+/// 读的是 `int + 原生 byte[]`。给错形状不会报错，只会把数据解成垃圾（宿主那边就是
+/// `askModel` 拿不到、“系统错误”，工程模式那边也会崩）。
+fn caller_is_soter_host() -> bool {
+    let pid = rsbinder::get_calling_pid();
+    if pid <= 0 {
+        return false;
+    }
+    std::fs::read(format!("/proc/{pid}/cmdline"))
+        .ok()
+        .and_then(|raw| {
+            raw.split(|byte| *byte == 0)
+                .next()
+                .map(|first| first.ends_with(b"com.tencent.soter.soterserver"))
+        })
+        .unwrap_or(false)
+}
+
+/// `int xxx(out SoterBufferReturn)` 那一类：按调用方选形状。
 fn write_bytes_reply(reply: &mut Parcel, data: &[u8], code: i32) -> BinderResult<()> {
+    let host = caller_is_soter_host();
+    log::info!(
+        "event=soterta shape host={host} code={code} data={}",
+        data.len()
+    );
     reply.write_i32(code)?;
-    reply.write(&data.to_vec())?;
+    if host {
+        // SoterBufferReturn.writeToParcel：[总长][byte[]][dataLength]，总长从自己那 4 字节算起。
+        let padded = (data.len() + 3) & !3;
+        reply.write_i32(1)?;
+        reply.write_i32((12 + padded) as i32)?;
+        reply.write(&data.to_vec())?;
+        reply.write_i32(data.len() as i32)?;
+    } else {
+        reply.write(&data.to_vec())?;
+    }
     Ok(())
 }
 
@@ -97,6 +136,11 @@ impl Remotable for SoterTa {
             reply.write(&DESCRIPTOR.to_string())?;
             return Ok(());
         }
+        // AIDL 的回复第一个 int 是 status（0 = OK）。Java 的 Stub$Proxy 每条回复都先
+        // readException() 读它；rsbinder 做服务端不写这一格，后面所有字段就会整体
+        // 错位 4 字节（soterserver 把方法返回值当 status、把非空标记当返回值，
+        // exportAsk 的 exportData 就解不出来，Duck/微信卡在 askModel）。
+        reply.write_i32(0)?;
         // 先按 AIDL 定义把入参读干净：读错位的话后面拿到的 uid/alias 全是垃圾。
         let mut uid = None;
         let mut alias = None;
@@ -128,6 +172,10 @@ impl Remotable for SoterTa {
             }
             _ => {}
         }
+        log::info!(
+            "event=soterta args code={code} uid={uid:?} alias={alias:?} challenge_len={} session={session:?}",
+            challenge.as_deref().map(|c| c.len()).unwrap_or(0)
+        );
 
         // 产线 provisioning 那三个（原厂 HAL 是空号）：工程模式的 SOTER key 就看 14 号。
         match code {
@@ -170,16 +218,23 @@ impl Remotable for SoterTa {
         // 微信拿这把 ASK 去腾讯验证一定被拒（就是“系统错误”）。
         match soter_relay::answer(&call) {
             Some(Answer::Code(code)) => {
+                log::info!("event=soterta reply code={code}");
                 reply.write_i32(code)?;
             }
             Some(Answer::Buffer { code, data }) => {
+                log::info!(
+                    "event=soterta reply code={code} data={}",
+                    data.as_ref().map(|d| d.len()).unwrap_or(0)
+                );
                 write_bytes_reply(reply, data.as_deref().unwrap_or(&[]), code)?;
             }
             Some(Answer::Init { status, session }) => {
+                log::info!("event=soterta reply init status={status} session={session}");
                 // initSign 返回的是 parcelable 本身，没有「方法返回值」那一格。
                 write_init_return(reply, status, session)?;
             }
             None => {
+                log::warn!("event=soterta reply none (no answer for this call)");
                 // 没有真身份可报、或参数不够：回一个明确的错误码，别回 0 让调用方
                 // 拿着空数据继续跑。NOT_FOUND 跟真机一样。
                 if matches!(

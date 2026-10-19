@@ -168,7 +168,8 @@ enum Args {
 /// 号码到（方法名、参数形状）。认不出来就是别人家的流量。
 fn describe(hal: bool, code: u32) -> Option<(&'static str, Args)> {
     if hal {
-        // 高通 HAL：声明了 14 个方法，运行时只用得上这 11 个，2 / 6 / 14 是空号。
+        // 4 槽排布（2 / 6 / 14 空号）—— NX721J 上实测的形状：soterserver 发 code 5/9
+        // 时只带 uid（= generateAskKeyPair / hasAskAlready）。
         Some(match code {
             1 => ("exportAskPublicKey", Args::Uid),
             3 => ("exportAuthKeyPublicKey", Args::UidAlias),
