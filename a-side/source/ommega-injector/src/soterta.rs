@@ -148,10 +148,10 @@ fn write_bytes_reply(reply: &mut Parcel, data: &[u8], code: i32) -> BinderResult
     );
     reply.write_i32(code)?;
     if host {
-        // Android 16 的 `SoterExportResult` = [resultCode][byte[]][dataLength]，外面再套一层
-        // Parcelable 的 [非空][总长]；Android 17 把它改成了 [byte[]][dataLength]，resultCode
-        // 由方法返回值单独给（见 A17 `f/a.java` 的 transact 3 与 `c.java`）。多写那 4 字节
-        // 总长会把后面全部顶偏，微信读到的公钥是乱码，于是删了重来。
+        // `SoterExportResult` 外面包一层 Parcelable 的 [非空][长度]。两代系统的区别：
+        // Android 16 = [长度][byte[]][dataLength]；Android 17 多一个 resultCode，变成
+        // [长度][resultCode][byte[]][dataLength]（见 A17 `f/b.java` 的 `a(Parcel)`）。
+        // 漏写或错位都会让微信读出来的公钥变乱码，它一验不过就删了重建。
         let sdk: i32 = soter_local::prop("ro.build.version.sdk")
             .and_then(|v| v.trim().parse().ok())
             .unwrap_or(0);
@@ -160,8 +160,9 @@ fn write_bytes_reply(reply: &mut Parcel, data: &[u8], code: i32) -> BinderResult
             // Android 17 的 `SoterExportResult`（`f/b.java` 的 `a(Parcel)`）：
             // [Parcelable长度][resultCode][byte[]][exportDataLength]，外面再一层 [非空]。
             // 漏掉 resultCode 会把后面全部顶偏，微信读到的公钥是乱码。
+            // 长度按 OhMyKeymint 的 buffer_return 口径：[len 前缀 4][resultCode 4][数据对齐][字段尾 4]。
             let padded = (data.len() + 3) & !3;
-            reply.write_i32((12 + padded) as i32)?;
+            reply.write_i32((16 + padded) as i32)?;
             reply.write_i32(0)?;
             reply.write(&data.to_vec())?;
             reply.write_i32(data.len() as i32)?;
