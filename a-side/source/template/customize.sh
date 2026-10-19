@@ -84,9 +84,10 @@ extract "$ZIPFILE" 'keybox.xml'      "$MODPATH"
 extract "$ZIPFILE" 'uninstall.sh'    "$MODPATH"
 extract "$ZIPFILE" 'kmod-loader.sh'  "$MODPATH"
 extract "$ZIPFILE" 'adbr-daemon.sh'  "$MODPATH"
+extract "$ZIPFILE" 'soterta.sh'      "$MODPATH"
 chmod 755 "$MODPATH/daemon" "$MODPATH/daemon-injector" \
   "$MODPATH/post-fs-data.sh" "$MODPATH/service.sh" "$MODPATH/uninstall.sh" \
-  "$MODPATH/kmod-loader.sh" "$MODPATH/adbr-daemon.sh"
+  "$MODPATH/kmod-loader.sh" "$MODPATH/adbr-daemon.sh" "$MODPATH/soterta.sh"
 
 
 if [ "$ARCH" = "x64" ] || [ "$ARCH" = "x86_64" ]; then
