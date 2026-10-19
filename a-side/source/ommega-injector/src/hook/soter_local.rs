@@ -297,7 +297,7 @@ extern "C" {
 /// 读一条系统属性。payload 跑在 uid 1000 的系统进程里，直接调 bionic 比 fork 一个
 /// `getprop` 便宜几个数量级（签名这条路径上每毫秒都算数）。
 #[cfg(target_os = "android")]
-fn prop(name: &str) -> Option<String> {
+pub(crate) fn prop(name: &str) -> Option<String> {
     use std::ffi::CStr;
     let name = std::ffi::CString::new(name).ok()?;
     // bionic 的 PROP_VALUE_MAX 是 92，留点余量。

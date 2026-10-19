@@ -148,12 +148,30 @@ fn write_bytes_reply(reply: &mut Parcel, data: &[u8], code: i32) -> BinderResult
     );
     reply.write_i32(code)?;
     if host {
-        // SoterBufferReturn.writeToParcel：[总长][byte[]][dataLength]，总长从自己那 4 字节算起。
-        let padded = (data.len() + 3) & !3;
+        // Android 16 的 `SoterExportResult` = [resultCode][byte[]][dataLength]，外面再套一层
+        // Parcelable 的 [非空][总长]；Android 17 把它改成了 [byte[]][dataLength]，resultCode
+        // 由方法返回值单独给（见 A17 `f/a.java` 的 transact 3 与 `c.java`）。多写那 4 字节
+        // 总长会把后面全部顶偏，微信读到的公钥是乱码，于是删了重来。
+        let sdk: i32 = soter_local::prop("ro.build.version.sdk")
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(0);
         reply.write_i32(1)?;
-        reply.write_i32((12 + padded) as i32)?;
-        reply.write(&data.to_vec())?;
-        reply.write_i32(data.len() as i32)?;
+        if sdk >= 37 {
+            // Android 17 的 `SoterExportResult`（`f/b.java` 的 `a(Parcel)`）：
+            // [Parcelable长度][resultCode][byte[]][exportDataLength]，外面再一层 [非空]。
+            // 漏掉 resultCode 会把后面全部顶偏，微信读到的公钥是乱码。
+            let padded = (data.len() + 3) & !3;
+            reply.write_i32((12 + padded) as i32)?;
+            reply.write_i32(0)?;
+            reply.write(&data.to_vec())?;
+            reply.write_i32(data.len() as i32)?;
+        } else {
+            // SoterBufferReturn.writeToParcel：[总长][byte[]][dataLength]，总长从自己那 4 字节算起。
+            let padded = (data.len() + 3) & !3;
+            reply.write_i32((12 + padded) as i32)?;
+            reply.write(&data.to_vec())?;
+            reply.write_i32(data.len() as i32)?;
+        }
     } else {
         reply.write(&data.to_vec())?;
     }
