@@ -20,6 +20,46 @@ pub(super) fn init_hook() -> Result<()> {
     }
 }
 
+/// soterserver（system_ext 的 platform_app）里 libbinder 的 GOT/RELRO 那一段是 `---p`，
+/// lsplt 的 ScanHookInfo 只收 private 且可读的映射，commit 时找不到承载 GOT 的那块就
+/// 整片失败，主流程再 expect 一下宿主就直接 SIGABRT（安 15 / PKG110 实测）。
+/// 这里在 commit 之前把 libbinder* 的 `---p` 段放开成只读，让它能被 lsplt 认领。
+fn unlock_binder_relro() {
+    let Ok(maps) = std::fs::read_to_string("/proc/self/maps") else {
+        return;
+    };
+    for line in maps.lines() {
+        let mut fields = line.split_whitespace();
+        let Some(range) = fields.next() else { continue };
+        let Some(perms) = fields.next() else { continue };
+        if perms != "---p" || !line.contains("libbinder") {
+            continue;
+        }
+        let Some((start, end)) = range.split_once('-') else {
+            continue;
+        };
+        let (Ok(start), Ok(end)) = (
+            usize::from_str_radix(start, 16),
+            usize::from_str_radix(end, 16),
+        ) else {
+            continue;
+        };
+        if end <= start {
+            continue;
+        }
+        let rc =
+            unsafe { libc::mprotect(start as *mut libc::c_void, end - start, libc::PROT_READ) };
+        info!(
+            "binder relro {range} -> {} rc={rc}",
+            if rc == 0 {
+                "readable"
+            } else {
+                "mprotect failed"
+            }
+        );
+    }
+}
+
 fn install_hooks() -> Result<()> {
     fn register_hooks(
         libraries: &[(String, lsplt_rs::DeviceId, lsplt_rs::Inode)],
@@ -124,7 +164,39 @@ fn install_hooks() -> Result<()> {
         "fd duplication",
     )?;
 
-    lsplt_rs::commit_hook().map_err(|e| anyhow!("Failed to commit lsplt hook: {:?}", e))?;
+    unlock_binder_relro();
+    let commit_result = lsplt_rs::commit_hook();
+    info!("lsplt commit_hook -> {:?}", commit_result);
+    for (label, symbols, backups) in [
+        ("ioctl", &["ioctl", "__ioctl"][..], &ioctl_backups),
+        ("close", &["close", "__close"][..], &close_backups),
+        ("dup", &["dup"][..], &dup_backups),
+        (
+            "fdsan",
+            &["android_fdsan_close_with_tag"][..],
+            &fdsan_backups,
+        ),
+        ("dup2", &["dup2"][..], &dup2_backups),
+        ("dup3", &["dup3"][..], &dup3_backups),
+        ("fcntl", &["fcntl"][..], &fcntl_backups),
+    ] {
+        for (index, backup) in backups.iter().enumerate() {
+            let lib = libraries
+                .get(index / symbols.len())
+                .map(|entry| entry.0.as_str())
+                .unwrap_or("?");
+            let sym = symbols.get(index % symbols.len()).copied().unwrap_or("?");
+            info!(
+                "lsplt backup {label} {lib} {sym} -> {} ({backup:p})",
+                if backup.is_null() { "null" } else { "hooked" }
+            );
+        }
+    }
+    if let Err(error) = &commit_result {
+        log::warn!(
+            "binder hook not installed in this process ({error:?}); continuing without interception"
+        );
+    }
     let ioctl_committed = ioctl_backups.iter().filter(|ptr| !ptr.is_null()).count();
     let close_committed = close_backups
         .iter()
@@ -139,10 +211,16 @@ fn install_hooks() -> Result<()> {
     store_original(&dup3_backups, &OLD_DUP3);
     store_original(&fcntl_backups, &OLD_FCNTL);
     if ioctl_committed == 0 {
-        bail!("Failed to commit any binder ioctl hooks");
+        // 不能 panic：payload 进的是别人的进程（SOTER 宿主、HAL），一个 hook 装不上
+        // 只该少一路拦截，不该把宿主整个 abort 掉（一加 PKG110 上就是这么每 17 秒
+        // 崩一次 soterserver 的）。这里降级返回，后续走透传。
+        log::warn!(
+            "no binder ioctl hook was committed in this process; running without interception"
+        );
+        return Ok(());
     }
     if close_committed == 0 {
-        bail!("Failed to commit any binder close hooks");
+        log::warn!("no binder close hook was committed in this process; fd tracking is disabled");
     }
     intercept::start_operation_publication_worker().map_err(|error| anyhow!(error))?;
     rewrite::start_mirror_recovery_worker().map_err(|error| anyhow!(error))?;

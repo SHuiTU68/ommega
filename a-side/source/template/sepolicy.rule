@@ -78,5 +78,12 @@ allow { vendor_hal_soter_qti hal_soter_trustonic hal_soter_service } system_app_
 # 同上：memfd 镜像的写入。这个域（一加 13 / 努比亚 Z60 Ultra 实测）就是它卡的。
 allow { vendor_hal_soter_qti hal_soter_trustonic hal_soter_service } tmpfs file { write getattr read execute map }
 
+# 软件 SOTER TA（soterta.sh 拉起的 `ommega-inject --soterta-serve`）：它要把
+# `vendor.qti.hardware.soter.ISoter/default` 注册到 servicemanager，客户端（宿主、
+# oplus 的 cryptoeng）按名字 + 接口名去拿。find 不够，得能 add。
+# 起它的域跟着根实现走：Magisk 是 magisk/su、KernelSU 是 ksu，脚本本体常常落
+# system_file；三个都列上。
+allow { magisk ksu su system_file } default_android_service service_manager { add find };
+
 allow keystore default_android_service service_manager find
 allow shell default_android_service service_manager find

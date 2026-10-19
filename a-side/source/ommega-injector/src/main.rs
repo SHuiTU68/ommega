@@ -13,6 +13,7 @@ pub mod ipc;
 pub mod legacy;
 pub mod logging;
 pub mod parcel;
+pub mod soterta;
 pub mod sys;
 pub mod tracker;
 pub mod utils;
@@ -191,6 +192,21 @@ fn log_runtime_identity(role: &str) {
 fn main() {
     /* 自检模式：给面板一个「加载就有的结论」—— 用当前生效的 ASK 签一段固定文本
     再验一遍。纯本地密码学（微秒级，不碰网络也不碰 TEE），所以不会挡任何签名路径。 */
+    if let Some(arg) = std::env::args().find(|arg| arg.starts_with("--soterta-serve")) {
+        logging::init_logger_fallback(LevelFilter::Debug);
+        let driver = if arg.ends_with("=vnd") {
+            "/dev/vndbinder"
+        } else {
+            "/dev/binder"
+        };
+        match soterta::serve(driver) {
+            Ok(()) => std::process::exit(0),
+            Err(error) => {
+                eprintln!("soterta serve failed: {error:#}");
+                std::process::exit(1);
+            }
+        }
+    }
     if std::env::args().any(|arg| arg == "--soter-selftest") {
         match crate::hook::soter_local::selftest() {
             Ok(()) => {
@@ -277,12 +293,48 @@ fn main() {
     }
 }
 
+/// 诊断用：payload 里 panic 一律 abort，消息默认去 stderr（app 进程那是 /dev/null），
+/// 事后只剩一条 SIGABRT。这里把 panic 原文写进日志和两个兜底文件。
+fn install_payload_panic_hook() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        std::panic::set_hook(Box::new(|info| {
+            let location = info
+                .location()
+                .map(|l| format!("{}:{}", l.file(), l.line()))
+                .unwrap_or_else(|| "<unknown>".to_string());
+            let msg = if let Some(s) = info.payload().downcast_ref::<&str>() {
+                (*s).to_string()
+            } else if let Some(s) = info.payload().downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "<non-string panic>".to_string()
+            };
+            log::error!("payload panic at {location}: {msg}");
+            for path in [
+                "/data/misc/ommega/logs/panic.log",
+                "/data/local/tmp/ommega-panic.log",
+            ] {
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                {
+                    use std::io::Write;
+                    let _ = writeln!(f, "[{}] {location}: {msg}", std::process::id());
+                }
+            }
+        }));
+    });
+}
+
 #[no_mangle]
 #[allow(unused)]
 pub extern "C" fn entry(handle: *const c_void) -> bool {
     // This runs inside the target process, so we must initialize logging again
     // for that process. On Android this enables both logcat and stdout logging.
     logging::init_logger_fallback(LevelFilter::Debug);
+    install_payload_panic_hook();
     // 这一条必须放在最前面：下面 `config::get()` 一起手就会起一个叫
     // `injector-config` 的线程，而那正好也是我们用来认「已经注过了」的记号。
     // 放到后面查就等于自己把自己当成前一份，把 hook 跳过。
@@ -325,7 +377,11 @@ pub extern "C" fn entry(handle: *const c_void) -> bool {
         crate::logging::path_probes(),
         crate::logging::init_error(),
     ));
-    hook::init_hook().expect("failed to initialize binder ioctl hook");
+    // 装不上 hook 只降级，不 abort：payload 跑在别人的进程里（SOTER 宿主、SOTER HAL），
+    // 一个 GOT 都改不动的时候应该少一路拦截，而不是把宿主搞崩。
+    if let Err(error) = hook::init_hook() {
+        log::error!("binder hook not installed in this process: {error:#}");
+    }
     if in_soter_host() {
         spawn_soter_selfcheck();
     }

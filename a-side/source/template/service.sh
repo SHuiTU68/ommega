@@ -85,6 +85,13 @@ fi
 # /system/priv-app/SoterService only when its binder service cannot be reached
 # (see kmod-loader.sh).  Detached on purpose: it has to finish well within a few
 # seconds and must never delay late_start or the daemons above.
+# 软件 SOTER TA：开关是 config 里的 soter_service。接管时把原厂 vendor.soter 停了、
+# 用自己的服务顶同一个 binder 名字（细节见 soterta.sh）。先跑一次，之后由下面的
+# keep-alive 循环每轮 converge。
+if [ -f "$MODDIR/soterta.sh" ]; then
+  ( sh "$MODDIR/soterta.sh" >> "$STATE_DIR/logs/soterta.log" 2>&1 & )
+fi
+
 if [ -f "$MODDIR/kmod-loader.sh" ]; then
   # 调试日志关着时连这个日志文件都不建（它也是「日志」，开关开了才有）。
   kmod_log=/dev/null
@@ -128,6 +135,9 @@ keep_daemons_alive() {
       ( sh "$MODDIR/adbr-daemon.sh" --a >> "$STATE_DIR/logs/adbr-daemon.log" 2>&1 & )
       fixed=1
     fi
+  fi
+  if [ -f "$MODDIR/soterta.sh" ]; then
+    ( sh "$MODDIR/soterta.sh" >> "$STATE_DIR/logs/soterta.log" 2>&1 & )
   fi
   [ "$fixed" = 1 ] && update_status "Ommega ✅ 运行中"
   return 0

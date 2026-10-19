@@ -537,7 +537,7 @@ while true; do
   sync_soter_ask
   sync_soter_cpu_id
   if [ "$soter_ask_changed" = "1" ]; then
-    restart_soter_host
+    # ASK 换了不用再踢宿主：宿主里的载荷已经不注了，服务端自己的进程每次签都现读。
     run_soter_selftest
   fi
 
@@ -559,42 +559,11 @@ while true; do
     fi
   fi
 
-  # 注入目标跟着 WebUI 开关走：关着只有 keystore2（主路），开着再加上 SOTER 宿主。
-  # 开关是热读的，WebUI 一改下一次循环就生效（注入本身仍在目标起来之后）。
+
+  # SOTER 不再注入宿主：改成接管 HAL 的服务名（见 soterta.sh）。宿主发出去的请求
+  # 只要打到我们的服务，效果一样；而在这台机型上宿主里的载荷根本装不上 —— 它的
+  # libbinder 带共享映射，lsplt 连一个 GOT 都认不下来，commit 全失败。
   inject_targets=keystore2
-  if soter_inject_enabled; then
-    inject_targets=keystore2,soter
-    # daemon 判出「宿主哑了」时会把结论写进那个标记文件（见 a 端 src/soter_host_health.rs：
-    # 宿主收得到 App 侧调用、却一笔都不往 HAL 发，我们的接管因此没东西可拦，App 那边一直报
-    # 「系统错误」；2026-10-09 nubia NX721J 上微信指纹支付卡住的就是这个）。
-    # 动手的只能是这里：daemon 在 keystore uid 里，杀不动 system 域的宿主。
-    # 踢完立刻拉一个新的，不走下面保活那 30 秒节流 —— 用户这时候多半正卡在微信里重试。
-    if [ -f "$SOTER_STUCK_FILE" ]; then
-      reason=$(head -n1 "$SOTER_STUCK_FILE" 2>/dev/null)
-      rm -f "$SOTER_STUCK_FILE" 2>/dev/null
-      log "[injector-daemon] ${reason:-$SOTER_PKG looks mute}"
-      restart_soter_host "so a fresh HAL client comes up"
-      start_soter_service
-    fi
-    # 宿主保活：不在就再拉一次（不是只在开机那一次）。
-    #
-    # 为什么要这样：App 是 bind 到宿主时才把它拉起来的，而它一被拉起来就**马上**发第一笔
-    # SOTER —— 实测那台小米：请求 08:18:28 发出去、08:18:32 我们才把载荷注进去，那四秒里
-    # 全透传真 HAL。而宿主被系统杀掉后我们原来不会再去拉它，只能等 App 下次把它拉起来，
-    # 于是每次都碰上“刚起来的宿主 + 还没进去的载荷”。常态让它跑着（带节流，免得刷日志），
-    # App 来调的时候宿主里就已经有载荷了。
-    if [ -z "$(soter_pid)" ]; then
-      now_start=$(date +%s 2>/dev/null)
-      if [ -z "$now_start" ] || [ "$now_start" -ge $((last_soter_start_at + 30)) ]; then
-        last_soter_start_at=${now_start:-0}
-        start_soter_service
-      fi
-    fi
-  else
-    # 开关关着：宿主里根本没有载荷，这个标记已经没意义 —— 留着只会在下次
-    # 打开开关时平白重启一次宿主。
-    rm -f "$SOTER_STUCK_FILE" 2>/dev/null
-  fi
 
   pid=$(get_keystore_pid)
   keystore_pending=0

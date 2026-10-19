@@ -465,8 +465,7 @@ pub(crate) fn answerable(code: u32) -> bool {
     HANDLED_CODES.contains(&code)
 }
 
-/// 按号码算一笔应答。认不出来、或者少参数就返回 `None`，让上层透给真 HAL。
-///
+/// 按号码算一笔应答。认不出来、或者少参数就返回 `None`，让上层透给真 HAL。///
 /// 只处理 HAL 那半边（`call.hal`）：App 面向那半边是宿主自己的事，它会把我们的
 /// 结果原样包成 `SoterExportResult` 递给 App，不用我们操心。
 pub(crate) fn answer(call: &soter::SoterCall) -> Option<Answer> {
@@ -616,6 +615,22 @@ pub(crate) fn answer(call: &soter::SoterCall) -> Option<Answer> {
         }
         _ => None,
     }
+}
+
+/// 产线 provisioning（`exportAttkPublicKey`）要的那份“ATTK 公钥”。软件 TA 里 ASK 兼
+/// ATTK，所以这里交出去的就是 ASK 的自描述信封（跟 1 号 `exportAskPublicKey` 同一份东西）。
+pub(crate) fn ask_public_document(uid: i32) -> Vec<u8> {
+    let Some(state) = state() else {
+        return Vec::new();
+    };
+    let counter = bump_counter(state, uid);
+    let Ok(document) = ask_json(&state.ask, uid, counter) else {
+        return Vec::new();
+    };
+    let Some(signature) = state.ask.sign(&document) else {
+        return Vec::new();
+    };
+    envelope(&document, &signature)
 }
 
 fn auth_id(uid: i32, alias: &str) -> String {
