@@ -15,6 +15,7 @@ use rsbinder::{
 
 use crate::hook::soter;
 use crate::hook::soter_local::{self, Answer};
+use crate::hook::soter_relay;
 
 pub const SERVICE_NAME: &str = "vendor.qti.hardware.soter.ISoter/default";
 const DESCRIPTOR: &str = "vendor.qti.hardware.soter.ISoter";
@@ -164,7 +165,10 @@ impl Remotable for SoterTa {
             caller_uid: None,
             data_size: 0,
         };
-        match soter_local::answer(&call) {
+        // 先问 daemon（它按配置决定是转 B 端真 TEE、走服务端还是本地兜底）；
+        // 问不到才有本地自签那条退路。直接调 soter_local 的话永远只能自签，
+        // 微信拿这把 ASK 去腾讯验证一定被拒（就是“系统错误”）。
+        match soter_relay::answer(&call) {
             Some(Answer::Code(code)) => {
                 reply.write_i32(code)?;
             }
@@ -206,6 +210,14 @@ pub fn serve(driver: &str) -> anyhow::Result<()> {
     let binder = Binder::new_with_stability(SoterTa, Stability::Vintf);
     hub::add_service(SERVICE_NAME, binder.as_binder())?;
     log::info!("event=soterta registered {SERVICE_NAME} on {driver}");
+    // 连 daemon 的 RPC 放后台：它要等 socket 就绪（最长几十秒），不能挡着注册
+    // —— soterta.sh 在启动后一秒就看服务名在不在，迟一步就被当成失败回滚掉。
+    std::thread::spawn(|| match crate::ipc::install_direct_rpc_session() {
+        Ok(()) => log::info!("event=soterta daemon RPC ready"),
+        Err(error) => {
+            log::warn!("event=soterta daemon RPC unavailable ({error:#}); local signing only")
+        }
+    });
     // 注册完就得有人处理事务：主线程进 binder 事件循环（rsbinder 的 join_thread_pool）
     rsbinder::ProcessState::join_thread_pool()?;
     Ok(())

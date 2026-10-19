@@ -234,6 +234,12 @@ fn create_rpc_server(bind: RpcBind) -> Result<Arc<RpcServer>> {
     server.set_authorizer(move |peer| {
         let allowed = match peer {
             PeerIdentity::Local { uid, .. } if *uid == KEYSTORE_UID => true,
+            // 软件 SOTER TA（soterta.sh 拉起的 `ommega-inject --soterta-serve`）跑在
+            // root 里：它既不是 keystore uid，也没被注入过，光这两条就把它挡在外面，
+            // 结果它只能本地自签 —— 微信拿自签 ASK 去腾讯验证必然“系统错误”。
+            // 这里只能按 uid 放行：daemon 已经 setuid 成 keystore，读不了 root 进程的
+            // /proc/pid/cmdline（ptrace_may_access 会回 EPERM），认不出命令行。
+            PeerIdentity::Local { uid: 0, .. } => matches!(bind, RpcBind::Abstract),
             PeerIdentity::Local { pid, .. } => {
                 matches!(bind, RpcBind::Abstract) && peer_is_injected(*pid)
             }
