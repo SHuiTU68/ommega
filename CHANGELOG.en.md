@@ -10,3 +10,4 @@
 - The engineering-mode Key status self-check (Attestation key) no longer reports failure.
 - Fixed the SOTER service restarting in a loop on some devices, which made WeChat fingerprint fail.
 - The Local keys page gains a "Fix RKP" button: one tap writes the device ID into persist, after which the vendor TEE's RKP works and the engineering-mode RKP default line goes green.
+- A broken module config is now restored from its backup automatically, so the panel can no longer say "running" while the key service is actually down.
