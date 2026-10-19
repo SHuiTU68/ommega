@@ -91,11 +91,6 @@ fi
 if [ -f "$MODDIR/soterta.sh" ]; then
   ( sh "$MODDIR/soterta.sh" >> "$STATE_DIR/logs/soterta.log" 2>&1 & )
 fi
-# 软件 RKP HAL：开关是 config 里的 `rkp_inject`（默认开）。原厂 RKP 在 keymint 进程里
-# 不能停，这里只注册同名服务把它顶掉（详见 rkpta.sh），同样交给下面的 keep-alive。
-if [ -f "$MODDIR/rkpta.sh" ]; then
-  ( sh "$MODDIR/rkpta.sh" >> "$STATE_DIR/logs/rkpta.log" 2>&1 & )
-fi
 
 if [ -f "$MODDIR/kmod-loader.sh" ]; then
   # 调试日志关着时连这个日志文件都不建（它也是「日志」，开关开了才有）。
@@ -143,9 +138,6 @@ keep_daemons_alive() {
   fi
   if [ -f "$MODDIR/soterta.sh" ]; then
     ( sh "$MODDIR/soterta.sh" >> "$STATE_DIR/logs/soterta.log" 2>&1 & )
-  fi
-  if [ -f "$MODDIR/rkpta.sh" ]; then
-    ( sh "$MODDIR/rkpta.sh" >> "$STATE_DIR/logs/rkpta.log" 2>&1 & )
   fi
   [ "$fixed" = 1 ] && update_status "Ommega ✅ 运行中"
   return 0
