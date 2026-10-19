@@ -9,6 +9,8 @@
 //! no system OpenSSL required.
 
 use ecdsa::signature::Signer;
+use p224::ecdsa::{DerSignature as P224DerSignature, Signature as P224Signature};
+use p224::SecretKey as P224SecretKey;
 use p256::ecdsa::{DerSignature as P256DerSignature, Signature as P256Signature};
 use p256::SecretKey as P256SecretKey;
 use p384::ecdsa::{DerSignature as P384DerSignature, Signature as P384Signature};
@@ -45,6 +47,7 @@ pub const KM_ALG_RSA: i64 = 1;
 pub const KM_PURPOSE_SIGN: i64 = 2;
 pub const KM_PURPOSE_ATTEST_KEY: i64 = 7;
 pub const KM_DIGEST_SHA_256: i64 = 4; // AOSP KmDigest::SHA256 = 4
+pub const KM_EC_CURVE_P_224: i64 = 0; // AOSP KmEcCurve::P_224 = 0
 pub const KM_EC_CURVE_P_256: i64 = 1; // AOSP KmEcCurve::P_256 = 1
 pub const KM_EC_CURVE_P_384: i64 = 2; // AOSP KmEcCurve::P_384 = 2
 pub const KM_EC_CURVE_P_521: i64 = 3; // AOSP KmEcCurve::P_521 = 3
@@ -534,6 +537,7 @@ fn alg_id(oid: &[u64], with_null: bool) -> Vec<u8> {
 fn sig_alg_for_key(key: &KeyMaterial) -> Vec<u8> {
     match key {
         // ECDSA-with-SHA256: parameters must be ABSENT (matches Google certs).
+        KeyMaterial::Ec(EcKey::P224(_)) => alg_id(OID_ECDSA_SHA256, false),
         KeyMaterial::Ec(EcKey::P256(_)) => alg_id(OID_ECDSA_SHA256, false),
         KeyMaterial::Ec(EcKey::P384(_)) => alg_id(OID_ECDSA_SHA384, false),
         KeyMaterial::Ec(EcKey::P521(_)) => alg_id(OID_ECDSA_SHA512, false),
@@ -556,6 +560,7 @@ fn ext_entry(oid: &[u64], critical: bool, octet: &[u8]) -> Vec<u8> {
 
 /// EC key material for any supported NIST curve.
 pub enum EcKey {
+    P224(P224SecretKey),
     P256(P256SecretKey),
     P384(P384SecretKey),
     P521(P521SecretKey),
@@ -572,6 +577,12 @@ pub enum KeyMaterial {
 
 pub fn parse_private_key(pem_data: &[u8]) -> anyhow::Result<KeyMaterial> {
     let s = std::str::from_utf8(pem_data)?;
+    if let Ok(sk) = P224SecretKey::from_sec1_pem(s) {
+        return Ok(KeyMaterial::Ec(EcKey::P224(sk)));
+    }
+    if let Ok(sk) = P224SecretKey::from_pkcs8_pem(s) {
+        return Ok(KeyMaterial::Ec(EcKey::P224(sk)));
+    }
     if let Ok(sk) = P256SecretKey::from_sec1_pem(s) {
         return Ok(KeyMaterial::Ec(EcKey::P256(sk)));
     }
@@ -604,6 +615,9 @@ pub fn parse_private_key(pem_data: &[u8]) -> anyhow::Result<KeyMaterial> {
 fn public_key_der(key: &KeyMaterial) -> anyhow::Result<Vec<u8>> {
     use pkcs8::EncodePublicKey;
     match key {
+        KeyMaterial::Ec(EcKey::P224(sk)) => {
+            Ok(sk.public_key().to_public_key_der()?.as_bytes().to_vec())
+        }
         KeyMaterial::Ec(EcKey::P256(sk)) => {
             Ok(sk.public_key().to_public_key_der()?.as_bytes().to_vec())
         }
@@ -820,6 +834,14 @@ pub fn chain_rdn_shape(chain_pem: &str) -> RdnShape {
 
 fn sign_tbs(key: &KeyMaterial, tbs: &[u8]) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
     match key {
+        KeyMaterial::Ec(EcKey::P224(sk)) => {
+            // P-224 的证书用 ECDSA-with-SHA256：签名算法跟曲线解耦，证书里公钥的
+            // 曲线 OID 由 SPKI 自己带（secp224r1 = 1.3.132.0.33）。
+            let signing_key = p224::ecdsa::SigningKey::from(sk);
+            let sig: P224Signature = signing_key.sign(tbs);
+            let der_sig = P224DerSignature::from(sig);
+            Ok((alg_id(OID_ECDSA_SHA256, false), der_sig.as_bytes().to_vec()))
+        }
         KeyMaterial::Ec(EcKey::P256(sk)) => {
             let signing_key = p256::ecdsa::SigningKey::from(sk);
             let sig: P256Signature = signing_key.sign(tbs);
@@ -1074,6 +1096,14 @@ pub fn generate_leaf_key(p: &AttestationParams) -> anyhow::Result<(KeyMaterial, 
         Ok((KeyMaterial::Rsa(Box::new(private)), pem.to_string()))
     } else {
         match p.ec_curve {
+            // secp224r1：一加/OPPO 工程模式的 Key 状态页会拿 P-224 建一把
+            // attestation 钥匙来验链，缺了它那边直接判「失败」。
+            Some(KM_EC_CURVE_P_224) => {
+                use p224::elliptic_curve::rand_core::OsRng;
+                let secret = P224SecretKey::random(&mut OsRng);
+                let pem = secret.to_sec1_pem(pkcs8::LineEnding::LF)?;
+                Ok((KeyMaterial::Ec(EcKey::P224(secret)), pem.to_string()))
+            }
             Some(KM_EC_CURVE_P_384) => {
                 use p384::elliptic_curve::rand_core::OsRng;
                 let secret = P384SecretKey::random(&mut OsRng);
