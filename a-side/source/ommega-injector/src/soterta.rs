@@ -314,7 +314,11 @@ impl Remotable for SoterTa {
 /// `driver` 决定注册到哪个 servicemanager：vendor 的 AIDL HAL 习惯落在
 /// `/dev/vndbinder`（vndservicemanager），应用侧的 Java 客户端只看 `/dev/binder`。
 pub fn serve(driver: &str) -> anyhow::Result<()> {
-    rsbinder::ProcessState::init(driver, 0)
+    // 第二个参数是 binder 线程池上限。传 0 会让驱动把上限设成 0：framework 那边会报
+    // 「Thread Pool max thread count is 0. Cannot cache binder as linkToDeath cannot be
+    // implemented」，而且 looper 会在十几秒后被驱动拒掉、进程静默退出（保活又拉起来，
+    // 就是现场那个每 20 秒换一个 pid 的抖动）。这里给默认 15。
+    rsbinder::ProcessState::init(driver, 15)
         .map_err(|error| anyhow::anyhow!("binder init on {driver} failed: {error}"))?;
     let binder = Binder::new_with_stability(SoterTa, Stability::Vintf);
     hub::add_service(SERVICE_NAME, binder.as_binder())?;

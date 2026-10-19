@@ -20,6 +20,7 @@ MODDIR=${0%/*}
 STATE_DIR=/data/adb/ommega
 CONF=${OMMEGA_CONF_PATH:-/data/misc/keystore/ommega/config}
 PIDFILE=$STATE_DIR/soterta.pid
+KICKED_FILE=$STATE_DIR/soterta.host.kicked
 LOG=$STATE_DIR/logs/soterta.log
 SERVICE=vendor.qti.hardware.soter.ISoter/default
 HAL=vendor.soter
@@ -127,9 +128,10 @@ take_over() {
   # 但它不会自己重查 —— App 一调就 DeadObjectException（微信直接「系统错误」，而日志里
   # 一笔 HAL 调用都看不到）。刚接管完就把宿主踢一下，让 AM 下回 bind 时重新拿。
   host_pid=$(pidof com.tencent.soter.soterserver 2>/dev/null | awk '{print $1}')
-  if [ -n "$host_pid" ]; then
+  if [ -n "$host_pid" ] && [ ! -f "$KICKED_FILE" ]; then
     log "restarting soter host pid=$host_pid so it rebinds our service"
     kill -9 "$host_pid" 2>/dev/null
+    : > "$KICKED_FILE" 2>/dev/null
   fi
   return 0
 }
