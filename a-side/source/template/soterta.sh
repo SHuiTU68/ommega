@@ -123,6 +123,14 @@ take_over() {
     setprop ctl.start "$HAL" 2>/dev/null
     return 1
   fi
+  # 宿主（soterserver）把 HAL 代理缓存在 static 字段里，我们一换服务实例那份代理就死了，
+  # 但它不会自己重查 —— App 一调就 DeadObjectException（微信直接「系统错误」，而日志里
+  # 一笔 HAL 调用都看不到）。刚接管完就把宿主踢一下，让 AM 下回 bind 时重新拿。
+  host_pid=$(pidof com.tencent.soter.soterserver 2>/dev/null | awk '{print $1}')
+  if [ -n "$host_pid" ]; then
+    log "restarting soter host pid=$host_pid so it rebinds our service"
+    kill -9 "$host_pid" 2>/dev/null
+  fi
   return 0
 }
 
