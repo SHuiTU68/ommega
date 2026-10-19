@@ -114,10 +114,40 @@ pub struct FilterDecision {
     pub packages: Vec<String>,
 }
 
+/// 系统 uid（< AID_APP_START）里额外放行接管的那部分调用方。
+///
+/// 这些进程 uid 落在 system 范围，但 SELinux 域是 `u:r:xxx_app:s0`，也就是 ROM
+/// 自带的 app（一加/OPPO 的工程模式就是 `engineermode_app`），不是 system_server
+/// / init / keystore 那种平台进程——接管它们的 keystore 流量不会把系统拖进 boot
+/// loop。默认只放 `engineermode`（它现场建 test_key 用完就删，不依赖旧 blob）；
+/// 别的 ROM 组件要接管，往 config 的 `allow_system_sids` 里加域前缀。
+fn sid_allows_system_uid(sid: &str, config: &FilterConfig) -> bool {
+    let domain = sid.split(':').nth(2).unwrap_or("");
+    if !domain.ends_with("_app") {
+        return false;
+    }
+    config
+        .allow_system_sids
+        .iter()
+        .any(|prefix| !prefix.is_empty() && domain.contains(prefix.as_str()))
+}
+
 pub fn evaluate(
     scoop: &[String],
     config: &FilterConfig,
     uid: u32,
+    resolution: PackageResolution,
+) -> FilterDecision {
+    evaluate_with_sid(scoop, config, uid, "", resolution)
+}
+
+/// [`evaluate`] 带调用方 SELinux 上下文：系统 uid 的 ROM app（见
+/// [`sid_allows_system_uid`]）也能走到接管分支。
+pub fn evaluate_with_sid(
+    scoop: &[String],
+    config: &FilterConfig,
+    uid: u32,
+    sid: &str,
     resolution: PackageResolution,
 ) -> FilterDecision {
     if !config.enabled {
@@ -136,7 +166,10 @@ pub fn evaluate(
     // not.  Intercepting system_server's own keystore traffic during boot makes
     // the system take a reply it cannot use and restart - observed on-device as
     // "boots and immediately powers off/reboots" with `global_scope: true`.
-    if config.block_android_package && uid % AID_USER_OFFSET < AID_APP_START {
+    if config.block_android_package
+        && uid % AID_USER_OFFSET < AID_APP_START
+        && !sid_allows_system_uid(sid, config)
+    {
         return FilterDecision {
             allowed: false,
             reason: FilterReason::RejectedAndroidPackage,

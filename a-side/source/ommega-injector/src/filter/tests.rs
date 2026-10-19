@@ -9,6 +9,60 @@ fn base_scope() -> Vec<String> {
 }
 
 #[test]
+fn engineermode_domain_is_intercepted_on_system_uid() {
+    // 一加/OPPO 工程模式：uid 1000 + engineermode_app 域。它的 Key 状态页要做
+    // attestation 自检，必须落到 ommega 才看得到我们的链。
+    let mut config = base_config();
+    config.global_scope = true;
+
+    let decision = evaluate_with_sid(
+        &base_scope(),
+        &config,
+        1000,
+        "u:r:engineermode_app:s0",
+        PackageResolution::Unknown,
+    );
+    assert!(decision.allowed, "engineermode should be intercepted");
+    assert_eq!(decision.reason, FilterReason::GlobalScope);
+}
+
+#[test]
+fn platform_domain_on_system_uid_stays_on_system_backend() {
+    // system_server / init / keystore 这些平台域一律不接管（boot loop 前车之鉴）。
+    let mut config = base_config();
+    config.global_scope = true;
+
+    for sid in ["u:r:system_server:s0", "u:r:init:s0", "u:r:keystore:s0"] {
+        let decision = evaluate_with_sid(
+            &base_scope(),
+            &config,
+            1000,
+            sid,
+            PackageResolution::Unknown,
+        );
+        assert!(!decision.allowed, "{sid} must stay on the system backend");
+        assert_eq!(decision.reason, FilterReason::RejectedAndroidPackage);
+    }
+}
+
+#[test]
+fn unrelated_rom_app_domain_is_not_intercepted_by_default() {
+    // 默认只放 engineermode，别的 ROM app 域不乱接管（旧 key blob 会解不开）。
+    let mut config = base_config();
+    config.global_scope = true;
+
+    let decision = evaluate_with_sid(
+        &base_scope(),
+        &config,
+        1000,
+        "u:r:zte_balance_app:s0",
+        PackageResolution::Unknown,
+    );
+    assert!(!decision.allowed);
+    assert_eq!(decision.reason, FilterReason::RejectedAndroidPackage);
+}
+
+#[test]
 fn disabled_filter_reports_disabled_and_allows() {
     let mut config = base_config();
     config.enabled = false;

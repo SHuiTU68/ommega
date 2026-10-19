@@ -82,6 +82,14 @@ pub struct FilterConfig {
     /// `clienta_global_scope()`.  Local-vs-remote handling is NOT affected:
     /// this only widens which callers get handled by ommega.
     pub global_scope: bool,
+    /// 系统 uid（< AID_APP_START）里额外放行接管的 SELinux 域前缀。
+    ///
+    /// 默认 `engineermode`：一加/OPPO 的工程模式跑在 system uid +
+    /// `engineermode_app` 域上，它的 Key 状态页要用 AndroidKeyStore 做
+    /// attestation 自检；不接管就只能看到原厂 TEE 的 ATTK 状态（未预制 → -74）。
+    /// 放行要求域以 `_app` 结尾，system_server / init / keystore 这类平台进程
+    /// 不受影响。
+    pub allow_system_sids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -144,6 +152,7 @@ impl Default for FilterConfig {
             block_android_package: true,
             allow_unknown_package: false,
             global_scope: false,
+            allow_system_sids: vec!["engineermode".to_string()],
         }
     }
 }

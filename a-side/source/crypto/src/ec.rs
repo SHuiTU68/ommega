@@ -13,8 +13,9 @@
 // limitations under the License.
 
 //! Pure-Rust implementation of elliptic curve functionality (replaces BoringSSL;
-//! RustCrypto `p256`/`p384`/`p521`, `ed25519-dalek`, `x25519-dalek`).
-//! P-224 is not supported by RustCrypto; it returns `UnsupportedEcCurve`.
+//! RustCrypto `p224`/`p256`/`p384`/`p521`, `ed25519-dalek`, `x25519-dalek`).
+//! P-224 only covers key generation and public-key derivation (工程模式自检要用
+//! secp224r1）；它的 ECDSA/ECDH 仍返回 `UnsupportedEcCurve`。
 
 use der::Decode as _;
 use der::Encode as _;
@@ -29,6 +30,7 @@ use kmr_wire::keymint::{self, Digest, EcCurve};
 use p256::ecdsa::Signature as SigP256;
 use p384::ecdsa::Signature as SigP384;
 
+use elliptic_curve::sec1::ToEncodedPoint as _;
 use sec1::EcPrivateKey;
 use std::boxed::Box;
 use std::vec::Vec;
@@ -48,7 +50,9 @@ impl crypto::Ec for OmmegaEc {
     ) -> Result<crypto::KeyMaterial, Error> {
         let nist_key = ec::NistKey(generate_nist_der(curve)?);
         let key = match curve {
-            ec::NistCurve::P224 => return Err(km_err!(UnsupportedEcCurve, "P-224 unsupported")),
+            // P-224 只有工程模式那类自检会要（secp224r1），RustCrypto 的 p224
+            // 能生成/派生公钥，密钥对本身跟 P-256 一样存 SEC1 DER。
+            ec::NistCurve::P224 => Key::P224(nist_key),
             ec::NistCurve::P256 => Key::P256(nist_key),
             ec::NistCurve::P384 => Key::P384(nist_key),
             ec::NistCurve::P521 => Key::P521(nist_key),
@@ -95,7 +99,11 @@ impl crypto::Ec for OmmegaEc {
     fn nist_public_key(&self, key: &ec::NistKey, curve: ec::NistCurve) -> Result<Vec<u8>, Error> {
         let priv_bytes = nist_priv_bytes(&key_from_nist(key.clone(), curve))?;
         let pub_key = match curve {
-            ec::NistCurve::P224 => return Err(km_err!(UnsupportedEcCurve, "P-224 unsupported")),
+            ec::NistCurve::P224 => {
+                let sk = p224::SecretKey::from_slice(&priv_bytes)
+                    .map_err(|e| km_err!(UnknownError, "P-224 key: {e:?}"))?;
+                sk.public_key().to_encoded_point(false).as_bytes().to_vec()
+            }
             ec::NistCurve::P256 => {
                 let sk = EcdsaSigningKey::<p256::NistP256>::from_slice(&priv_bytes)
                     .map_err(|e| km_err!(UnknownError, "P-256 key: {e:?}"))?;
@@ -182,7 +190,10 @@ fn key_from_nist(key: ec::NistKey, curve: ec::NistCurve) -> Key {
 fn generate_nist_der(curve: ec::NistCurve) -> Result<Vec<u8>, Error> {
     let mut rng = rand_core::OsRng;
     match curve {
-        ec::NistCurve::P224 => Err(km_err!(UnsupportedEcCurve, "P-224 unsupported")),
+        ec::NistCurve::P224 => {
+            let sk = p224::SecretKey::random(&mut rng);
+            sec1_der(sk.to_bytes().as_slice())
+        }
         ec::NistCurve::P256 => {
             let sk = EcdsaSigningKey::<p256::NistP256>::random(&mut rng);
             sec1_der(sk.to_bytes().as_slice())
