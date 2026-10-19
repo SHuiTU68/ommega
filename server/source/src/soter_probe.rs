@@ -243,14 +243,12 @@ pub fn reason(cfg: &Config, device: &str, uid: Option<i32>, alias: Option<&str>)
     reason_with_caller(cfg, device, uid, alias, None, None)
 }
 
-/// 带「真调用者包名」的版本：A 端传了 `caller_pkg` 就按包名白名单判（精确），
+/// 带「调用者包名」的版本：A 端传了 `caller_pkg` 就按包名白名单判（精确），
 /// 没传就走旧的别名/槽位逻辑。
 ///
-/// `caller_pkg_src` 标包名从哪来：
-/// - `Some("arg")`：从 SOTER 参数里那个由 App 自己填的 uid 翻出来的，不可信（探测机
-///   故意填假 uid）。这种只做负向判断：不在白名单就服务端作答；**在白名单也不放行**，
-///   继续走别名/槽位那套，否则探测机填个 `com.tencent.mm` 的 uid 就能骗到真机上去。
-/// - 其它（含 `None`）：内核给的 sender_euid 翻出来的，可信，命中就放行。
+/// `caller_pkg_src` 只用来记日志/统计：实测系统自带的 `SoterService` 调 HAL 时一律
+/// 用 `Binder.getCallingUid()`（内核填的真实 App uid），而不是 App 传进来的参数，
+/// 所以 A 端拿这个 uid 翻出来的包名是真的，探测机伪造不了。
 pub fn reason_with_caller(
     cfg: &Config,
     device: &str,
@@ -273,20 +271,20 @@ pub fn reason_with_caller(
         let is_real = callers
             .iter()
             .any(|caller| known.iter().any(|name| name == caller));
-        if is_real && !pkg_is_arg {
-            // 真应用（包名可信）：交给真机，顺便把它的槽位标上（下一笔不带包名时不至于判错）。
+        if is_real {
+            // 真应用：交给真机，顺便把它的槽位标上（下一笔不带包名时不至于判错）。
             let now = chrono::Utc::now().timestamp_millis();
             if let (Some(uid), Ok(mut guard)) = (uid, NOTES.lock()) {
                 let notes = guard.get_or_insert_with(Notes::default);
                 notes.observe(device, uid, now);
                 notes.served(device, uid, true, now);
             }
+            if pkg_is_arg {
+                tracing::debug!("soter: 包名 {pkg} 命中白名单（uid 由 SoterService 用 Binder.getCallingUid 提供）");
+            }
             return None;
         }
-        if !is_real {
-            return Some(format!("调用者包名 {pkg} 不在真应用名单里"));
-        }
-        // is_real && pkg_is_arg：包名不可信，放行不靠它，往下走别名/槽位判。
+        return Some(format!("调用者包名 {pkg} 不在真应用名单里"));
     }
     reason_without_caller(cfg, device, uid, alias)
 }
@@ -513,12 +511,12 @@ mod tests {
     }
 
     /// 一个 uid 挂着好几个包时，A 端逗号连起来一起报；命中任意一个就算真应用。
-    /// 包名来自 SOTER 参数里 App 自己填的 uid（`src=arg`）时，只做负向判断：
-    /// 不在白名单 → 内置料；在白名单 → 不据此放行，继续走别名/槽位。
+    /// 包名来自 SOTER 参数里的 uid（`src=arg`）：实测 SoterService 用
+    /// `Binder.getCallingUid()` 填这个值，所以跟在白名单里就应当放行。
     #[test]
-    fn an_arg_sourced_package_only_blocks_never_releases() {
+    fn an_arg_sourced_package_is_trusted() {
         let cfg = Config::default();
-        assert!(
+        assert_eq!(
             reason_with_caller(
                 &cfg,
                 DEV,
@@ -526,9 +524,9 @@ mod tests {
                 Some("SomeRandomAlias"),
                 Some("com.tencent.mm"),
                 Some("arg")
-            )
-            .is_some(),
-            "arg 来源的白名单包名不能直接放行"
+            ),
+            None,
+            "arg 来源的白名单包名来自真实 uid，应当放行"
         );
         let why = reason_with_caller(
             &cfg,
@@ -538,7 +536,7 @@ mod tests {
             Some("com.duck.detector"),
             Some("arg"),
         )
-        .expect("arg 来源的非白名单包名应当直接判内置");
+        .expect("不在白名单应当判内置");
         assert!(why.contains("com.duck.detector"), "{why}");
     }
 
