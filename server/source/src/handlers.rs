@@ -1376,7 +1376,6 @@ async fn run_soter_task_inner(state: &AppState, body: &Value) -> Response {
         return Json(hit).into_response();
     }
 
-    let serverbox = state.fulfill.is_enabled();
     let request_deadline =
         tokio::time::Instant::now() + Duration::from_secs(state.cfg.soter_wait_result_timeout_secs);
     let mut last_error: Option<String> = None;
@@ -1453,7 +1452,6 @@ async fn run_soter_task_inner(state: &AppState, body: &Value) -> Response {
     } else {
         None
     };
-    let used_fallback = fallback_target.is_some();
     let b_target = if fallback_wanted {
         fallback_target
     } else {
@@ -1464,13 +1462,7 @@ async fn run_soter_task_inner(state: &AppState, body: &Value) -> Response {
     // 这台接不了（离线、能力不足、或这一笔做不下去）时才接管。没点名、或点名那台
     // 不可用时保持原来的模式顺序（serverbox 先服务端）。
     // 点名的 B 能用、或者落到了兜底 B，都先走 B；两者都没有才按模式顺序。
-    let named_b_usable =
-        (!route_request.is_empty() && b_target.as_deref() == Some(route_request)) || used_fallback;
-    let order: &[&str] = if serverbox && !named_b_usable {
-        &["keybox", "b", "self_signed"]
-    } else {
-        &["b", "keybox", "self_signed"]
-    };
+    let order: &[&str] = &["b", "keybox", "self_signed"];
 
     // Physical finish must never fall through to a fabricated session or repair
     // without a live lease. Unknown/expired handles are terminal business errors.
