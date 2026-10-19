@@ -144,6 +144,15 @@ unzip -o "$ZIPFILE" 'webroot/*' -d "$MODPATH" >&2
 find "$MODPATH/webroot" -name '*.sha256' -delete 2>/dev/null
 [ -f "$MODPATH/webroot/index.html" ] || abort "! Missing webroot/index.html"
 
+# KmInstallKeybox：面板里那个「修复 RKP」用的工具。SKIPUNZIP=1 下不会自动解压，
+# 不显式抹一下的话装完模块里就没这个文件，面板点下去只会报 inaccessible。
+# 是否真能用由面板自己判：优先 /vendor/bin 那侧，找不到再回退这份。
+if unzip -l "$ZIPFILE" 'KmInstallKeybox' >/dev/null 2>&1 && extract "$ZIPFILE" 'KmInstallKeybox' "$MODPATH"; then
+  chmod 755 "$MODPATH/KmInstallKeybox"
+else
+  ui_print "- KmInstallKeybox not in package, the RKP fix button will fall back to vendor"
+fi
+
 # ---- StrongBox 声明隐藏（hide_strongbox 开关的静态载体）----
 # 声明 android.hardware.security.strongbox_keystore 的 feature XML 在哪个分区因
 # 设备而异，安装时现场检测：对真实存在的声明文件，在模块 system/ 的对应相对路径
