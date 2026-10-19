@@ -689,17 +689,7 @@ async fn run_a_side_task(state: &AppState, task_type: &str, body: &Value) -> Res
     // 路——physical / serverbox 两种模式的层序、StrongBox 分流、身份查找、队列派发——
     // 看见的都是同一台具体设备，跟「A 端自己带了这个 id」一字不差。没配默认设备就
     // 保持空，由 `resolve_online_target("")` 按负载挑一台在线的 B。
-    //
-    // 先记下「调用方到底有没有点名设备」：下面 attest 层序要用它决定要不要落 B。
-    // A 端留空 + 控制台也没配默认设备时，后面的 device_id 是 `resolve_online_target`
-    // 按负载临时挑的，不是谁的设备——拿它去 B 那层，输了 keybox 也只会撞上
-    // 「这台 B 的 ATTK 没预制」之类的无关错误。那种情况就只走服务端 keybox。
-    let named_by_client = body
-        .get("device_id")
-        .and_then(Value::as_str)
-        .is_some_and(|v| !v.trim().is_empty());
     let body = crate::default_device::fill_in_body(body);
-    let named_by_client = named_by_client || !crate::default_device::get().is_empty();
     let body = &body;
     let device_id = body
         .get("device_id")
@@ -781,12 +771,7 @@ async fn run_a_side_task(state: &AppState, task_type: &str, body: &Value) -> Res
     // Only when every layer fails does the request error, letting the A-side
     // fall back to its local software keybox.
     let order: &[&str] = if serverbox {
-        if named_by_client {
-            &["keybox", "b", "self_signed"]
-        } else {
-            // 没点名设备：只出服务端身份，不拿临时挑的 B 去撑。
-            &["keybox", "self_signed"]
-        }
+        &["keybox", "b", "self_signed"]
     } else {
         &["b", "keybox", "self_signed"]
     };
