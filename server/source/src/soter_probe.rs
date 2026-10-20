@@ -284,6 +284,34 @@ pub fn reason_with_caller(
             }
             return None;
         }
+        // 包名没命中白名单，但**别名是微信那套真应用命名** → 仍按真应用处理。
+        //
+        // 为什么要这条路：soterserver 没注入时，A 端拿不到内核填的 calling uid，
+        // `caller_pkg` 是拿「当前前台应用」兜出来的。微信按指纹时前台是系统指纹界面，
+        // 于是一个 ugid=10398（微信）的调用会报成 `com.heytap.market` / `com.luna.music`
+        // （2026-10-20 实测），服务端一判「不在名单里」就回本地假料 —— 微信拿假签名
+        // 去开通，就是「按完指纹、开通失败」。
+        //
+        // 而 alias 是应用自己生成、传给 HAL 的，探测机只会用自己的 `*_soter_probe_*`，
+        // 伪造不出来。所以：两者冲突时信 alias。
+        let real_prefixes = if cfg.soter_real_app_prefixes.trim().is_empty() {
+            DEFAULT_REAL_APP_PREFIXES.to_string()
+        } else {
+            cfg.soter_real_app_prefixes.clone()
+        };
+        let alias_text = alias.unwrap_or("").trim();
+        if prefix_hit(alias_text, &real_prefixes) {
+            let now = chrono::Utc::now().timestamp_millis();
+            if let (Some(uid), Ok(mut guard)) = (uid, NOTES.lock()) {
+                let notes = guard.get_or_insert_with(Notes::default);
+                notes.observe(device, uid, now);
+                notes.served(device, uid, true, now);
+            }
+            tracing::warn!(
+                "soter: caller_pkg={pkg} 不在真应用名单，但 alias={alias_text} 是真应用命名，按真应用处理"
+            );
+            return None;
+        }
         return Some(format!("调用者包名 {pkg} 不在真应用名单里"));
     }
     reason_without_caller(cfg, device, uid, alias)
