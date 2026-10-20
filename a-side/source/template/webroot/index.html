@@ -755,15 +755,29 @@ async function refreshCount(){
   var n = (r.stdout || "").split("\n").filter(function(l){ return l.trim(); }).length;
   document.getElementById("app-count").textContent = n ? t("apps.n", {n:n}) : t("apps.none");
 }
+var __pkgCache = null, __pkgAt = 0;
 function loadPackages(){
-  return exec("(pm list packages -3 2>/dev/null | sed 's/^package://'; echo '---'; pm list packages -s 2>/dev/null | sed 's/^package://')")
+  // 整页最慢的一步就是这里：`pm list packages` 在这类机器上单条就要几百毫秒
+  // 到两秒。所以做两件事：①包列表 60 秒内不重复拉（几十秒内基本不会变，每次
+  // 进页面都重拉是纯浪费）；②两条 pm 并行跑（各自落临时文件再一起 cat），别
+  // 串行等。
+  var now = Date.now();
+  if (__pkgCache && (now - __pkgAt) < 60000) return Promise.resolve(__pkgCache);
+  var script = "A=/data/local/tmp/.ommega_pkg3; B=/data/local/tmp/.ommega_pkgs; "
+    + "pm list packages -3 2>/dev/null | sed 's/^package://' > $A & "
+    + "pm list packages -s 2>/dev/null | sed 's/^package://' > $B & wait; "
+    + "cat $A; echo '---'; cat $B; rm -f $A $B";
+  return exec(script)
     .then(function(r){
       var parts = r.stdout.split("---");
       var user = (parts[0] || "").split("\n").map(function(s){ return s.trim(); }).filter(Boolean);
       var sys = (parts[1] || "").split("\n").map(function(s){ return s.trim(); }).filter(Boolean);
       var sysSet = {};
       sys.forEach(function(p){ sysSet[p] = true; });
-      return {all: user.concat(sys), system: sysSet};
+      var result = {all: user.concat(sys), system: sysSet};
+      __pkgCache = result;
+      __pkgAt = Date.now();
+      return result;
     });
 }
 function loadLabels(pkgs){
