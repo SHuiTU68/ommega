@@ -12,7 +12,7 @@
 //!
 //! # 走 relay：服务端 + B 端那条链
 //! soter_enable_flow --relay https://server.example:8443 --token <A 端 token> \
-//!     --device-id <A 的 device_id> --uid 10489 --salt 11d8ba34
+//!     --caller-pkg com.tencent.mm --device-id <A 的 device_id> --uid 10496 --salt 11d8ba34
 //!
 //! # 跑完把材料落盘，拿去 PC 上用 openssl 验链
 //! soter_enable_flow --uid 10489 --salt 11d8ba34 --dump /data/local/tmp/soter-flow
@@ -75,6 +75,7 @@ fn main() -> Result<()> {
             "--read-only" => opts.allow_mutation = false,
             "--no-sign" => opts.skip_sign = true,
             "--relay" => relay = Some(take(&args, &mut i)?),
+            "--caller-pkg" => opts.caller_pkg = Some(take(&args, &mut i)?),
             "--token" => token = take(&args, &mut i)?,
             "--device-id" => device_id = take(&args, &mut i)?,
             "--dump" => dump = Some(take(&args, &mut i)?),
@@ -93,7 +94,7 @@ fn main() -> Result<()> {
     device_id = std::env::var("OMMEGA_RELAY_DEVICE_ID").unwrap_or(device_id);
 
     println!(
-        "目标：uid={} 场景={} 别名={} 建料={}",
+        "目标：uid={} 场景={} 别名={} 建料={} 调用方={}",
         opts.uid,
         opts.scene,
         opts.auth_key_name(),
@@ -101,7 +102,8 @@ fn main() -> Result<()> {
             "允许"
         } else {
             "只看"
-        }
+        },
+        opts.caller_pkg.as_deref().unwrap_or("（未声明）")
     );
 
     let report = match relay.as_deref() {

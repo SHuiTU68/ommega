@@ -82,6 +82,9 @@ pub struct Options {
     pub allow_mutation: bool,
     /// 只看到手的料，不开签名会话（`--no-sign`）。
     pub skip_sign: bool,
+    /// 真调用者的包名。走 relay 时**必须**带：服务端没包名就把这笔当探测机、
+    /// 就地拿内置料答（回 `-1001`），压根不会落到 B 端。A 端 daemon 转发时也是这么带的。
+    pub caller_pkg: Option<String>,
 }
 
 impl Default for Options {
@@ -95,6 +98,7 @@ impl Default for Options {
             reset: false,
             allow_mutation: true,
             skip_sign: false,
+            caller_pkg: None,
         }
     }
 }
@@ -322,6 +326,18 @@ where
 {
     let mut acc = Collected::default();
     let alias = opts.auth_key_name();
+
+    // 每笔都把 caller_pkg 带上：走 relay 时服务端靠它分辨「真应用 / 探测机」，
+    // 没它就会被就地拿内置料答（那边回 -1001），永远看不到 B 端的真答复。
+    let caller = opts.caller_pkg.clone();
+    let mut send = move |mut reply: Value| {
+        if let Some(pkg) = caller.as_deref() {
+            if let Some(map) = reply.as_object_mut() {
+                map.insert("caller_pkg".to_string(), json!(pkg));
+            }
+        }
+        send(reply)
+    };
 
     // 0. 设备号。后面几份文档里的 cpu_id 必须跟它一致，不然微信 / 检测器都当成换了设备。
     let device = send(json!({ "op": "get_device_id" })).context("get_device_id 没拿到答复")?;
@@ -1096,6 +1112,31 @@ mod tests {
             .iter()
             .any(|op| op.starts_with("generate") || op.starts_with("remove")));
         assert!(!report.passed());
+    }
+
+    /// 走 relay 时每笔都得带 caller_pkg；没带服务端就当探测机、回 -1001。
+    #[test]
+    fn caller_pkg_rides_on_every_request() {
+        let mut options = opts();
+        options.caller_pkg = Some("com.tencent.mm".to_string());
+        let mut script = Script::new(vec![
+            json!({ "op": "get_device_id", "error_code": 0, "text": "090000005171734c42866bea148b21f5" }),
+            json!({ "op": "has_ask_already", "error_code": 0 }),
+            data_reply(envelope(ask_doc(), 256)),
+            json!({ "op": "has_auth_key", "error_code": 0 }),
+            data_reply(envelope(ask_doc(), 256)),
+            json!({ "op": "init_sign", "error_code": 0, "session": 5 }),
+            data_reply(envelope(sign_doc(), 256)),
+        ]);
+        let _ = run_script(&mut script, &options);
+        assert!(!script.seen.is_empty());
+        for payload in &script.seen {
+            assert_eq!(
+                payload["caller_pkg"],
+                json!("com.tencent.mm"),
+                "每笔都要带包名：{payload}"
+            );
+        }
     }
 
     /// 微信那份别名的拼法：`SoterAuthKeyV2_salt<盐>_scene<场景>`。
