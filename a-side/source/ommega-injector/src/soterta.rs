@@ -170,20 +170,15 @@ fn write_bytes_reply(reply: &mut Parcel, data: &[u8], code: i32) -> BinderResult
     );
     reply.write_i32(code)?;
     if parcelable {
-        // `SoterExportResult` 外面包一层 Parcelable 的 [非空][长度]。两代系统的区别：
-        // Android 16 = [长度][byte[]][dataLength]；Android 17 多一个 resultCode，变成
-        // [长度][resultCode][byte[]][dataLength]（见 A17 `f/b.java` 的 `a(Parcel)`）。
-        let sdk: i32 = soter_local::prop("ro.build.version.sdk")
-            .and_then(|v| v.trim().parse().ok())
-            .unwrap_or(0);
+        // AIDL 的 parcelable 只有 `[非空标记][总长][byte[]][dataLength]`，里面的 resultCode
+        // 就是**方法返回值**（上一行）那一格，parcelable 里**没有**第二份。
+        //
+        // 1.7.4 曾经给 Android 17 多加过一格 resultCode（`[总长][resultCode][byte[]][dataLength]`），
+        // 那是错的：总长后面直接就是 byte[]，多写 4 字节会把 byte[] 的长度顶成 0，
+        // 读端拿到 `len=825 data=0`（SoterChecker 的 T3 / C1 / X 三条 fail 就是这么来的）。
         reply.write_i32(1)?;
         let padded = (data.len() + 3) & !3;
-        if sdk >= 37 {
-            reply.write_i32((16 + padded) as i32)?;
-            reply.write_i32(0)?;
-        } else {
-            reply.write_i32((12 + padded) as i32)?;
-        }
+        reply.write_i32((12 + padded) as i32)?;
         reply.write(&data.to_vec())?;
         reply.write_i32(data.len() as i32)?;
     } else {
