@@ -347,7 +347,20 @@ pub fn serve(driver: &str) -> anyhow::Result<()> {
     // 就是现场那个每 20 秒换一个 pid 的抖动）。这里给默认 15。
     rsbinder::ProcessState::init(driver, 15)
         .map_err(|error| anyhow::anyhow!("binder init on {driver} failed: {error}"))?;
-    let binder = Binder::new_with_stability(SoterTa, Stability::Vintf);
+    // 用 `System` 而不是 `Vintf`：`Vintf` 要求服务名在 VINTF 清单里有 AIDL 声明，
+    // 但很多老平台只声明了 HIDL 的 `vendor.qti.hardware.soter@1.0::ISoter`（PGP110 /
+    // Android 15 实测）。那种机器上 `Vintf` 会在 servicemanager 侧直接被拒（
+    // `VINTF declaration error`），soterta.sh 就每 5 秒停一次原厂 HAL、再拉回来。
+    //
+    // 也不能用 `Vendor`：那档注册得上（不校验 VINTF），但只有 vendor 域的客户端
+    // 能访问，**工程模式（system_app 域）调过来会被 servicemanager 直接拒掉**
+    // —— 现场表现就是 `service check` 能查到名字、`service call` 却是
+    // `Parcel(NULL)`（日志里只有一笔 INTERFACE_TRANSACTION，真调用的 code 根本
+    // 没进来），工模因此判 SOTER key 失败。
+    //
+    // `System` 不校验 VINTF 且 system 域能访问；走 HIDL 的微信不经过这条 AIDL 服务，
+    // 不受影响。
+    let binder = Binder::new_with_stability(SoterTa, Stability::System);
     hub::add_service(SERVICE_NAME, binder.as_binder())?;
     log::info!("event=soterta registered {SERVICE_NAME} on {driver}");
     // 连 daemon 的 RPC 放后台：它要等 socket 就绪（最长几十秒），不能挡着注册

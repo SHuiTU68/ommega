@@ -88,6 +88,26 @@ hal_state() {
   [ -n "$value" ] && echo "$value" || echo unknown
 }
 
+# 这台机器的 SOTER HAL 是 HIDL 还是 AIDL。
+#
+# 老平台（PGP110 / Android 15 实测）VINTF 里只声明了 HIDL 的
+# `vendor.qti.hardware.soter@1.0::ISoter`，客户端走 hwservicemanager；我们顶替的
+# `vendor.qti.hardware.soter.ISoter/default` 是 AIDL 那个名字，两边不是一套东西。
+# 这种机器上原厂 HAL 必须留着（老客户端只认 HIDL），我们只额外注册 AIDL 名。
+soter_hal_is_hidl() {
+  for f in /vendor/etc/vintf/manifest*.xml /odm/etc/vintf/manifest*.xml \
+           /vendor/etc/vintf/manifest/*.xml /odm/etc/vintf/manifest/*.xml; do
+    [ -f "$f" ] || continue
+    grep -q 'vendor.qti.hardware.soter' "$f" 2>/dev/null || continue
+    # soter 那段是 hidl 才算；同文件里别的 HAL 用什么格式与我们无关。
+    if awk '/<hal/{blk=""} {blk=blk $0 "\n"} /vendor.qti.hardware.soter/{s=1} /<\/hal>/{if(s){print blk; exit}}' "$f" 2>/dev/null \
+         | grep -q 'format="hidl"'; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 service_present() {
   service check "$SERVICE" 2>/dev/null | grep -q ': found$'
 }
@@ -125,7 +145,15 @@ take_over() {
   # 服务名只有一个 owner：原厂 HAL 还在跑的时候我们注册不上去（servicemanager 直接拒），
   # 所以**先停原厂、再起守护**。顺序反过来的话每一轮都是「起守护→注册失败→停原厂→
   # 再查服务名→没有→判 takeover failed→拉回原厂」（2026-10-20 PKX110 上实测空转 1507 次）。
-  if [ "$(hal_state)" = "running" ]; then
+  #
+  # HIDL 平台的例外：老客户端只认 `@1.0::ISoter`，原厂 HAL 一停它们整条就不通，所以
+  # 这种机器上**不停原厂**，我们只额外占住 AIDL 那个名字（工模查的就是它）。
+  stop_stock=1
+  if soter_hal_is_hidl; then
+    log "SOTER HAL is HIDL; keeping stock HAL and registering the AIDL name alongside"
+    stop_stock=0
+  fi
+  if [ "$stop_stock" -eq 1 ] && [ "$(hal_state)" = "running" ]; then
     log "stopping stock SOTER HAL"
     setprop ctl.stop "$HAL" 2>/dev/null
     sleep 1
@@ -140,7 +168,8 @@ take_over() {
   if [ -z "$(daemon_pid)" ] || ! service_present; then
     log "takeover failed, restoring stock HAL"
     stop_daemon
-    setprop ctl.start "$HAL" 2>/dev/null
+    # 没停过的东西不用拉；HIDL 设备上拉一下反而会把正在服务的原厂 HAL 重启掉。
+    [ "$stop_stock" -eq 1 ] && setprop ctl.start "$HAL" 2>/dev/null
     return 1
   fi
   # 宿主（soterserver）把 HAL 代理缓存在 static 字段里，我们一换服务实例那份代理就死了，

@@ -35,8 +35,11 @@ const SOTER_HOST_PROCESS: &str = "com.tencent.soter.soterserver";
 /// `vendor.xiaomi.hardware.soterservice@1.0-service`。一个都没匹配上也不当事 ——
 /// 宿主那条路（app → 宿主 → HAL）本来就在宿主进程里，这条只为了 `service call` 那种
 /// 绕开宿主直接打 HAL 的流量。
-const SOTER_HAL_PROCESSES: [&str; 4] = [
+const SOTER_HAL_PROCESSES: [&str; 5] = [
     "vendor.qti.hardware.soter-service",
+    // 高通的 HIDL 版：进程名带 `@1.0`，跟上面那个不带版本的 AIDL 服务并存于不同
+    // 平台。PGP110 / Android 15 就是这种（vendor_hal_soter_qti 域）。
+    "vendor.qti.hardware.soter@1.0-service",
     "vendor.trustonic.soter@1.0-service",
     "vendor.xiaomi.hardware.soterservice@1.0-service",
     "vendor.microtrust.hardware.soter@1.0-service",
