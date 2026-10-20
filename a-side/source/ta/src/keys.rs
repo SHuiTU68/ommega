@@ -31,20 +31,6 @@ use kmr_wire::{
     *,
 };
 use log::{error, warn};
-
-/// 这次 generateKey 是不是「小位数 RSA」（工程模式自检用的 512 位那种）。
-///
-/// 这类 key 不走远程转发的理由见 [`OmmegaKeyMintDevice::generate_key`] 里的注释：
-/// B 端真 TEE 会拒小尺寸，而那条路把拒绝当硬错误抛出、不回退。
-fn requests_small_rsa(params: &[KeyParam]) -> Result<bool, Error> {
-    let algo = kmr_wire::keymint::Algorithm::Rsa;
-    if tag::get_algorithm(params)? != algo {
-        return Ok(false);
-    }
-    Ok(get_opt_tag_value!(params, KeySize)?
-        .map(|bits| bits.0 < 1024)
-        .unwrap_or(false))
-}
 use std::{collections::btree_map::Entry, string::String, vec::Vec};
 use x509_cert::ext::pkix::KeyUsages;
 
@@ -430,13 +416,7 @@ impl crate::KeyMintTa {
         // -1000), so it is not wired in.
         let remote_attest = get_opt_tag_value!(params, AttestationChallenge)?.is_some()
             && attestation_key.is_none()
-            && self.dev.remote.as_ref().is_some_and(|r| r.enabled())
-            // 小位数的 RSA 不去远程：B 端真 TEE 会直接拒（现代 TEE 一般要求
-            // ≥2048 位），而这条路把它的拒绝当硬错误抛上去、不回退。工程模式的
-            // `KeyAttestationTest.testRsaAttestation` 恰好只用 512 位自检，于是
-            // 抓 `Failed on key size 512` → `isGoogleKeyImport()` 抛异常 →「Attestation
-            // key 失败」。这种尺寸本地软件 TA 生成完全没问题，走本地更对。
-            && !requests_small_rsa(params)?;
+            && self.dev.remote.as_ref().is_some_and(|r| r.enabled());
         if remote_attest {
             // `Ok(None)` from the remote backend means it was unavailable; fall
             // back to the local software keybox when `fallback_local` allows.
