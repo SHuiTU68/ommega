@@ -92,35 +92,48 @@ hal_state() {
   [ -n "$value" ] && echo "$value" || echo unknown
 }
 
-# 从 VINTF 清单里取 SOTER 的 HAL 名（`<hal>` 块里的第一个 `<name>`）。
-# 同一个文件里别的 HAL 不管，只认块体里出现过 soter 的那个。
-vintf_soter_name() {
+# 从 VINTF 清单里取 SOTER 的完整 AIDL 服务名：同一个 `<hal>` 块里的 `<name>` 加
+# `<fqname>`。fqname 里已经带接口名和实例（`ITrustonicSoter/default`），拼起来就是
+# servicemanager 那个名字。
+#
+# 以前是拿 `<name>` 后面接一个写死的 `.ISoter/default`，高通机器上碰巧对；联发科 /
+# Trustonic 的接口叫 `ITrustonicSoter`（NX809J / 安卓 16 实测），拼出来的是个没人注册
+# 的名字 —— 结果每轮「停原厂 → 起我们的 → 查错名 → 判失败 → 拉回原厂」，SOTER 一直
+# 时有时无。接口名只能从 fqname 读，不能猜。
+vintf_soter_service() {
   for f in /vendor/etc/vintf/manifest*.xml /odm/etc/vintf/manifest*.xml \
            /vendor/etc/vintf/manifest/*.xml /odm/etc/vintf/manifest/*.xml; do
     [ -f "$f" ] || continue
     grep -qi 'soter' "$f" 2>/dev/null || continue
-    name=$(awk '
-      /<hal/ { blk = ""; name = "" }
+    svc=$(awk '
+      /<hal/ { blk = ""; name = ""; fq = "" }
       { blk = blk $0 "\n" }
-      /<name>/ && name == "" {
+      name == "" && /<name>/ {
         line = $0
         sub(/.*<name>[[:space:]]*/, "", line)
         sub(/[[:space:]]*<\/name>.*/, "", line)
         name = line
       }
+      fq == "" && /<fqname>/ {
+        line = $0
+        sub(/.*<fqname>[[:space:]]*/, "", line)
+        sub(/[[:space:]]*<\/fqname>.*/, "", line)
+        fq = line
+      }
       /<\/hal>/ {
-        if (blk ~ /soter/ && name != "") { print name; exit }
+        if (blk ~ /soter/ && name != "" && fq != "") { print name "." fq; exit }
       }
     ' "$f" 2>/dev/null | head -n1)
-    if [ -n "$name" ]; then echo "$name"; return 0; fi
+    if [ -n "$svc" ]; then echo "$svc"; return 0; fi
   done
   return 1
 }
 
 # 解析这台机器的 SOTER 服务名，结果缓存在 SERVICE / HAL 里。
 #
-# SERVICE（AIDL 服务名）：VINTF 的 HAL 名 + `.ISoter/default`。
-#   例：`vendor.qti.hardware.soter` → `vendor.qti.hardware.soter.ISoter/default`
+# SERVICE（AIDL 服务名）：VINTF 的 `<name>` + `<fqname>`，见 vintf_soter_service。
+#   例：`vendor.qti.hardware.soter.ISoter/default`、
+#       `vendor.trustonic.hardware.soter.ITrustonicSoter/default`
 # HAL（init 服务名）：从 `init.svc.*` 里找唯一带 soter 的那个。
 #   例：`init.svc.vendor.soter` → `vendor.soter`（注意它跟 HAL 名不是一个东西：
 #   VINTF 写的是包名，init 服务是厂商自己起的名，两者无对应关系，必须分开取）
@@ -129,8 +142,7 @@ vintf_soter_name() {
 resolve_hal() {
   [ -n "$SERVICE" ] && [ -n "$HAL" ] && return 0
   if [ -z "$SERVICE" ]; then
-    name=$(vintf_soter_name) || name=""
-    [ -n "$name" ] && SERVICE="$name.ISoter/default"
+    SERVICE=$(vintf_soter_service) || SERVICE=""
     [ -n "$SERVICE" ] || SERVICE=vendor.qti.hardware.soter.ISoter/default
   fi
   if [ -z "$HAL" ]; then
@@ -153,7 +165,11 @@ resolve_hal() {
 # `vendor.qti.hardware.soter.ISoter/default` 是 AIDL 那个名字，两边不是一套东西。
 # 这种机器上原厂 HAL 必须留着（老客户端只认 HIDL），我们只额外注册 AIDL 名。
 soter_hal_is_hidl() {
-  name=$(vintf_soter_name) || name=""
+  # 这里要的是 **包名**（`vendor.trustonic.hardware.soter`），不是完整服务名：
+  # manifest 里 `@1.0::ISoter` 那种写法根本不会出现 `.ITrustonicSoter/default`。
+  svc=$(vintf_soter_service) || svc=""
+  name=${svc%%/*}
+  name=${name%.*}
   [ -n "$name" ] || name=vendor.qti.hardware.soter
   for f in /vendor/etc/vintf/manifest*.xml /odm/etc/vintf/manifest*.xml \
            /vendor/etc/vintf/manifest/*.xml /odm/etc/vintf/manifest/*.xml; do
@@ -205,6 +221,10 @@ stop_daemon() {
 # 抢服务名：先把原厂 HAL 停了（不停的话 servicemanager 那边名字还是它的），再起
 # 我们的守护。启动失败就退回去把原厂 HAL 拉起来，不能把整台机的 SOTER 留成死的。
 take_over() {
+  # 先把服务名 / init 服务名解析出来：下面的 start_daemon 要把服务名传给我们自己的 TA，
+  # 而下面那个 `$(hal_state)` 是子 shell，里面的 resolve_hal 赋的值传不回来 ——
+  # 不先在这里解析一次，TA 会拿到空服务名、默认去注册高通那个名字（NX809J 实测）。
+  resolve_hal
   find_bin || { log "injector binary not found"; return 1; }
   stage_bin
   # 服务名只有一个 owner：原厂 HAL 还在跑的时候我们注册不上去（servicemanager 直接拒），
@@ -249,8 +269,9 @@ start_daemon() {
   if [ "$1" = "restart" ]; then
     stop_daemon
   fi
-  log "starting software SOTER TA: $BIN"
-  "$BIN" --soterta-serve >>"$LOG" 2>&1 &
+  log "starting software SOTER TA: $BIN (service=$SERVICE)"
+  # 服务名和描述符只能运行时定（各家接口名不一样），由脚本从 VINTF 读出来传进去。
+  OMMEGA_SOTER_SERVICE="$SERVICE" "$BIN" --soterta-serve >>"$LOG" 2>&1 &
   pid=$!
   echo "$pid" > "$PIDFILE.tmp" 2>/dev/null
   mv -f "$PIDFILE.tmp" "$PIDFILE" 2>/dev/null
@@ -291,6 +312,9 @@ hold() {
 }
 
 release() {
+  # 同上：$HAL 得先解析出来，否则 `setprop ctl.start ""` 静默失败，
+  # 关开关之后原厂 HAL 会把在停着的状态里放着（NX809J 实测）。
+  resolve_hal
   stop_daemon
   if [ "$(hal_state)" != "running" ]; then
     log "starting stock SOTER HAL"

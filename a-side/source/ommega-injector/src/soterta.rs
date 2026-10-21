@@ -17,8 +17,71 @@ use crate::hook::soter;
 use crate::hook::soter_local::{self, Answer};
 use crate::hook::soter_relay;
 
-pub const SERVICE_NAME: &str = "vendor.qti.hardware.soter.ISoter/default";
-const DESCRIPTOR: &str = "vendor.qti.hardware.soter.ISoter";
+pub const DEFAULT_SERVICE_NAME: &str = "vendor.qti.hardware.soter.ISoter/default";
+const DEFAULT_DESCRIPTOR: &str = "vendor.qti.hardware.soter.ISoter";
+/// 运行时服务名从哪儿来：soterta.sh 把 VINTF 里读到的 `<name>.<fqname>` 拼好，走这个
+/// 环境变量传进来。各家 SOTER HAL 的接口名不一样（高通 `ISoter`、联发科 / Trustonic
+/// `ITrustonicSoter`、小米另一套），猜错就是「注册了一个没人认的名字」——NX809J /
+/// 安卓 16 上实测：我们的名字没人问、原厂名字又被我们停掉，SOTER 整族哑掉。
+const SERVICE_ENV: &str = "OMMEGA_SOTER_SERVICE";
+
+/// 运行时定下来的接口描述符。`Remotable::descriptor()` 要 `&'static str`，所以只在
+/// 启动时 leak 一次。
+static DESCRIPTOR: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+/// 这条 AIDL 接口的 buffer 类回复带不带「方法返回值」那一格：高通带，联发科不带
+/// （规格见 `parcel::reply::build_soter_buffer_reply` 的注释）。启动时按描述符定。
+static HAS_RETURN_CODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+fn descriptor_text() -> &'static str {
+    DESCRIPTOR.get().copied().unwrap_or(DEFAULT_DESCRIPTOR)
+}
+
+fn has_return_code() -> bool {
+    HAS_RETURN_CODE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// 服务名去掉 `/default` 那一段就是接口描述符。
+fn descriptor_of(service: &str) -> &'static str {
+    let head = service.split('/').next().unwrap_or(service);
+    Box::leak(head.to_string().into_boxed_str())
+}
+
+fn service_name() -> String {
+    std::env::var(SERVICE_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_SERVICE_NAME.to_string())
+}
+
+/// 只读探针：连上指定服务、发一次 `code`，把回复的前几个字段打出来。
+///
+/// 用 rsbinder 而不是 libbinder_ndk：rsbinder 是我们自己实现对 /dev/binder 的 ioctl，
+/// 回复的字节完全可控，没有 libbinder 自己的异常包装夹在中间。拿来对「真机 HAL 回的
+/// 长什么样」和「我们回的有没有对上」最直接。
+pub fn probe(service: &str, code: u32) -> anyhow::Result<String> {
+    use rsbinder::{Parcel, Transactable};
+    rsbinder::ProcessState::init("/dev/binder", 15)
+        .map_err(|error| anyhow::anyhow!("binder init failed: {error}"))?;
+    let binder = rsbinder::hub::get_service(service)
+        .ok_or_else(|| anyhow::anyhow!("service {service} not found"))?;
+    let descriptor = descriptor_of(service);
+    let mut data = Parcel::new();
+    data.write(&descriptor.to_string())?;
+    let mut reply = Parcel::new();
+    let transactable = binder
+        .as_transactable()
+        .ok_or_else(|| anyhow::anyhow!("service {service} is not transactable"))?;
+    transactable.transact(code, &mut data, &mut reply)?;
+    let status = reply.read::<i32>().unwrap_or(-999);
+    let flag = reply.read::<i32>().unwrap_or(-999);
+    let total = reply.read::<i32>().unwrap_or(-999);
+    let next = reply.read::<i32>().unwrap_or(-999);
+    Ok(format!(
+        "status={status} flag={flag} total={total} next={next} avail={}",
+        reply.data_avail()
+    ))
+}
 
 /// 原厂 HAL 声明的 14 个号码。
 /// 号码表：**4 槽排布（2 / 6 / 14 空号）**，这是 NX721J 上 soterserver 实际发的形状。
@@ -164,26 +227,32 @@ fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
 /// `int xxx(out SoterBufferReturn)` 那一类：按调用方选形状。
 fn write_bytes_reply(reply: &mut Parcel, data: &[u8], code: i32) -> BinderResult<()> {
     let parcelable = caller_wants_parcelable();
+    let has_return_code = has_return_code();
     log::info!(
-        "event=soterta shape parcelable={parcelable} code={code} data={}",
+        "event=soterta shape parcelable={parcelable} code={code} data={} return_code={has_return_code}",
         data.len()
     );
-    reply.write_i32(code)?;
-    if parcelable {
-        // AIDL 的 parcelable 只有 `[非空标记][总长][byte[]][dataLength]`，里面的 resultCode
-        // 就是**方法返回值**（上一行）那一格，parcelable 里**没有**第二份。
-        //
-        // 1.7.4 曾经给 Android 17 多加过一格 resultCode（`[总长][resultCode][byte[]][dataLength]`），
-        // 那是错的：总长后面直接就是 byte[]，多写 4 字节会把 byte[] 的长度顶成 0，
-        // 读端拿到 `len=825 data=0`（SoterChecker 的 T3 / C1 / X 三条 fail 就是这么来的）。
-        reply.write_i32(1)?;
-        let padded = (data.len() + 3) & !3;
-        reply.write_i32((12 + padded) as i32)?;
+    if !parcelable {
+        // 原生形状（产线工具那类）：返回值 + 原始字节，跟以前一样。
+        reply.write_i32(code)?;
         reply.write(&data.to_vec())?;
-        reply.write_i32(data.len() as i32)?;
-    } else {
-        reply.write(&data.to_vec())?;
+        return Ok(());
     }
+    // AIDL 的 parcelable 只有 `[非空标记][总长][(错误码)][byte[]][dataLength]`：
+    // 高通把错误码放在「方法返回值」那一格（parcelable 里没这格），联发科方法本身
+    // 是 void，错误码在 parcelable 里面 —— 两家总长也因此差 4（见 parcel::reply）。
+    if has_return_code {
+        reply.write_i32(code)?;
+    }
+    reply.write_i32(1)?;
+    let padded = (data.len() + 3) & !3;
+    let header = if has_return_code { 12 } else { 16 };
+    reply.write_i32((header + padded) as i32)?;
+    if !has_return_code {
+        reply.write_i32(code)?;
+    }
+    reply.write(&data.to_vec())?;
+    reply.write_i32(data.len() as i32)?;
     Ok(())
 }
 
@@ -201,7 +270,7 @@ struct SoterTa;
 
 impl Remotable for SoterTa {
     fn descriptor() -> &'static str {
-        DESCRIPTOR
+        descriptor_text()
     }
 
     fn on_transact(
@@ -212,7 +281,7 @@ impl Remotable for SoterTa {
     ) -> BinderResult<()> {
         log::info!("event=soterta code={code} op={}", op_name(code));
         if code == INTERFACE_TRANSACTION {
-            reply.write(&DESCRIPTOR.to_string())?;
+            reply.write(&descriptor_text().to_string())?;
             return Ok(());
         }
         // AIDL 的回复第一个 int 是 status（0 = OK）。Java 的 Stub$Proxy 每条回复都先
@@ -282,7 +351,7 @@ impl Remotable for SoterTa {
         let call = soter::SoterCall {
             hal: true,
             hidl: false,
-            has_return_code: true,
+            has_return_code: has_return_code(),
             code,
             wire_code: code,
             op: op_name(code),
@@ -361,8 +430,18 @@ pub fn serve(driver: &str) -> anyhow::Result<()> {
     // `System` 不校验 VINTF 且 system 域能访问；走 HIDL 的微信不经过这条 AIDL 服务，
     // 不受影响。
     let binder = Binder::new_with_stability(SoterTa, Stability::System);
-    hub::add_service(SERVICE_NAME, binder.as_binder())?;
-    log::info!("event=soterta registered {SERVICE_NAME} on {driver}");
+    let service = service_name();
+    let descriptor = descriptor_of(&service);
+    let _ = DESCRIPTOR.set(descriptor);
+    HAS_RETURN_CODE.store(
+        descriptor == DEFAULT_DESCRIPTOR,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    hub::add_service(&service, binder.as_binder())?;
+    log::info!(
+        "event=soterta registered {service} on {driver} (descriptor={descriptor} return_code={})",
+        has_return_code()
+    );
     // 连 daemon 的 RPC 放后台：它要等 socket 就绪（最长几十秒），不能挡着注册
     // —— soterta.sh 在启动后一秒就看服务名在不在，迟一步就被当成失败回滚掉。
     std::thread::spawn(|| match crate::ipc::install_direct_rpc_session() {

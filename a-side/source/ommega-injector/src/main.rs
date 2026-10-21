@@ -362,6 +362,28 @@ fn main() {
             }
         }
     }
+    // 只读探针：对着真实 SOTER HAL 打一次 getDeviceId，把回复的前几个字段打出来。
+    // 没有工程模式页的机器（NX809J 那种）就靠它看 HAL 到底能不能用、我们回的字节对不对。
+    if std::env::args().any(|arg| arg == "--soter-probe") {
+        logging::init_logger_fallback(LevelFilter::Debug);
+        let mut services: Vec<String> = SOTER_HAL_CANDIDATES
+            .iter()
+            .map(|(service, _)| service.to_string())
+            .collect();
+        if let Ok(extra) = std::env::var("OMMEGA_SOTER_SERVICE") {
+            let extra = extra.trim().to_string();
+            if !extra.is_empty() && !services.contains(&extra) {
+                services.push(extra);
+            }
+        }
+        for service in services {
+            match soterta::probe(&service, SOTER_HAL_GET_DEVICE_ID) {
+                Ok(text) => println!("{service} getDeviceId -> {text}"),
+                Err(error) => println!("{service} getDeviceId -> failed: {error:#}"),
+            }
+        }
+        std::process::exit(0);
+    }
     logging::init_logger_fallback(LevelFilter::Debug);
     let config = config::get();
     if config::parse_level_filter(&config.main.log_level).is_none() {
