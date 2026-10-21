@@ -9,5 +9,7 @@
 - The SOTER key row on the factory engineering-mode page passes as well.
 - SOTER takeover also works on MediaTek (Trustonic) devices.
 - Fixed adbr screen mirroring failing to connect on some devices.
+- Fixed the SOTER signature checks in detector apps reporting errors.
+- When the followed device is offline, another working one is picked instead of failing outright.
 - The local fallback path now actually answers: it used to stay silent because the device serial could not be read.
 - Logs live in one place and carry the process id, so a failure can be traced to the component that wrote it.
