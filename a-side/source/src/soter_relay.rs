@@ -638,20 +638,24 @@ mod tests {
     /// 真机实测拿回来的应答（见 `D:\ace5u-forensics` 那份状态文档），字段名和形状都是
     /// 服务端真实输出，不是照着代码猜的。
     #[test]
-    fn a_device_id_answer_keeps_its_trailing_nul() {
+    fn a_device_id_answer_is_16_raw_bytes() {
+        // 服务端 2026-10-21 起回 16 字节 raw（原来回的是 32 字符 hex 的 ASCII 再加 NUL）。
+        // 检测器的 getDeviceId 期望 16 字节，转 hex 后再跟 cpu_id 比。
         let reply = json!({
-            "data": "MDkwMDAwMDA1MTcxNzM0YzQyODY2YmVhMTQ4YjIxZjUA",
+            "data": "CQAAAFFxc0xChmvqFIsh9Q==",
             "error_code": 0,
-            "length": 33,
-            "op": "get_device_id",
-            "text": "090000005171734c42866bea148b21f5"
+            "length": 16,
+            "op": "get_device_id"
         });
         let outcome = encode_reply("get_device_id", &reply).expect("a real reply must map");
         assert_eq!(
             outcome,
             Outcome::Buffer {
                 code: 0,
-                data: Some(b"090000005171734c42866bea148b21f5\0".to_vec()),
+                data: Some(vec![
+                    0x09, 0x00, 0x00, 0x00, 0x51, 0x71, 0x73, 0x4c, 0x42, 0x86, 0x6b, 0xea, 0x14,
+                    0x8b, 0x21, 0xf5,
+                ]),
             }
         );
     }

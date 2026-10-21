@@ -51,6 +51,10 @@ use crate::hook::soter;
 const OK: i32 = 0;
 /// "这把钥匙不在这台设备上"。实测 hasAskAlready / exportAuthKeyPublicKey 都回它。
 const NOT_FOUND: i32 = -5;
+/// AuthKey 还没建。真机 TA 这里答 -6（AUTH_KEY_NOT_READY），答 -5 会被当成 ASK 没就绪。
+const AUTH_KEY_NOT_READY: i32 = -6;
+/// finishSign 拿到不存在的 session。真机 TA 用 -1000。
+const SESSION_UNKNOWN: i32 = -1000;
 /// ASK 里写死的盐长，也正好是 SHA-256 的摘要长度。
 const SALT_LEN: i32 = 32;
 /// 编译进来的那把私钥（PKCS#8 PEM）—— 候选文件都没有时才用它。
@@ -345,6 +349,23 @@ fn device_info() -> &'static DeviceInfo {
     })
 }
 
+/// 32 字符 hex 转 16 字节。真机 getDeviceId 出的是二进制，不是文本。
+fn hex_bytes(text: &str) -> Option<Vec<u8>> {
+    if text.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len() / 2);
+    let mut i = 0;
+    while i < bytes.len() {
+        let hi = (bytes[i] as char).to_digit(16)?;
+        let lo = (bytes[i + 1] as char).to_digit(16)?;
+        out.push((hi * 16 + lo) as u8);
+        i += 2;
+    }
+    Some(out)
+}
+
 /// 一台像真机的设备号：`09000000` + 12 字节十六进制。只拿真实序列号算，没有就不算。
 fn cpu_id_from(serial: &str) -> String {
     use sha2::{Digest, Sha256};
@@ -488,7 +509,7 @@ pub(crate) fn answer(call: &soter::SoterCall) -> Option<Answer> {
                     })
                 }
                 None => Some(Answer::Buffer {
-                    code: NOT_FOUND,
+                    code: AUTH_KEY_NOT_READY,
                     data: None,
                 }),
             }
@@ -509,9 +530,9 @@ pub(crate) fn answer(call: &soter::SoterCall) -> Option<Answer> {
                         data: Some(envelope(&document, &signature)),
                     })
                 }
-                // 会话丢了就是丢了，跟真机一个码；别透给真 HAL（那条腿本来就是废的）
+                // 会话丢了就是丢了，真机 TA 这里回 -1000（不是 -5）；别透给真 HAL（那条腿本来就是废的）
                 None => Some(Answer::Buffer {
-                    code: NOT_FOUND,
+                    code: SESSION_UNKNOWN,
                     data: None,
                 }),
             }
@@ -540,7 +561,9 @@ pub(crate) fn answer(call: &soter::SoterCall) -> Option<Answer> {
         // getDeviceId()
         8 => Some(Answer::Buffer {
             code: OK,
-            data: Some(device_id().into_bytes()),
+            // 回 16 字节 raw：真机 TA 出的是二进制，检测器转 hex 后再跟 cpu_id 比。
+            // 把 hex 文本当字节发出去，检测器看到的是 "30393030…"，对不上。
+            data: Some(hex_bytes(&device_id()).unwrap_or_default()),
         }),
         // hasAskAlready(uid) —— 兜底层**必须**答「没有」。
         //
@@ -564,14 +587,14 @@ pub(crate) fn answer(call: &soter::SoterCall) -> Option<Answer> {
         10 => {
             let (uid, alias) = (call.uid?, call.alias.as_deref()?);
             let present = auth_key(state, uid, alias).is_some();
-            Some(Answer::Code(if present { OK } else { NOT_FOUND }))
+            Some(Answer::Code(if present { OK } else { AUTH_KEY_NOT_READY }))
         }
         // initSign(uid, alias, challenge)
         11 => {
             let (uid, alias) = (call.uid?, call.alias.as_deref()?);
             if auth_key(state, uid, alias).is_none() {
                 return Some(Answer::Init {
-                    status: NOT_FOUND,
+                    status: AUTH_KEY_NOT_READY,
                     session: 0,
                 });
             }
@@ -862,9 +885,11 @@ mod tests {
     }
 
     #[test]
-    fn device_id_answers_the_whole_32_chars() {
+    fn device_id_answers_16_raw_bytes() {
+        // 真机 TA 的 getDeviceId 出二进制（16 字节），检测器转 hex 后再跟 cpu_id 比。
         let data = as_buffer(answer(&call(8, None, None)));
-        assert_eq!(data, device_id().into_bytes());
+        assert_eq!(data, hex_bytes(&device_id()).unwrap());
+        assert_eq!(data.len(), 16);
     }
 
     #[test]
@@ -872,7 +897,7 @@ mod tests {
         let uid = 4242;
         assert_eq!(
             as_code(answer(&call(10, Some(uid), Some("SoterAuthKey")))),
-            NOT_FOUND
+            AUTH_KEY_NOT_READY
         );
 
         assert_eq!(
@@ -896,7 +921,7 @@ mod tests {
         );
         assert_eq!(
             as_code(answer(&call(10, Some(uid), Some("SoterAuthKey")))),
-            NOT_FOUND
+            AUTH_KEY_NOT_READY
         );
     }
 
@@ -907,7 +932,10 @@ mod tests {
         assert_eq!(as_code(answer(&call(7, Some(b), Some("k")))), OK);
 
         assert_eq!(as_code(answer(&call(12, Some(a), None))), OK);
-        assert_eq!(as_code(answer(&call(10, Some(a), Some("k")))), NOT_FOUND);
+        assert_eq!(
+            as_code(answer(&call(10, Some(a), Some("k")))),
+            AUTH_KEY_NOT_READY
+        );
         assert_eq!(as_code(answer(&call(10, Some(b), Some("k")))), OK);
     }
 
@@ -957,8 +985,8 @@ mod tests {
         let mut c = call(11, Some(7777), Some("NoSuchKey"));
         c.challenge = Some("00".to_string());
         assert!(
-            matches!(answer(&c), Some(Answer::Init { status, .. }) if status == NOT_FOUND),
-            "a missing auth key must come back as a -5 status"
+            matches!(answer(&c), Some(Answer::Init { status, .. }) if status == AUTH_KEY_NOT_READY),
+            "a missing auth key must come back as a -6 status"
         );
     }
 
@@ -966,7 +994,7 @@ mod tests {
     fn finish_sign_with_an_unknown_session_reports_not_found() {
         let mut c = call(4, None, None);
         c.session = Some(1);
-        assert_eq!(as_buffer_code(answer(&c)), NOT_FOUND);
+        assert_eq!(as_buffer_code(answer(&c)), SESSION_UNKNOWN);
     }
 
     /// 拆信封：`[i32 le JSON 长度][JSON][签名]`。
