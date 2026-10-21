@@ -24,8 +24,11 @@ KICKED_FILE=$STATE_DIR/soterta.host.kicked
 # 最后一次踢宿主时对应的 TA 实例（pid）。换实例就要重踢，见 kick_host。
 TAKEOVER_PID=$STATE_DIR/soterta.takeover.pid
 LOG=$STATE_DIR/logs/soterta.log
-SERVICE=vendor.qti.hardware.soter.ISoter/default
-HAL=vendor.soter
+# 服务名和 init 服务名都不写死：各厂商的 SOTER HAL 叫什么的都有（高通
+# `vendor.qti.hardware.soter`、小米 `vendor.xiaomi.hardware.soterservice`、联发科
+# `vendor.trustonic.soter`……），写死一个就得每台机器改一次。运行时解析，见 resolve_hal。
+SERVICE=
+HAL=
 BIN=
 
 log() {
@@ -84,8 +87,63 @@ stage_bin() {
 }
 
 hal_state() {
+  resolve_hal
   value=$(getprop "init.svc.$HAL" 2>/dev/null)
   [ -n "$value" ] && echo "$value" || echo unknown
+}
+
+# 从 VINTF 清单里取 SOTER 的 HAL 名（`<hal>` 块里的第一个 `<name>`）。
+# 同一个文件里别的 HAL 不管，只认块体里出现过 soter 的那个。
+vintf_soter_name() {
+  for f in /vendor/etc/vintf/manifest*.xml /odm/etc/vintf/manifest*.xml \
+           /vendor/etc/vintf/manifest/*.xml /odm/etc/vintf/manifest/*.xml; do
+    [ -f "$f" ] || continue
+    grep -qi 'soter' "$f" 2>/dev/null || continue
+    name=$(awk '
+      /<hal/ { blk = ""; name = "" }
+      { blk = blk $0 "\n" }
+      /<name>/ && name == "" {
+        line = $0
+        sub(/.*<name>[[:space:]]*/, "", line)
+        sub(/[[:space:]]*<\/name>.*/, "", line)
+        name = line
+      }
+      /<\/hal>/ {
+        if (blk ~ /soter/ && name != "") { print name; exit }
+      }
+    ' "$f" 2>/dev/null | head -n1)
+    if [ -n "$name" ]; then echo "$name"; return 0; fi
+  done
+  return 1
+}
+
+# 解析这台机器的 SOTER 服务名，结果缓存在 SERVICE / HAL 里。
+#
+# SERVICE（AIDL 服务名）：VINTF 的 HAL 名 + `.ISoter/default`。
+#   例：`vendor.qti.hardware.soter` → `vendor.qti.hardware.soter.ISoter/default`
+# HAL（init 服务名）：从 `init.svc.*` 里找唯一带 soter 的那个。
+#   例：`init.svc.vendor.soter` → `vendor.soter`（注意它跟 HAL 名不是一个东西：
+#   VINTF 写的是包名，init 服务是厂商自己起的名，两者无对应关系，必须分开取）
+#
+# 两处都解析不出来时才退回高通的旧值 —— 那是目前已知最常见的布局。
+resolve_hal() {
+  [ -n "$SERVICE" ] && [ -n "$HAL" ] && return 0
+  if [ -z "$SERVICE" ]; then
+    name=$(vintf_soter_name) || name=""
+    [ -n "$name" ] && SERVICE="$name.ISoter/default"
+    [ -n "$SERVICE" ] || SERVICE=vendor.qti.hardware.soter.ISoter/default
+  fi
+  if [ -z "$HAL" ]; then
+    cands=$(getprop 2>/dev/null | sed -n 's/^\[init\.svc\.\([^]]*soter[^]]*\)\].*/\1/p')
+    # 只有一个候选才直接用；有多个（比如原厂和服务名并存）就取最短那个，
+    # 它通常就是原厂 HAL（`vendor.soter` 比 `vendor.qti.hardware.soter-service` 短）。
+    if [ -n "$cands" ]; then
+      HAL=$(printf '%s\n' "$cands" | awk '{ if (min == "" || length($0) < length(min)) min = $0 } END { print min }')
+    fi
+    [ -n "$HAL" ] || HAL=vendor.soter
+  fi
+  log "resolved hal=$HAL service=$SERVICE"
+  return 0
 }
 
 # 这台机器的 SOTER HAL 是 HIDL 还是 AIDL。
@@ -95,13 +153,19 @@ hal_state() {
 # `vendor.qti.hardware.soter.ISoter/default` 是 AIDL 那个名字，两边不是一套东西。
 # 这种机器上原厂 HAL 必须留着（老客户端只认 HIDL），我们只额外注册 AIDL 名。
 soter_hal_is_hidl() {
+  name=$(vintf_soter_name) || name=""
+  [ -n "$name" ] || name=vendor.qti.hardware.soter
   for f in /vendor/etc/vintf/manifest*.xml /odm/etc/vintf/manifest*.xml \
            /vendor/etc/vintf/manifest/*.xml /odm/etc/vintf/manifest/*.xml; do
     [ -f "$f" ] || continue
-    grep -q 'vendor.qti.hardware.soter' "$f" 2>/dev/null || continue
+    grep -q "$name" "$f" 2>/dev/null || continue
     # soter 那段是 hidl 才算；同文件里别的 HAL 用什么格式与我们无关。
-    if awk '/<hal/{blk=""} {blk=blk $0 "\n"} /vendor.qti.hardware.soter/{s=1} /<\/hal>/{if(s){print blk; exit}}' "$f" 2>/dev/null \
-         | grep -q 'format="hidl"'; then
+    if awk -v want="$name" '
+         /<hal/ { blk = "" }
+         { blk = blk $0 "\n" }
+         index(blk, want) { seen = 1 }
+         /<\/hal>/ { if (seen) { print blk; exit } }
+       ' "$f" 2>/dev/null | grep -q 'format="hidl"'; then
       return 0
     fi
   done
@@ -109,6 +173,7 @@ soter_hal_is_hidl() {
 }
 
 service_present() {
+  resolve_hal
   service check "$SERVICE" 2>/dev/null | grep -q ': found$'
 }
 
