@@ -2,8 +2,7 @@
 
 [中文](CHANGELOG.md)
 
-## 1.7.4
+## 1.7.6
 
-- Fingerprint payments no longer stall: the wait for the real device to pick up a task dropped from seconds to well under a hundred milliseconds.
-- Detector apps no longer occupy the real device; their requests are handled locally, leaving the real device for apps that actually need fingerprint payments.
-- Each step of a fingerprint payment dropped from about a second to the hundred-millisecond range, and the intermittent "setup failed" is gone.
+- The SOTER checks in detector apps no longer fail: the device id is returned in the same form as on a real device, and the codes for a missing key or a missing session now match too.
+- On older platforms that only expose the legacy interface, SOTER no longer keeps dropping out.
