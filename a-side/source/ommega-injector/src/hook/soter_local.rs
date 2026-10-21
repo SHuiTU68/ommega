@@ -481,9 +481,10 @@ pub(crate) enum Answer {
 
 /// 本地后端写了实现的那些 HAL 号码（就是 `answer` 里那几个 match 臂）。
 ///
-/// 2 / 6 / 14 不在里面：宿主那半边根本不发这三个（它自己那份 proxy 里是空号），本地
-/// 也就没写。清单放这儿是为了让拦截那侧只需要问一句「这个号你答得了吗」。
-pub(crate) const HANDLED_CODES: [u32; 11] = [1, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13];
+/// 2 / 6 / 14 是产线 provisioning（工程模式那页的 SOTER key 就看 14 号）：原厂 TA
+/// 没 provisioning 时整族回 -20，宿主那半边也不发这三个，所以只能我们顶 —— 软件 TA
+/// 里 ASK 兼 ATTK，VERIFY 永远成功、EXPORT 交 ASK 那份自描述。
+pub(crate) const HANDLED_CODES: [u32; 14] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
 
 /// 这个号码本地答得了吗。`true` 只说「有对应的实现」——参数不够的时候 `answer`
 /// 照样返回 `None`，上层会原样透给真 HAL，所以这里不用把参数也掰开看一遍。
@@ -526,6 +527,19 @@ pub(crate) fn answer(call: &soter::SoterCall) -> Option<Answer> {
 fn answer_inner(call: &soter::SoterCall) -> Option<Answer> {
     if !call.hal {
         return None;
+    }
+    // 产线 provisioning 三兄弟最先处理：不碰本机身份、也不建钥匙，跟 cpu_id 那条
+    // 前置检查无关（工程模式跑在 vendor 域，那份 cpu_id 文件它常常读不到）。
+    match call.code {
+        14 => return Some(Answer::Code(OK)),
+        6 => return Some(Answer::Code(OK)),
+        2 => {
+            return Some(Answer::Buffer {
+                code: OK,
+                data: Some(ask_public_document(call.uid.unwrap_or(-1))),
+            })
+        }
+        _ => {}
     }
     let state = state()?;
     // 没有任何真实来源（daemon 那份没读到、本机序列号也读不到）时，这台机器没有可报的

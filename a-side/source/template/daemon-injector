@@ -461,6 +461,8 @@ retry_cooldown=15
 soter_start_attempted=0
 # 宿主保活用的节流：宿主不在时最多每 30 秒拉起一次，别每拍都去 am start-service。
 last_soter_start_at=0
+# SOTER 的 HIDL 客户端（cryptoeng 这种）多久点一次注入。
+last_soter_hidl_at=0
 # 第一次看到「宿主在跑但没注上」的时刻（epoch 秒），注完把间隔写进日志。
 soter_seen_at=
 last_soter_pid=
@@ -548,6 +550,18 @@ while true; do
   if ! prepare_injector; then
     tick_sleep
     continue
+  fi
+
+  # SOTER 的 HIDL 客户端（一加的 cryptoeng 这类产线/工程模式工具）得单独注一次：
+  # 它们调的是 `vendor.qti.hardware.soter@1.0::ISoter`，跟宿主那条 AIDL 路不是一套，
+  # 不注进去，工程模式那页的 SOTER 项就一直吃原厂 TA 的 -20。injector 自己是幂等的
+  # （已经注过的目标会直接跳过），所以每 60 秒点一次就够，不用在这里做发现。
+  if soter_inject_enabled; then
+    now_hidl=$(date +%s 2>/dev/null || echo 0)
+    if [ "$now_hidl" -gt 0 ] && [ $((now_hidl - last_soter_hidl_at)) -ge 60 ]; then
+      last_soter_hidl_at=$now_hidl
+      OMMEGA_INJECT_TARGETS=soter-hidl "$TARGET_INJECTOR" >/dev/null 2>&1
+    fi
   fi
 
   if consume_restart_request; then

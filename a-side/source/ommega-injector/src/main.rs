@@ -195,6 +195,80 @@ fn discover_soter_hal_processes() -> Vec<String> {
     names
 }
 
+/// 会直接调 `vendor.qti.hardware.soter@1.0::ISoter` 的厂商侧进程。
+///
+/// 一加的 `vendor.oplus.hardware.cryptoeng@1.0-service` 就是这种：工程模式那页的
+/// SOTER key 走 cryptoeng → HIDL soter，进程名里根本没有 "soter"，
+/// `SOTER_HAL_PROCESSES` 和那套动态发现都碰不到它。静态名单兜一档，再按「加载了
+/// soter 的 HIDL 客户端库」扫一遍 hw 目录下的进程，别的机型换了名字也能认。
+const SOTER_HIDL_CLIENT_PROCESSES: [&str; 1] = ["vendor.oplus.hardware.cryptoeng@1.0-service"];
+
+/// 扫 /proc 找「加载了 soter HIDL 客户端库」的厂商进程。
+///
+/// 只认 `/bin/hw/` 下的可执行文件：cryptoeng 这类 HAL/产线工具都在那儿，量小，
+/// 不用把满机器 app 的 maps 都读一遍。名字带 soter 的（原厂 HAL 自己）跳过 ——
+/// 那是服务端，上面 HAL 那一路已经注过了。
+fn discover_soter_hidl_clients() -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return names;
+    };
+    for entry in entries.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<i32>().ok())
+        else {
+            continue;
+        };
+        let Ok(exe) = std::fs::read_link(format!("/proc/{pid}/exe")) else {
+            continue;
+        };
+        let exe = exe.to_string_lossy().to_ascii_lowercase();
+        if !exe.contains("/bin/hw/") {
+            continue;
+        }
+        let Some(name) = utils::process_name(pid) else {
+            continue;
+        };
+        if name.contains("soter") || name.contains("ommega") {
+            continue;
+        }
+        let Ok(maps) = std::fs::read_to_string(format!("/proc/{pid}/maps")) else {
+            continue;
+        };
+        let maps = maps.to_ascii_lowercase();
+        if !maps.contains("soter@1.0.so") && !maps.contains("soter-1.0.so") {
+            continue;
+        }
+        if !names.iter().any(|seen| seen == &name) {
+            debug!("discovered soter hidl client: {name} (pid={pid})");
+            names.push(name);
+        }
+    }
+    names
+}
+
+/// 把 HIDL soter 客户端全注一遍。注不进去只记日志 —— 这一路只影响厂内工具，
+/// 不能让 keystore2 那条主路受牵连。
+fn inject_soter_hidl_clients() {
+    let mut targets = discover_soter_hidl_clients();
+    for name in SOTER_HIDL_CLIENT_PROCESSES {
+        if !targets.iter().any(|seen| seen == name) {
+            targets.push(name.to_string());
+        }
+    }
+    if !targets.is_empty() {
+        info!("soter hidl client targets: {targets:?}");
+    }
+    for name in &targets {
+        match inject_named_process(name) {
+            Ok(()) => info!("soter hidl client injection completed ({name})"),
+            Err(e) => info!("soter hidl client injection skipped ({name}): {e:#}"),
+        }
+    }
+}
+
 /// 按进程名找一个目标、把 payload 注进去，顺带把它的身份打进日志。
 fn inject_named_process(name: &str) -> anyhow::Result<()> {
     let (pid, target_path) = utils::find_process_by_name(name)?;
@@ -221,30 +295,30 @@ fn inject_named_process(name: &str) -> anyhow::Result<()> {
     inject::inject_library(Pid::from_raw(pid))
 }
 
-/// 诊断用：只注其中几个目标，逗号分隔（`keystore2` / `soter`），`all` 或没设就是两个都注。
-/// 认不出来的名字当作进程名，额外再注一份 —— 临时目标不用为了它改代码。进程名按原样
-/// 用（只会拿去比对），所以这里先把整个值折成小写只是为了 keystore2 / soter 那两个词。
-/// 平时不设这个变量，行为跟以前一样。
-fn selected_targets() -> (bool, bool, Vec<String>) {
+/// 诊断用：只注其中几个目标，逗号分隔（`keystore2` / `soter` / `soter-hidl`），`all` 或没设
+/// 就是全都注。认不出来的名字当作进程名，额外再注一份 —— 临时目标不用为了它改代码。
+fn selected_targets() -> (bool, bool, bool, Vec<String>) {
     let Ok(value) = std::env::var("OMMEGA_INJECT_TARGETS") else {
-        return (true, true, Vec::new());
+        return (true, true, true, Vec::new());
     };
     let value = value.to_ascii_lowercase();
     if value.trim() == "all" {
-        return (true, true, Vec::new());
+        return (true, true, true, Vec::new());
     }
     let mut extras = Vec::new();
     let mut keystore2 = false;
     let mut soter = false;
+    let mut soter_hidl = false;
     for item in value.split(',') {
         match item.trim() {
             "" => {}
             "keystore2" => keystore2 = true,
             "soter" => soter = true,
+            "soter-hidl" => soter_hidl = true,
             name => extras.push(name.to_string()),
         }
     }
-    (keystore2, soter, extras)
+    (keystore2, soter, soter_hidl, extras)
 }
 
 fn log_runtime_identity(role: &str) {
@@ -316,7 +390,7 @@ fn main() {
         }
     }
 
-    let (inject_keystore, inject_soter, extra_targets) = selected_targets();
+    let (inject_keystore, inject_soter, inject_soter_hidl, extra_targets) = selected_targets();
 
     if inject_keystore {
         match inject_named_process(KEYSTORE_PROCESS) {
@@ -361,6 +435,15 @@ fn main() {
         }
     } else {
         info!("soter host target skipped by OMMEGA_INJECT_TARGETS");
+    }
+
+    // 走 HIDL 调 SOTER 的厂商进程：它们既不是 HAL 也不叫 soter（一加的 cryptoeng 就是），
+    // 上面那套发现不到。它们发出去的正是 14 号 verifyAttkKeyPair 这类只有我们能答的号 ——
+    // 不注进去，工程模式那页的 SOTER 项就一直吃原厂 TA 的 -20。
+    if inject_soter || inject_soter_hidl {
+        inject_soter_hidl_clients();
+    } else {
+        info!("soter hidl client target skipped by OMMEGA_INJECT_TARGETS");
     }
 
     // 命令行上点名要注的额外进程（调试用）。同样只是 best-effort：少注一个不该让
@@ -510,15 +593,23 @@ mod tests {
     fn target_selection_keeps_unknown_names_as_extra_processes() {
         // 环境变量是进程级的，两个测试分开写会互相踩，所以挤在一个里串完。
         std::env::set_var("OMMEGA_INJECT_TARGETS", "keystore2,soter_hal_probe");
-        let (keystore2, soter, extras) = selected_targets();
+        let (keystore2, soter, soter_hidl, extras) = selected_targets();
         assert!(keystore2);
         assert!(!soter);
+        assert!(!soter_hidl);
         assert_eq!(extras, vec!["soter_hal_probe".to_string()]);
 
         std::env::set_var("OMMEGA_INJECT_TARGETS", "all");
-        let (keystore2, soter, extras) = selected_targets();
-        assert!(keystore2 && soter);
+        let (keystore2, soter, soter_hidl, extras) = selected_targets();
+        assert!(keystore2 && soter && soter_hidl);
         assert!(extras.is_empty());
+
+        std::env::set_var("OMMEGA_INJECT_TARGETS", "soter-hidl");
+        let (keystore2, soter, soter_hidl, _) = selected_targets();
+        assert!(
+            !keystore2 && !soter && soter_hidl,
+            "daemon 只叫这一路时别把别的一起注了"
+        );
 
         std::env::remove_var("OMMEGA_INJECT_TARGETS");
         let (keystore2, soter, extras) = selected_targets();
