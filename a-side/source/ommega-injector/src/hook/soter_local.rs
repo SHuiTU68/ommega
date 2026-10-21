@@ -253,6 +253,20 @@ static CPU_ID: Mutex<Option<CpuIdCache>> = Mutex::new(None);
 /// 拿 B 的号会让同一个 uid 下出现两个不同的 cpu_id —— 检测器一条「两次 cpuid 不一致」
 /// 直接判红。两份身份各用各的：转发走 B 的号，本地走本机号。
 fn cpu_id() -> String {
+    // 顺序：daemon 学来的那份（`CPU_ID_PATHS` 文件 / 环境变量）→ 本机序列号派生。
+    //
+    // 优先用文件是因为那个位置就是给 app 域准备的（`system_app_data_file`），一定读得到；
+    // 而 `prop()` 在注入进去的 payload 里读不到 `ro.boot.serialno`（NX721J 实测：shell 的
+    // `getprop` 能读到序列号，payload 里却拿不到），于是 `cpu_id()` 空、整层不答。
+    //
+    // 代价：文件里存的是 daemon 从真机学来的号，不是本机序列号派生的那个。同一 uid 下
+    // 转发和本地报不同号时检测器会判「两次 cpuid 不一致」；但「不答」比「号不一致」更糟
+    // （前者整条链路直接不通），所以先取文件。
+    let (learned, source) = load_cpu_id();
+    if let Some(value) = learned {
+        log::debug!("event=soter cpu_id from {source}");
+        return value;
+    }
     device_info().derived_cpu_id.clone().unwrap_or_default()
 }
 
@@ -298,21 +312,23 @@ extern "C" {
     fn __system_property_get(name: *const libc::c_char, value: *mut libc::c_char) -> libc::c_int;
 }
 
-/// 读一条系统属性。payload 跑在 uid 1000 的系统进程里，直接调 bionic 比 fork 一个
-/// `getprop` 便宜几个数量级（签名这条路径上每毫秒都算数）。
+/// 读一条系统属性。
+///
+/// 走 `getprop` 命令而不是 `__system_property_get`：后者在 dlopen 进来的 payload 里实测
+/// 读不到（NX721J：shell 里 `getprop ro.boot.serialno` 能拿到序列号，payload 里
+/// `__system_property_get` 返回 0，静默当成“没这条属性”）。签名这条路径每毫秒都算数，
+/// 但多 fork 一次 `getprop` 换“真能读到”比省那点开销值。
 #[cfg(target_os = "android")]
 pub(crate) fn prop(name: &str) -> Option<String> {
-    use std::ffi::CStr;
-    let name = std::ffi::CString::new(name).ok()?;
-    // bionic 的 PROP_VALUE_MAX 是 92，留点余量。
-    let mut buf = [0 as libc::c_char; 128];
-    let len = unsafe { __system_property_get(name.as_ptr(), buf.as_mut_ptr()) };
-    if len <= 0 {
+    let output = std::process::Command::new("/system/bin/getprop")
+        .arg(name)
+        .output()
+        .ok()?;
+    if !output.status.success() {
         return None;
     }
-    let value = unsafe { CStr::from_ptr(buf.as_ptr()) }.to_str().ok()?;
-    let value = value.trim();
-    (!value.is_empty()).then(|| value.to_string())
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!value.is_empty()).then_some(value)
 }
 
 /// 非 Android（开发机上 `cargo check` 这种）读不到属性，一律当没有，走兜底值。
@@ -338,6 +354,13 @@ fn device_info() -> &'static DeviceInfo {
     static INFO: OnceLock<DeviceInfo> = OnceLock::new();
     INFO.get_or_init(|| {
         let serial = prop("ro.boot.serialno").or_else(|| prop("ro.serialno"));
+        // 这条是为了查「本地层为何不答」：`answer()` 只要 `cpu_id()` 空就整笔不答，
+        // 而空的原因可能是属性读不到、也可能是派生失败，光看一条 WARN 分不清。
+        log::info!(
+            "event=soter device_info serial={:?} derived_cpu_id={:?}",
+            serial,
+            serial.as_deref().map(cpu_id_from)
+        );
         DeviceInfo {
             derived_cpu_id: serial.as_deref().map(cpu_id_from),
             fp_n: fingerprint_name(),
@@ -472,6 +495,35 @@ pub(crate) fn answerable(code: u32) -> bool {
 /// 只处理 HAL 那半边（`call.hal`）：App 面向那半边是宿主自己的事，它会把我们的
 /// 结果原样包成 `SoterExportResult` 递给 App，不用我们操心。
 pub(crate) fn answer(call: &soter::SoterCall) -> Option<Answer> {
+    let result = answer_inner(call);
+    // 记一笔应答。光看「调用进去了」不够 —— 得知道它回来了什么，
+    // 才能分清是没答（透传）还是答错（形状/码不对）。`data` 只记长度，不刷字节。
+    match &result {
+        Some(Answer::Code(code)) => {
+            log::info!("event=soter local answer op={} code={}", call.code, code)
+        }
+        Some(Answer::Buffer { code, data }) => log::info!(
+            "event=soter local answer op={} code={} len={}",
+            call.code,
+            code,
+            data.as_ref().map(|bytes| bytes.len()).unwrap_or(0)
+        ),
+        Some(Answer::Init { status, session }) => log::info!(
+            "event=soter local answer op={} status={} session={}",
+            call.code,
+            status,
+            session
+        ),
+        None => log::info!(
+            "event=soter local answer op={} = none (passthrough)",
+            call.code
+        ),
+    }
+    result
+}
+
+/// 实际的应答逻辑，外壳在 [`answer`]。
+fn answer_inner(call: &soter::SoterCall) -> Option<Answer> {
     if !call.hal {
         return None;
     }
