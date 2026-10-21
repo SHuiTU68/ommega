@@ -118,6 +118,12 @@ vintf_soter_service() {
         line = $0
         sub(/.*<fqname>[[:space:]]*/, "", line)
         sub(/[[:space:]]*<\/fqname>.*/, "", line)
+        # HIDL 的 fqname 带版本前缀（`@1.0::ISoter/default`），直接拼上去就是个非法
+        # 服务名（`vendor.qti.hardware.soter.@1.0::ISoter/default`，注册直接拒），要把
+        # `@版本::` 那一段去掉 —— 我们要的是 AIDL 名 `包名.ISoter/default`。
+        if (line ~ /::/) {
+          sub(/^.*::/, "", line)
+        }
         fq = line
       }
       /<\/hal>/ {
