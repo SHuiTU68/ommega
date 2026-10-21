@@ -1,6 +1,6 @@
 use std::ffi::c_void;
 
-use log::{error, info, warn, LevelFilter};
+use log::{debug, error, info, warn, LevelFilter};
 use nix::unistd::Pid;
 
 pub mod config;
@@ -127,6 +127,48 @@ fn spawn_soter_selfcheck() {
 fn soter_selfcheck_transact(service: &str, interface: &str) -> anyhow::Result<i32> {
     crate::hook::soter_ndk::transact(service, interface, SOTER_HAL_GET_DEVICE_ID)
         .map_err(|error| anyhow::anyhow!(error))
+}
+
+/// 扫 `/proc` 找 SOTER HAL 进程：cmdline 里含 `soter`、但不是腾讯的宿主进程。
+///
+/// HAL 进程名各家不一样（`vendor.qti.hardware.soter-service`、
+/// `vendor.qti.hardware.soter@1.0-service`、`vendor.trustonic.soter@1.0-service`……），
+/// 靠硬编码列表总有遗漏。这里直接按实际在跑的进程认，认出来的名字拿去走
+/// `inject_named_process`，跟硬编码列表里那些名字是同一套比对逻辑。
+fn discover_soter_hal_processes() -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return names;
+    };
+    for entry in entries.flatten() {
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<i32>().ok())
+        else {
+            continue;
+        };
+        let Ok(raw) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
+            continue;
+        };
+        let text = String::from_utf8_lossy(&raw).replace('\0', " ");
+        let lower = text.to_ascii_lowercase();
+        // 含 soter，但排除腾讯那个宿主（`SOTER_HOST_PROCESS`，上面已经单独注了）。
+        if !lower.contains("soter") || lower.contains("soterserver") {
+            continue;
+        }
+        let Some(name) = utils::process_name(pid) else {
+            continue;
+        };
+        if !names.iter().any(|seen| seen == &name) {
+            debug!("discovered soter hal process: {name} (pid={pid})");
+            names.push(name);
+        }
+    }
+    names
 }
 
 /// 按进程名找一个目标、把 payload 注进去，顺带把它的身份打进日志。
@@ -276,7 +318,18 @@ fn main() {
             Err(e) => warn!("soter host injection skipped: {:#}", e),
         }
         // HAL 的进程名一家一个样，逐个试。谁都不在就都不注（宿主那条路照常）。
+        // 先动态扫一遍：cmdline 里带 soter 但不是腾讯宿主（那个上面已经单独注了）。
+        // 新厂商的 HAL 自己会认出来，不用改代码。
+        let mut hal_targets = discover_soter_hal_processes();
         for hal in SOTER_HAL_PROCESSES {
+            if !hal_targets.iter().any(|name| name == hal) {
+                hal_targets.push(hal.to_string());
+            }
+        }
+        if !hal_targets.is_empty() {
+            info!("soter hal targets: {hal_targets:?}");
+        }
+        for hal in &hal_targets {
             match inject_named_process(hal) {
                 Ok(()) => info!("soter hal injection completed ({hal})"),
                 Err(e) => info!("soter hal injection skipped ({hal}): {:#}", e),
