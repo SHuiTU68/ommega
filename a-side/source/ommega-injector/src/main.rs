@@ -171,6 +171,22 @@ fn discover_soter_hal_processes() -> Vec<String> {
         let Some(name) = utils::process_name(pid) else {
             continue;
         };
+        // 光看名字带 soter 不够：检测器自己的包名就带（`com.andrealyz.soterchecker`
+        // 实测被当成 HAL 注了）。HAL 必须真是 vendor 侧的：进程名以 `vendor.` 开头，
+        // 或者可执行文件落在 /vendor /odm /system_ext 下面。
+        let is_vendor_side = name.starts_with("vendor.") || {
+            std::fs::read_link(format!("/proc/{pid}/exe"))
+                .map(|path| {
+                    let path = path.to_string_lossy();
+                    path.contains("/vendor/")
+                        || path.contains("/odm/")
+                        || path.contains("/system_ext/")
+                })
+                .unwrap_or(false)
+        };
+        if !is_vendor_side {
+            continue;
+        }
         if !names.iter().any(|seen| seen == &name) {
             debug!("discovered soter hal process: {name} (pid={pid})");
             names.push(name);
