@@ -4,7 +4,12 @@ use anyhow::Result;
 use log::LevelFilter;
 
 const DEFAULT_LOG_PATH: &str = "/data/adb/ommega/logs/relay.log";
-const PATTERN: &str = "{d(%Y-%m-%d %H:%M:%S %Z)(utc)} [{h({l})}] {M} - {m}{n}";
+/// 时间 | 级别 | pid/tid | 模块 | 消息。
+///
+/// 这个文件是好几个线程共写的（relay 主循环、hal_restart 的重试、keymaster 转发），
+/// 不带 pid/tid 就分不清“哪行是哪个阶段写的”，而排查时最需要的正是这个。
+/// 跟 A 端 `logging.rs` 的 PATTERN 保持同形。
+const PATTERN: &str = "{d(%Y-%m-%d %H:%M:%S)(utc)} [{h({l})}] [{P}/{T}] {M} - {m}{n}";
 
 static LOGGER_INIT: OnceLock<()> = OnceLock::new();
 
