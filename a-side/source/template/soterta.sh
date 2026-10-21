@@ -196,7 +196,18 @@ soter_hal_is_hidl() {
 
 service_present() {
   resolve_hal
-  service check "$SERVICE" 2>/dev/null | grep -q ': found$'
+  # servicemanager 偶尔会忙一下（刚开机、服务密集重注册那时），一次不中不要急着判死：
+  # 判死会走 take_over → 重启 TA，内存里的 ASK / AuthKey / 签名会话全丢，App 那边
+  # 就是一串 -5 / -6 / -204。重试三次再算数。
+  sp_i=0
+  while [ "$sp_i" -lt 3 ]; do
+    if service check "$SERVICE" 2>/dev/null | grep -q ': found$'; then
+      return 0
+    fi
+    sp_i=$((sp_i + 1))
+    [ "$sp_i" -lt 3 ] && sleep 0.4
+  done
+  return 1
 }
 
 daemon_pid() {
