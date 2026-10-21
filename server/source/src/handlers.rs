@@ -1523,9 +1523,24 @@ async fn run_soter_task_inner(state: &AppState, body: &Value) -> Response {
     // 连「一台能接的设备都没有」（点名那台离线、或者服务端刚重启还没学到谁在线）
     // 也算接不了：那种情况下照样判「结果未知」，App 拿到的 -1000 比确定的答复难处理。
     //
+    // 但「点名那台离线、服务端已经给它登记了一台替代设备」是例外：那台替代是粘滞的
+    // （`soter_substitutes`，同一台 requested 在 TTL 内一直映射到同一台），而且签名
+    // 类已经限定为「实测真签过」（`soter_sign`）的设备。不让写操作跟过去，默认设备
+    // 一离线微信就整族失败（2026-10-22 实测：设备离线 → 建 ASK 全被拒 → 微信「系统错误」）。
+    //
     // 回什么见 `soter_off_target_reply`：写操作回 -5（这把钥匙不在这台，去原地重建），
     // 要签名的回 -204（会话不在这台，就是 App 自己也会算出来的那个 `OPERATEID_NULL`）。
-    if soter_mutation_cross_served(op, requested, b_target.as_deref(), session_present) {
+    let substituted = if b_target.as_deref() != Some(requested) && !requested.is_empty() {
+        state
+            .store
+            .soter_substitute_of(requested)
+            .await
+            .as_deref()
+            == b_target.as_deref()
+    } else {
+        false
+    };
+    if soter_mutation_cross_served(op, requested, b_target.as_deref(), session_present, substituted) {
         tracing::warn!(
             "soter: op={op} uid={probe_uid} 点名设备 {requested} 这会儿接不了这笔写操作\
              （b_target={:?} requested_online={requested_online}），不换设备、不落兜底层",
@@ -1993,11 +2008,13 @@ fn soter_mutation_cross_served(
     requested: &str,
     b_target: Option<&str>,
     session_routed: bool,
+    substituted: bool,
 ) -> bool {
     !requested.is_empty()
         && !session_routed
         && soter_op_is_mutation(op)
         && b_target != Some(requested)
+        && !substituted
 }
 
 /// 保留在线点名设备以及已知会话的原设备；不能接活时由原回退层处理，不能换身份。

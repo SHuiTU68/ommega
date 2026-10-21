@@ -1586,12 +1586,17 @@ impl TaskStore {
         }
         // 先把手上的设备快照出来（只取判路由要的字段），免得后面算负载时
         // 和 `load_balance_index` 的写操作撞借用。
-        let online: Vec<(String, Option<bool>, bool)> = inner
+        let online: Vec<(String, Option<bool>, bool, bool)> = inner
             .devices
             .values()
             .filter(|d| now.saturating_sub(d.last_seen_ms) < 120_000)
             // 签名 op 不能落到“明说签不了”的设备上：它接下去只会白跑一趟 -26。
             .filter(|d| !(needs_sign && d.soter_nosign == Some(true)))
+            // 要签名的活只派给「真签出来过一次」的设备。`soter_sign` 是 B 端自己
+            // 跑过一遍 init_sign + finish_sign 实测出来的结论（见 b-side `caps.rs`），
+            // 不是配置推断 —— 默认设备离线时临时改派到另一台，不确认这一条就会
+            // 把活交给“HAL 能答但不肯签”的机器，白跑一趟。
+            .filter(|d| !needs_sign || d.soter_sign == Some(true))
             .map(|d| {
                 (
                     d.device_id.clone(),
@@ -1599,6 +1604,7 @@ impl TaskStore {
                     // 第三项：TA 卡在 TEE 里。只在负载均衡那段拿它降优先级，
                     // 不在这里直接剔掉 —— 全卡住的时候它还得是候选。
                     d.soter_stuck == Some(true),
+                    d.soter_sign == Some(true),
                 )
             })
             .collect();
@@ -1612,8 +1618,8 @@ impl TaskStore {
         for tier in [Some(true), None] {
             let mut candidates: Vec<(String, u64, usize, bool)> = online
                 .iter()
-                .filter(|(_, cap, _)| *cap == tier)
-                .map(|(id, _, stuck)| {
+                .filter(|(_, cap, _, _)| *cap == tier)
+                .map(|(id, _, stuck, _)| {
                     let events = Self::window_activity_locked(&inner, id);
                     let active = active_counts.get(id.as_str()).copied().unwrap_or(0);
                     (id.clone(), events, active, *stuck)
@@ -1651,6 +1657,26 @@ impl TaskStore {
         }
 
         None
+    }
+
+    /// 点名那台离线时，服务端给它登记的替代设备（跟 `resolve_soter_target` 同一套
+    /// 粘滞映射）。写操作要拿它当「已登记的替代」放行：同一轮的建料/导出/删都必须
+    /// 落在同一台 TEE 上，不然钥匙状态就漂了。
+    pub async fn soter_substitute_of(&self, requested_did: &str) -> Option<String> {
+        if requested_did.is_empty() {
+            return None;
+        }
+        let inner = self.inner.lock().await;
+        let now = Self::now_ms();
+        let (target, at) = inner.soter_substitutes.get(requested_did)?;
+        if now.saturating_sub(*at) >= SUBSTITUTE_TTL_MS {
+            return None;
+        }
+        let device = inner.devices.get(target)?;
+        if now.saturating_sub(device.last_seen_ms) >= 120_000 {
+            return None;
+        }
+        Some(target.clone())
     }
 }
 
