@@ -156,8 +156,16 @@ fn discover_soter_hal_processes() -> Vec<String> {
         };
         let text = String::from_utf8_lossy(&raw).replace('\0', " ");
         let lower = text.to_ascii_lowercase();
-        // 含 soter，但排除腾讯那个宿主（`SOTER_HOST_PROCESS`，上面已经单独注了）。
-        if !lower.contains("soter") || lower.contains("soterserver") {
+        // 含 soter，但排除三类自己人：
+        //   soterserver —— 腾讯那个宿主（`SOTER_HOST_PROCESS`，上面已经单独注了）
+        //   soterta-serve / soterta-ta —— 我们自己的守护（cmdline 也带 soter，
+        //     不排掉就会把自己当成 HAL 目标去注，实测会拦下）
+        if !lower.contains("soter")
+            || lower.contains("soterserver")
+            || lower.contains("soterta-serve")
+            || lower.contains("soterta-ta")
+            || lower.contains("ommega-inject")
+        {
             continue;
         }
         let Some(name) = utils::process_name(pid) else {
