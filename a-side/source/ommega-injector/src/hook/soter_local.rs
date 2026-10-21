@@ -492,6 +492,16 @@ pub(crate) fn answerable(code: u32) -> bool {
     HANDLED_CODES.contains(&code)
 }
 
+/// 这个会话号是不是本进程开的。
+///
+/// `initSign` 那笔要是服务端说「你本地答」（白名单外的检测器一类），会话就存在这里；
+/// 那 `finishSign` 也必须回来本地答 —— 去问远程就是 B 端不认识这个句柄，直接回 -204。
+pub(crate) fn has_session(session: i64) -> bool {
+    state()
+        .and_then(|state| state.sessions.lock().ok().map(|map| map.contains_key(&session)))
+        .unwrap_or(false)
+}
+
 /// 按号码算一笔应答。认不出来、或者少参数就返回 `None`，让上层透给真 HAL。///
 /// 只处理 HAL 那半边（`call.hal`）：App 面向那半边是宿主自己的事，它会把我们的
 /// 结果原样包成 `SoterExportResult` 递给 App，不用我们操心。

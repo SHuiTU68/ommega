@@ -269,6 +269,11 @@ start_daemon() {
   if [ "$1" = "restart" ]; then
     stop_daemon
   fi
+  # 只留一个实例：两份就是两套内存态会话表，init 落在其中一个、finish 落到另一个上
+  # 就是 -204（NX721J 实测过两个实例同时在跑）。
+  for p in $(pidof soterta-ta 2>/dev/null); do
+    kill -9 "$p" 2>/dev/null
+  done
   log "starting software SOTER TA: $BIN (service=$SERVICE)"
   # 服务名和描述符只能运行时定（各家接口名不一样），由脚本从 VINTF 读出来传进去。
   OMMEGA_SOTER_SERVICE="$SERVICE" "$BIN" --soterta-serve >>"$LOG" 2>&1 &
