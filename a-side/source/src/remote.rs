@@ -1197,6 +1197,11 @@ impl kmr_ta::device::RemoteBackend for RemoteRelayBackend {
                 "strongbox_unavailable" => {
                     kmr_common::km_err!(HardwareTypeUnavailable, "{msg}")
                 }
+                // 服务端那层也有这把证明密钥的 session 才能代签子证书。session
+                // 没了（被淘汰 / 换过层 / 服务端重启过）就不能再用它签，也不能偷
+                // 换别的签发密钥。回 InvalidKeyBlob 让 keystore2 / 应用把这把
+                // 证明密钥作废重建，而不是笼统的 UnknownError 一直重试。
+                "issuer_missing" => kmr_common::km_err!(InvalidKeyBlob, "{msg}"),
                 _ => kmr_common::km_err!(UnknownError, "{msg}"),
             });
         }
@@ -1211,6 +1216,20 @@ impl kmr_ta::device::RemoteBackend for RemoteRelayBackend {
         if chain.is_empty() {
             log::warn!("remote attest returned empty cert chain");
             return Ok(None);
+        }
+        // 显式委派：服务端若不认识那把证明密钥会返回标记错误（上面已处理）。
+        // 但老版本服务端仍可能静默给一张普通链 —— 显式委派拿到只有一张的链，
+        // 说明签发密钥不是调用方指定那把，同样按 InvalidKeyBlob 处理，
+        // 让应用重建，而不是笼统的 VerificationFailed。
+        if params.attestation_key.is_some() && chain.len() < 2 {
+            log::warn!(
+                "remote delegation returned {} certs only; treating the issuer as gone",
+                chain.len()
+            );
+            return Err(kmr_common::km_err!(
+                InvalidKeyBlob,
+                "remote delegation returned no issuer certificate; the attestation key must be recreated"
+            ));
         }
         Ok(Some(chain))
     }

@@ -829,6 +829,15 @@ async fn run_a_side_task(state: &AppState, task_type: &str, body: &Value) -> Res
                 return Json(v).into_response();
             }
             Some(v) => {
+                // 层自带的「确定答复」：带 relay_error_kind 的不再往下层试，直接交给 A。
+                // （服务端密钥层找不到调用方那把证明密钥时就是这种：换层只会让链跟那把
+                // 钥匙彻底无关，A 收到标记后映射成 InvalidKeyBlob 让应用重建。）
+                if let Some(kind) = v.get("relay_error_kind").and_then(Value::as_str) {
+                    tracing::info!(
+                        "run_a_side_task: type={task_type} layer={layer} definitive error kind={kind}"
+                    );
+                    return Json(v).into_response();
+                }
                 // 失败原因交给 `layer_failure_msg`：各层回的 `error` 优先，只有它
                 // 没给原因时才说空链。`device` 是 *请求的* 设备 —— 正上方的
                 // `b_poll` 行会显示实际接管的是哪一台。

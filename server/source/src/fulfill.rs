@@ -796,6 +796,23 @@ impl Fulfill {
         p
     }
 
+    /// 请求带了证明密钥 `attestation_key`，但本层没有那把密钥的 session。
+    ///
+    /// 返回 `false` 表示：没带证明密钥（普通链），或者带了而且找得到（可以委派）。
+    pub fn attest_issuer_missing(&self, ctx: &Value) -> bool {
+        let Some(alias) = ctx
+            .get("attestation_key")
+            .and_then(|k| k.get("alias"))
+            .and_then(Value::as_str)
+        else {
+            return false;
+        };
+        if alias.is_empty() {
+            return false;
+        }
+        self.get_session(alias).is_none()
+    }
+
     /// 找出请求指定的那把「服务端自持」的证明密钥。
     ///
     /// 返回 `Ok(None)` 表示这把 key 不在本端（在 B 端真机）—— 那时本层不该硬逞，
@@ -1025,6 +1042,26 @@ impl Fulfill {
             .get("device_attest_context")
             .cloned()
             .unwrap_or(Value::Null);
+        // 调用方指定了证明密钥，但本层没有那把密钥的 session（被淘汰、服务端重启
+        // 过、或那把钥匙根本在真机那层）：本层**不能**用别的签发密钥偷偷铸一张
+        // 普通链，那会让调用方的证明密钥和链脱钩。回一个带标记的错误，句柄层
+        // 直接把它交给 A，A 再映射成 InvalidKeyBlob 让应用作废重建。
+        if self.attest_issuer_missing(&ctx) {
+            let alias = ctx
+                .get("attestation_key")
+                .and_then(|k| k.get("alias"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            tracing::info!(
+                "server_keybox: attestation key {alias} has no session on this server; refusing to substitute another issuer"
+            );
+            return Some(json!({
+                "error": format!(
+                    "attestation issuer {alias} is not available on the server keybox layer"
+                ),
+                "relay_error_kind": "issuer_missing",
+            }));
+        }
         let algorithm = Self::ctx_algorithm_str(&ctx);
         let identity = match self.identity_for(device_id, &algorithm, prefer_slot) {
             Some(id) => id,
