@@ -224,7 +224,7 @@ function exec(cmd){
   });
 }
 
-var CONF  = "/data/adb/ommega/relay.conf";
+var CONF  = "/data/adb/ommega/conf/relay.conf";
 var STATE = "/data/adb/ommega";
 var PROP  = "/data/adb/modules/ommega-b/module.prop";
 
@@ -454,7 +454,7 @@ async function save(){
   if (conc in vals && !(n >= 1 && n <= 4)){ toast(t("toast.concurrencyBad"), true); return; }
   var text = merge(curText, vals);
   var r = await exec("mkdir -p " + STATE + " && printf '%s' '" + b64(text) + "' | base64 -d > " + CONF +
-                     " && chmod 0600 " + CONF + " && touch " + STATE + "/restart.all");
+                     " && chmod 0600 " + CONF + " && touch " + STATE + "/run/restart.all");
   if (r.errno !== 0){ toast(t("toast.saveFail", {msg: r.stderr || r.errno}), true); return; }
   curText = text;
   curMap = parseConf(text);
@@ -463,12 +463,12 @@ async function save(){
   setTimeout(function(){ refreshStatus().catch(function(){}); }, 1500);
 }
 async function reloadNow(){
-  await exec("touch " + STATE + "/restart.all");
+  await exec("touch " + STATE + "/run/restart.all");
   toast(t("toast.reloaded"));
   setTimeout(function(){ refreshStatus().catch(function(){}); }, 1500);
 }
 async function restartRelay(){
-  await exec("pkill -9 -x relay; touch " + STATE + "/restart.all");
+  await exec("pkill -9 -x relay; touch " + STATE + "/run/restart.all");
   toast(t("toast.restarted"));
   setTimeout(function(){ refreshStatus().catch(function(){}); }, 2500);
 }
@@ -586,7 +586,7 @@ function renderSkip(){
 async function writeSkip(list){
   var text = setConfKey(curText, SKIP_KEY, list.join(","));
   var r = await exec("printf '%s' '" + b64(text) + "' | base64 -d > " + CONF +
-                     " && chmod 0600 " + CONF + " && touch " + STATE + "/restart.all");
+                     " && chmod 0600 " + CONF + " && touch " + STATE + "/run/restart.all");
   if (r.errno !== 0){ toast(t("toast.saveFail", {msg: r.stderr || r.errno}), true); return false; }
   curText = text;
   curMap = parseConf(text);

@@ -81,8 +81,8 @@ device_abi() {
 # Locate the relay binary: a user-placed override under $STATE_DIR wins,
 # then the module dir, then the module libs/<abi>/ dir for this device.
 find_module_relay() {
-  if [ -f "$STATE_DIR/relay" ]; then
-    echo "$STATE_DIR/relay"
+  if [ -f "$BIN_DIR/relay" ]; then
+    echo "$BIN_DIR/relay"
     return 0
   fi
   if [ -f "$MODDIR/relay" ]; then
