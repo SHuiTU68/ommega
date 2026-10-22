@@ -15,6 +15,10 @@
 // lib 里 `pub` 算对外 API 不报，bin 里同一份 `pub` 就成了「never used」，
 // 于是每次 clippy 都多出一批只跟目标有关的假警告，把真问题盖住。
 
+// musl 的 malloc 多线程下只有一个全局锁，并发出证时全堵这儿；换 mimalloc。
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::sync::Arc;
 
 use axum::extract::ConnectInfo;

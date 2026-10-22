@@ -45,6 +45,10 @@
 //! Both `http://` and `https://` are supported. The relay_server runs over
 //! HTTPS with a self-signed certificate, so any server certificate is accepted.
 
+// relay 同时挂着长轮询、任务队列和 SOTER 转发，换 mimalloc：每线程一个堆、无全局锁。
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
