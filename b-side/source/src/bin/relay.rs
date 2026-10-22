@@ -705,9 +705,12 @@ fn poll_tasks(cfg: &RelayConfig) -> Result<Option<(String, String, Value)>> {
     // 把自己的版本也报上去：状态页要显示、A 端「留空自己获取」要按版本挑设备。
     // 版本号就是模块版本（build.py 断言过 Cargo.toml 与 VERSION 一致）。
     let ver = env!("CARGO_PKG_VERSION");
+    // 本机设备身份：A 端「伪装参数 → 从服务器同步」要把自己伪装成同一台机器，
+    // 否则链是真机出的、属性却是调用方那台，检测器一对就不一致。
+    let ident = device_identity_query();
     let url = format!(
-        "{}/api/b/poll/?device_id={}&machine_id={}&timeout={}&caps={}&skip_pkgs={}&ver={}",
-        cfg.server, cfg.device_id, cfg.machine_id, POLL_TIMEOUT_SEC, caps, skip, ver
+        "{}/api/b/poll/?device_id={}&machine_id={}&timeout={}&caps={}&skip_pkgs={}&ver={}{}",
+        cfg.server, cfg.device_id, cfg.machine_id, POLL_TIMEOUT_SEC, caps, skip, ver, ident
     );
     let headers = vec![("X-Relay-Token".to_string(), cfg.token.clone())];
     let (status, body) =
@@ -992,6 +995,46 @@ fn parse_attestation_key(value: Option<&Value>) -> Result<Option<tee_ops::Attest
 
 fn b64(v: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(v)
+}
+
+/// 把本机设备身份拼成 poll 的查询参数（URL 编码后）。
+///
+/// 服务端存下来、状态页带给 A 端，A 端的「伪装参数 → 从服务器同步」直接拿这几项
+/// 去 resetprop；缺一项就少一项，不会因为读不到属性而报错。
+fn device_identity_query() -> String {
+    let mut out = String::new();
+    for (key, prop) in [
+        ("brand", "ro.product.brand"),
+        ("product_device", "ro.product.device"),
+        ("product", "ro.product.name"),
+        ("manufacturer", "ro.product.manufacturer"),
+        ("product_model", "ro.product.model"),
+        ("serial", "ro.serialno"),
+    ] {
+        let value = ommegaclient_b::keymaster::tee_ops::device_prop(prop)
+            .filter(|v| !v.is_empty() && v.len() <= 64 && !v.contains('\n'))
+            .unwrap_or_default();
+        if value.is_empty() {
+            continue;
+        }
+        out.push('&');
+        out.push_str(key);
+        out.push('=');
+        out.push_str(&url_encode(&value));
+    }
+    out
+}
+
+/// 只给查询串用的最小 URL 编码（字母数字和 -_. 原样，其余 %XX）。
+fn url_encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' => out.push(*byte as char),
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
 }
 
 fn cert_chain_json(chain: &[Vec<u8>]) -> Vec<Value> {

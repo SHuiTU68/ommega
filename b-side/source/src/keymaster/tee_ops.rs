@@ -938,8 +938,16 @@ fn build_attestation_params(
     // A real TEE validates the values and answers `CannotAttestIds` (-75) when
     // they are not this device's own; the A-side then falls back to its local
     // software keybox, which is the honest answer for a foreign device.
-    for (tag, value) in &spec.attestation_ids {
-        params.push(attestation_id_param(*tag, value.clone())?);
+    // 真 TEE 只肯证明**本机自己的** ID：拿调用方（A 端那台手机）的值去问，HAL 一律
+    // 回 `CannotAttestIds`（-66），整笔就掉到服务端密钥层。所以这里把值换成 B 自己
+    // 那套：能读到的（brand/device/product/manufacturer/model/serial）用本机属性，
+    // 读不到的（IMEI/MEID/第二 IMEI）**不发** —— 少一项好过发个假值让 HAL 拒掉整笔。
+    if !spec.attestation_ids.is_empty() {
+        for (tag, _requested) in &spec.attestation_ids {
+            if let Some(param) = local_attestation_id_param(*tag) {
+                params.push(param);
+            }
+        }
     }
 
     // User-authentication / authorization-list entries. A real TEE is the
@@ -973,23 +981,43 @@ fn build_attestation_params(
         .with_context(|| ks_err!("encode real TEE attestation parameters"))
 }
 
-/// Rebuild the `KeyParam` variant for a `KM_TAG_ATTESTATION_ID_*` tag - the only
-/// tags the A-side forwards inside `device_attest_context.attestation_ids`.
-/// Anything else is rejected loudly instead of being silently dropped.
-fn attestation_id_param(tag: u32, value: Vec<u8>) -> Result<KeyParam> {
-    Ok(match tag {
+/// 本机自己的 ID 证明值（真 TEE 只肯签自己的）。
+///
+/// 拿不到的值（IMEI/MEID/第二 IMEI 这类不落在系统属性里的）返回 `None`，
+/// 调用方据此跳过该 tag。
+pub fn local_attestation_id_param(tag: u32) -> Option<KeyParam> {
+    let value = match tag {
+        710 => device_prop("ro.product.brand"),
+        711 => device_prop("ro.product.device"),
+        712 => device_prop("ro.product.name").or_else(|| device_prop("ro.product.product")),
+        713 => device_prop("ro.serialno"),
+        716 => device_prop("ro.product.manufacturer"),
+        717 => device_prop("ro.product.model"),
+        _ => None,
+    }?
+    .into_bytes();
+    if value.is_empty() {
+        return None;
+    }
+    Some(match tag {
         710 => KeyParam::AttestationIdBrand(value),
         711 => KeyParam::AttestationIdDevice(value),
         712 => KeyParam::AttestationIdProduct(value),
         713 => KeyParam::AttestationIdSerial(value),
-        714 => KeyParam::AttestationIdImei(value),
-        715 => KeyParam::AttestationIdMeid(value),
         716 => KeyParam::AttestationIdManufacturer(value),
         717 => KeyParam::AttestationIdModel(value),
-        // 723 (`TagType.BYTES | 723`); 718 is VENDOR_PATCHLEVEL, not an ID.
-        723 => KeyParam::AttestationIdSecondImei(value),
-        other => return Err(anyhow!("unsupported attestation ID tag {other}")),
+        _ => return None,
     })
+}
+
+/// 读一个系统属性（`getprop`），空值当拿不到。
+pub fn device_prop(key: &str) -> Option<String> {
+    let out = std::process::Command::new("getprop")
+        .arg(key)
+        .output()
+        .ok()?;
+    let value = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!value.is_empty()).then_some(value)
 }
 
 // ---------------------------------------------------------------------------

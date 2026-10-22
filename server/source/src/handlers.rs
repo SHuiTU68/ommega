@@ -2465,6 +2465,17 @@ pub struct PollQuery {
     /// relay 自己的版本号（模块版本，例如 `1.7.0`）。缺失 = 老版本 relay 没上报。
     /// 状态页拿它显示，A 端「留空自己获取」拿它按版本挑设备。
     pub ver: Option<String>,
+    // ---- 本机设备身份（relay 心跳额外上报的那几项）----
+    // A 端「伪装参数 → 从服务器同步」拿这几项去 resetprop，把本机属性对齐到这台 B。
+    // 全部可缺，缺了就不覆盖上次记下的值。
+    pub brand: Option<String>,
+    /// `ro.product.device`（跟 `product` 分开叫，避免和 `product` 混淆）。
+    pub product_device: Option<String>,
+    /// `ro.product.name`。
+    pub product: Option<String>,
+    pub manufacturer: Option<String>,
+    pub product_model: Option<String>,
+    pub serial: Option<String>,
 }
 
 pub async fn b_poll(
@@ -2513,6 +2524,23 @@ pub async fn b_poll(
     state
         .store
         .set_device_from_module(&q.device_id, q.skip_pkgs.is_some() || q.ver.is_some())
+        .await;
+
+    // 本机设备身份（brand/device/product/manufacturer/model/serial）：A 端「伪装参数 →
+    // 从服务器同步」要用它，否则链是真机出的、本机属性还是调用方那台，两边对不上。
+    state
+        .store
+        .set_device_identity(
+            &q.device_id,
+            crate::queue::DeviceIdentityReport {
+                brand: q.brand.clone(),
+                device: q.product_device.clone(),
+                product: q.product.clone(),
+                manufacturer: q.manufacturer.clone(),
+                model: q.product_model.clone(),
+                serial: q.serial.clone(),
+            },
+        )
         .await;
 
     match state

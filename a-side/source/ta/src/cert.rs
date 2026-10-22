@@ -280,6 +280,63 @@ pub(crate) fn extract_subject(cert: &keymint::Certificate) -> Result<Vec<u8>, Er
 /// root-of-trust must be reused verbatim for the child leaf — otherwise the
 /// child's ROOT_OF_TRUST disagrees with the attestation key's and detectors
 /// flag the attestation key as tampered.
+/// 远端链里声明的设备身份：B 真机自己那套 brand/device/product/serial/
+/// manufacturer/model，加上它的 verified boot hash。
+///
+/// 拿它去对齐本机属性：一条真机链只能证明那台机器，本机如果说自己叫
+/// 另一个型号，检测器就会报 `device_properties` / VBMeta 摘要不一致。
+#[derive(Debug, Default, Clone)]
+pub(crate) struct RemoteDeviceIdentity {
+    pub brand: Option<Vec<u8>>,
+    pub device: Option<Vec<u8>>,
+    pub product: Option<Vec<u8>>,
+    pub serial: Option<Vec<u8>>,
+    pub manufacturer: Option<Vec<u8>>,
+    pub model: Option<Vec<u8>>,
+    pub verified_boot_hash: Option<Vec<u8>>,
+}
+
+/// 从远端叶子证书里抽出上面那套身份。解不开就返回 `None`（不阻断生成）。
+pub(crate) fn parse_remote_device_identity(cert_der: &[u8]) -> Option<RemoteDeviceIdentity> {
+    let cert = <x509_cert::Certificate as Decode>::from_der(cert_der).ok()?;
+    let extensions = cert.tbs_certificate().extensions()?;
+    let att_ext = extensions
+        .iter()
+        .find(|e| e.extn_id == X509_ATTESTATION_EXTENSION_OID)?;
+    let att = AttestationExtension::from_der(att_ext.extn_value.as_bytes()).ok()?;
+
+    // 硬件强制优先，其次软件层。
+    let pick = |hw: &AuthorizationList<'_>, sw: &AuthorizationList<'_>| -> RemoteDeviceIdentity {
+        let ids = if hw.ids.brand.is_some() || hw.ids.model.is_some() {
+            &hw.ids
+        } else {
+            &sw.ids
+        };
+        RemoteDeviceIdentity {
+            brand: ids.brand.as_ref().map(|v| v.to_vec()),
+            device: ids.device.as_ref().map(|v| v.to_vec()),
+            product: ids.product.as_ref().map(|v| v.to_vec()),
+            serial: ids.serial.as_ref().map(|v| v.to_vec()),
+            manufacturer: ids.manufacturer.as_ref().map(|v| v.to_vec()),
+            model: ids.model.as_ref().map(|v| v.to_vec()),
+            verified_boot_hash: None,
+        }
+    };
+    let mut identity = pick(&att.hw_enforced, &att.sw_enforced);
+
+    let rot_der = att
+        .hw_enforced
+        .rot_info
+        .clone()
+        .or_else(|| att.sw_enforced.rot_info.clone());
+    if let Some(rot_der) = rot_der {
+        if let Ok(rot) = RootOfTrust::from_der(&rot_der) {
+            identity.verified_boot_hash = Some(rot.verified_boot_hash.to_vec());
+        }
+    }
+    Some(identity)
+}
+
 pub(crate) fn parse_remote_root_of_trust(
     cert_der: &[u8],
 ) -> Result<Option<RemoteRootOfTrust>, Error> {

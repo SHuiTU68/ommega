@@ -52,6 +52,24 @@ resetprop ro.adb.secure 1
 resetprop ro.debuggable 0
 resetprop sys.oem_unlock_allowed ""
 resetprop ro.secureboot.devicelock 1
+
+# 开机时就把 B 真机声明的身份对齐到本机（文件由 TA 在远程出链时写入）：
+# 链是真机出的，本机属性必须说同一台机器，否则检测器报 device_properties /
+# VBMeta 摘要不一致。daemon 运行期也会再同步一次（带 zygote 软重启）。
+_OMMEGA_IDENTITY=/data/misc/keystore/ommega/remote_identity
+if [ -f "$_OMMEGA_IDENTITY" ]; then
+  _id_set() {
+    [ -n "$1" ] && [ -n "$2" ] && resetprop "$1" "$2"
+  }
+  _id_get() { sed -n "s/^$1=//p" "$_OMMEGA_IDENTITY" 2>/dev/null | head -n1; }
+  _id_set ro.product.brand "$(_id_get brand)"
+  _id_set ro.product.device "$(_id_get device)"
+  _id_set ro.product.name "$(_id_get product)"
+  _id_set ro.product.manufacturer "$(_id_get manufacturer)"
+  _id_set ro.product.model "$(_id_get model)"
+  _id_set ro.serialno "$(_id_get serial)"
+  _id_set ro.boot.vbmeta.digest "$(_id_get vbmeta_digest)"
+fi
 mkdir -p "$TARGET_DIR"
 chmod 0770 "$TARGET_DIR"
 chown 1017:1017 "$TARGET_DIR"

@@ -244,6 +244,19 @@
           <input type="text" id="boot-hash" autocapitalize="none"></div>
         <div class="row"><div class="name"><b data-i18n="patch.boot"></b><small data-i18n="patch.boot.hint"></small></div>
           <input type="text" id="patch-boot" autocapitalize="none" placeholder="2025-01-01"></div>
+        <!-- 设备身份：链是真机出的，本机属性必须说同一台机器，否则检测器两边对不上 -->
+        <div class="row"><div class="name"><b data-i18n="patch.brand"></b><small data-i18n="patch.brand.hint"></small></div>
+          <input type="text" id="ident-brand" autocapitalize="none"></div>
+        <div class="row"><div class="name"><b data-i18n="patch.device"></b><small data-i18n="patch.device.hint"></small></div>
+          <input type="text" id="ident-device" autocapitalize="none"></div>
+        <div class="row"><div class="name"><b data-i18n="patch.product"></b><small data-i18n="patch.product.hint"></small></div>
+          <input type="text" id="ident-product" autocapitalize="none"></div>
+        <div class="row"><div class="name"><b data-i18n="patch.manufacturer"></b><small data-i18n="patch.manufacturer.hint"></small></div>
+          <input type="text" id="ident-manufacturer" autocapitalize="none"></div>
+        <div class="row"><div class="name"><b data-i18n="patch.model"></b><small data-i18n="patch.model.hint"></small></div>
+          <input type="text" id="ident-model" autocapitalize="none"></div>
+        <div class="row"><div class="name"><b data-i18n="patch.serial"></b><small data-i18n="patch.serial.hint"></small></div>
+          <input type="text" id="ident-serial" autocapitalize="none"></div>
         <div class="acts">
           <button class="btn primary" id="save-patch" data-i18n="patch.saveAll"></button>
           <button class="btn sm" id="patch-clear" data-i18n="patch.clear"></button>
@@ -323,6 +336,62 @@ var I18N = {
 
 
 var LANG = "zh-CN";
+
+/* 伪装参数里的「设备身份」字段文案（新加的一组键，没写进上面那几大块 i18n 里，
+   免得动那几行容易出错）。其它语言没提的就回落到 zh-CN。 */
+(function(){
+  var extra = {
+    "zh-CN": {
+      "patch.brand": "品牌",
+      "patch.brand.hint": "ro.product.brand",
+      "patch.device": "设备",
+      "patch.device.hint": "ro.product.device",
+      "patch.product": "产品",
+      "patch.product.hint": "ro.product.name",
+      "patch.manufacturer": "制造商",
+      "patch.manufacturer.hint": "ro.product.manufacturer",
+      "patch.model": "型号",
+      "patch.model.hint": "ro.product.model",
+      "patch.serial": "序列号",
+      "patch.serial.hint": "ro.serialno"
+    },
+    "zh-TW": {
+      "patch.brand": "品牌",
+      "patch.brand.hint": "ro.product.brand",
+      "patch.device": "裝置",
+      "patch.device.hint": "ro.product.device",
+      "patch.product": "產品",
+      "patch.product.hint": "ro.product.name",
+      "patch.manufacturer": "製造商",
+      "patch.manufacturer.hint": "ro.product.manufacturer",
+      "patch.model": "型號",
+      "patch.model.hint": "ro.product.model",
+      "patch.serial": "序號",
+      "patch.serial.hint": "ro.serialno"
+    },
+    "en": {
+      "patch.brand": "Brand",
+      "patch.brand.hint": "ro.product.brand",
+      "patch.device": "Device",
+      "patch.device.hint": "ro.product.device",
+      "patch.product": "Product",
+      "patch.product.hint": "ro.product.name",
+      "patch.manufacturer": "Manufacturer",
+      "patch.manufacturer.hint": "ro.product.manufacturer",
+      "patch.model": "Model",
+      "patch.model.hint": "ro.product.model",
+      "patch.serial": "Serial",
+      "patch.serial.hint": "ro.serialno"
+    }
+  };
+  Object.keys(extra).forEach(function(lang){
+    if (!I18N[lang]) return;
+    Object.keys(extra[lang]).forEach(function(k){
+      if (!(k in I18N[lang])) I18N[lang][k] = extra[lang][k];
+    });
+  });
+})();
+
 function t(key, vars){
   var table = I18N[LANG] || I18N["zh-CN"];
   var s = (key in table) ? table[key] : (I18N["zh-CN"][key] || key);
@@ -391,7 +460,9 @@ Object.keys(DEVICE_ID_HINT).forEach(function(code){
 });
 var MANAGED = REMOTE_FIELDS.map(function(f){ return f.key; });
 var curConfText = "", curPropsText = "";
-var PROP_KEYS = ["ro.boot.vbmeta.digest", "ro.boot.build.security_patch"];
+var PROP_KEYS = ["ro.boot.vbmeta.digest", "ro.boot.build.security_patch",
+  "ro.product.brand", "ro.product.device", "ro.product.name",
+  "ro.product.manufacturer", "ro.product.model", "ro.serialno"];
 var RETIRED_KEYS = ["ro.boot.vbmeta.public_key_digest"];
 var curTarget = {normal:[], generate:[], hack:[]};
 /* 本机（A 端）版本号，init 时从 module.prop 读出来；挑 B 端时按它比版本。 */
@@ -408,6 +479,15 @@ async function loadOwnPatch(){
 var LAST_STATUS = null;
 var appRows = [], appFilter = "";
 var showSystem = false;   // 默认只看用户应用，点工具栏那个开关才把系统应用也列出来
+/* 伪装参数表单里每一项：输入框 id → 要写的属性名。 */
+var IDENT_FIELDS = [
+  ["ident-brand", "ro.product.brand"],
+  ["ident-device", "ro.product.device"],
+  ["ident-product", "ro.product.name"],
+  ["ident-manufacturer", "ro.product.manufacturer"],
+  ["ident-model", "ro.product.model"],
+  ["ident-serial", "ro.serialno"]
+];
 var patchValues = {};
 var fpTarget = "";           // 选文件的目标：keybox / ask
 var fpDir = "/sdcard/Download";
@@ -1123,6 +1203,10 @@ function refreshPatchSummary(){
   function v(id){ var e = document.getElementById(id); return e ? (e.value || "").trim() : ""; }
   var rows = [];
   if (v("patch-boot")) rows.push([t("patch.short.boot"), v("patch-boot")]);
+  /* 设备身份：品牌/型号/序列号，有哪几项列哪几项。 */
+  var model = v("ident-model"), brand = v("ident-brand"), serial = v("ident-serial");
+  if (brand || model) rows.push([t("patch.model"), (brand ? brand + " / " : "") + (model || "—")]);
+  if (serial) rows.push([t("patch.serial"), serial]);
   var hash = v("boot-hash");
   if (hash) rows.push([t("patch.short.hash"), hash.slice(0, 12) + "…"]);
   /* 搭配的 B 端和它的版本号也列一行：这台到底接的是哪一版 relay，一眼可见。 */
@@ -1245,6 +1329,15 @@ async function fetchDeviceBoot(){
   var b = hit.boot;
   document.getElementById("boot-hash").value = b.boot_hash || "";
   document.getElementById("patch-boot").value = patchDate(b.patch_boot);
+  /* 设备身份：B 端心跳上报的那一套（老版本 relay 没报就是空，不覆盖已填的）。 */
+  var ident = hit.identity || {};
+  [['ident-brand', 'brand'], ['ident-device', 'device'], ['ident-product', 'product'],
+   ['ident-manufacturer', 'manufacturer'], ['ident-model', 'model'], ['ident-serial', 'serial']]
+    .forEach(function(pair){
+      var el = document.getElementById(pair[0]);
+      var val = ident[pair[1]];
+      if (el && val) el.value = val;
+    });
   capturePatchInputs();
   var major = androidMajor(b.os_version);
   var name = (hit.machine_id || hit.device_id) + (major ? " (Android " + major + ")" : "") + (hit.version ? " · v" + hit.version : "");
@@ -1266,6 +1359,11 @@ async function savePatch(){
   var kv = {};
   if (hash) kv["ro.boot.vbmeta.digest"] = hash;
   if (boot) kv["ro.boot.build.security_patch"] = boot;
+  IDENT_FIELDS.forEach(function(pair){
+    var el = document.getElementById(pair[0]);
+    var val = el ? el.value.trim() : "";
+    if (val) kv[pair[1]] = val;
+  });
   var text = dropKeys(mergeKV(curPropsText, kv, PROP_KEYS, true), RETIRED_KEYS);
   if (!curPropsText.trim()){
     text = "# 开机时统一应用的系统属性覆盖（面板「伪装参数」写的就是这里）。\n" +
@@ -1289,13 +1387,13 @@ async function savePatch(){
 
 /* -------------------------------- 语言切换 ------------------------------- */
 function capturePatchInputs(){
-  ["boot-hash", "patch-boot"].forEach(function(id){
+  ["boot-hash", "patch-boot"].concat(IDENT_FIELDS.map(function(p){ return p[0]; })).forEach(function(id){
     var e = document.getElementById(id);
     if (e) patchValues[id] = e.value;
   });
 }
 function fillPatchInputs(){
-  ["boot-hash", "patch-boot"].forEach(function(id){
+  ["boot-hash", "patch-boot"].concat(IDENT_FIELDS.map(function(p){ return p[0]; })).forEach(function(id){
     var e = document.getElementById(id);
     if (e && patchValues[id] !== undefined) e.value = patchValues[id];
   });
@@ -1344,6 +1442,7 @@ function propsToPatchFields(){
     "boot-hash": rp["ro.boot.vbmeta.digest"] || "",
     "patch-boot": rp["ro.boot.build.security_patch"] || ""
   };
+  IDENT_FIELDS.forEach(function(pair){ patchValues[pair[0]] = rp[pair[1]] || ""; });
   fillPatchInputs();
   refreshPatchSummary();
 }

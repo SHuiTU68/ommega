@@ -248,6 +248,16 @@ pub async fn admin_devices(State(state): State<AppState>, headers: HeaderMap) ->
                 "version": d.version,
                 "module": d.module_kind(),
                 "strongbox": d.supports_strongbox,
+                // 本机设备身份（relay 心跳上报）：A 端「伪装参数 → 从服务器同步」
+                // 直接拿它去 resetprop，把本机属性对齐到这台 B。
+                "identity": json!({
+                    "brand": d.identity.brand,
+                    "device": d.identity.device,
+                    "product": d.identity.product,
+                    "manufacturer": d.identity.manufacturer,
+                    "model": d.identity.model,
+                    "serial": d.identity.serial,
+                }),
             }),
             load,
         ));
@@ -1350,6 +1360,16 @@ pub async fn public_status(State(state): State<AppState>) -> Response {
                 "version": d.version,
                 "module": d.module_kind(),
                 "strongbox": d.supports_strongbox,
+                // 本机设备身份（relay 心跳上报）：A 端「伪装参数 → 从服务器同步」
+                // 直接拿它去 resetprop，把本机属性对齐到这台 B。
+                "identity": json!({
+                    "brand": d.identity.brand,
+                    "device": d.identity.device,
+                    "product": d.identity.product,
+                    "manufacturer": d.identity.manufacturer,
+                    "model": d.identity.model,
+                    "serial": d.identity.serial,
+                }),
             }),
             load,
         ));

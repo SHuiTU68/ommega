@@ -568,6 +568,10 @@ impl crate::KeyMintTa {
         self.add_keymint_tags(&mut chars, KeyOrigin::Generated)?;
         let _ = keygen_info;
         let root_of_trust = crate::cert::parse_remote_root_of_trust(leaf_der)?;
+        // 把 B 真机自己声明的设备身份落盘：root 侧的 `daemon` 会拿去做
+        // resetprop 对齐。链是真机出的，本机属性就必须说同一台机器，
+        // 否则检测器拿两边一对就报 device_properties / VBMeta 摘要不一致。
+        persist_remote_identity(leaf_der);
         let remote_key = KeyMaterial::Remote(crypto::RemoteRef {
             alias,
             public_key,
@@ -1277,6 +1281,57 @@ fn self_hash_sha256(data: &[u8]) -> Vec<u8> {
     let mut hasher = Sha256::new();
     hasher.update(data);
     hasher.finalize().to_vec()
+}
+
+/// 把远端叶子里的设备身份写到 state 文件，内容没变就不重写（避免触发重启循环）。
+///
+/// TA 跑在 keystore2 进程里（uid 1017），只能写 keystore 状态目录；
+/// 真正 resetprop + 重启 zygote 的是 root 侧的 `template/daemon`。
+fn persist_remote_identity(leaf_der: &[u8]) {
+    const PATH: &str = "/data/misc/keystore/ommega/remote_identity";
+    let Some(identity) = crate::cert::parse_remote_device_identity(leaf_der) else {
+        return;
+    };
+    let mut out = String::new();
+    for (key, value) in [
+        ("brand", identity.brand),
+        ("device", identity.device),
+        ("product", identity.product),
+        ("manufacturer", identity.manufacturer),
+        ("model", identity.model),
+        ("serial", identity.serial),
+    ] {
+        let Some(value) = value else { continue };
+        let Ok(text) = core::str::from_utf8(&value) else {
+            continue;
+        };
+        if text.is_empty() || text.contains('\n') {
+            continue;
+        }
+        out.push_str(key);
+        out.push('=');
+        out.push_str(text);
+        out.push('\n');
+    }
+    if let Some(hash) = identity.verified_boot_hash {
+        if !hash.is_empty() {
+            out.push_str("vbmeta_digest=");
+            for byte in hash {
+                out.push_str(&format!("{byte:02x}"));
+            }
+            out.push('\n');
+        }
+    }
+    if out.is_empty() {
+        return;
+    }
+    if std::fs::read_to_string(PATH).ok().as_deref() == Some(out.as_str()) {
+        return;
+    }
+    match std::fs::write(PATH, out.as_bytes()) {
+        Ok(()) => log::info!("remote device identity updated ({} bytes)", out.len()),
+        Err(e) => log::warn!("write {PATH} failed: {e}"),
+    }
 }
 
 /// Extracts the A-side key-generation parameters from `params` into a

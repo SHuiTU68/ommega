@@ -131,6 +131,46 @@ pub struct DeviceEntry {
     /// 两个都不带的不一定是 App（老版本模块也不带），所以只是判据之一，
     /// 对外该用 `module_kind()`。
     pub from_module: bool,
+    /// 心跳里上报的本机设备身份（brand/device/product/manufacturer/model/serial）。
+    /// A 端「伪装参数 → 从服务器同步」拿它去 resetprop，把本机属性对齐到这台 B，
+    /// 否则链是真机出的、属性却是调用方那台，检测器一对就报不一致。
+    pub identity: DeviceIdentityReport,
+}
+
+/// B 端报上来的设备身份（键值都来自它自己的 `ro.product.*` / `ro.serialno`）。
+#[derive(Debug, Clone, Default)]
+pub struct DeviceIdentityReport {
+    pub brand: Option<String>,
+    pub device: Option<String>,
+    pub product: Option<String>,
+    pub manufacturer: Option<String>,
+    pub model: Option<String>,
+    pub serial: Option<String>,
+}
+
+impl DeviceIdentityReport {
+    /// 合并一次心跳上报（只覆盖非空项，缺的保留上次的）。
+    pub fn merge(&mut self, other: &DeviceIdentityReport) {
+        let pairs = [
+            (&mut self.brand, &other.brand),
+            (&mut self.device, &other.device),
+            (&mut self.product, &other.product),
+            (&mut self.manufacturer, &other.manufacturer),
+            (&mut self.model, &other.model),
+            (&mut self.serial, &other.serial),
+        ];
+        for (slot, value) in pairs {
+            if let Some(value) = value {
+                if !value.is_empty() {
+                    *slot = Some(value.clone());
+                }
+            }
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.brand.is_none() && self.model.is_none() && self.serial.is_none()
+    }
 }
 
 impl DeviceEntry {
@@ -584,6 +624,7 @@ impl TaskStore {
                         known_supports_strongbox,
                         known_version,
                         known_from_module,
+                        known_identity,
                     ) = match inner.devices.get(device_id) {
                         Some(d) => (
                             d.boot.clone(),
@@ -597,9 +638,21 @@ impl TaskStore {
                             d.supports_strongbox,
                             d.version.clone(),
                             d.from_module,
+                            d.identity.clone(),
                         ),
                         None => (
-                            None, None, None, 0, None, None, None, None, None, None, false,
+                            None,
+                            None,
+                            None,
+                            0,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            false,
+                            DeviceIdentityReport::default(),
                         ),
                     };
                     let no_boot_yet = known_boot.is_none();
@@ -623,6 +676,7 @@ impl TaskStore {
                             // 老版本 relay 不带 ver，保留上次记下的版本。
                             version: known_version,
                             from_module: known_from_module,
+                            identity: known_identity,
                         },
                     );
                     self.mark_online_sync(device_id, hb_now);
@@ -1448,6 +1502,18 @@ impl TaskStore {
     pub async fn skip_pkgs_for(&self, device_id: &str) -> Vec<String> {
         let inner = self.inner.lock().await;
         inner.skip_pkgs.get(device_id).cloned().unwrap_or_default()
+    }
+
+    /// 记下这台设备上报的设备身份（brand/device/product/manufacturer/model/serial）。
+    /// 只覆盖非空项；设备还没进表时丢弃（下一轮心跳会带上）。
+    pub async fn set_device_identity(&self, device_id: &str, identity: DeviceIdentityReport) {
+        if identity.is_empty() {
+            return;
+        }
+        let mut inner = self.inner.lock().await;
+        if let Some(entry) = inner.devices.get_mut(device_id) {
+            entry.identity.merge(&identity);
+        }
     }
 
     /// Resolve the target device_id for a new task, with load-balancing
