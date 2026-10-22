@@ -337,26 +337,14 @@ impl crate::KeyMintTa {
                 op.update(tbs_data)?;
                 op.finish()
             }
-            KeyMaterial::Remote(remote) => {
-                // The attestation key lives on the relay server / B-side real
-                // TEE; the A-side only holds its public key (SPKI). Forward
-                // the TBS signing so the private key never leaves the real
-                // device, matching how remote SIGN/DECRYPT are forwarded.
-                let backend = self.dev.remote.as_ref().ok_or_else(|| {
-                    km_err!(
-                        UnknownError,
-                        "remote backend not configured for attestation-key signing"
-                    )
-                })?;
-                let algorithm = if crate::cert::remote_key_is_rsa(&remote.public_key) {
-                    "SHA256withRSA"
-                } else {
-                    "SHA256withECDSA"
-                };
-                backend
-                    .sign(&remote.alias, tbs_data, algorithm)?
-                    .ok_or_else(|| km_err!(UnknownError, "remote attestation-key sign unavailable"))
-            }
+            // ATTEST_KEY 是给原生证书生成用的，不是给 begin(SIGN) 用的。真机实测：
+            // 用证明密钥 begin(SIGN) 恒被拒（-2/-3/-12），所以这里不再把 TBS 转发给
+            // 远程 SIGN —— 那条路以前能跑通，只是因为 B 把 ATTEST_KEY 换成了 SIGN。
+            // 旧版遗留的远程 blob 若描述的是普通签名密钥，也不能用它发证书。
+            KeyMaterial::Remote(_) => Err(km_err!(
+                IncompatiblePurpose,
+                "remote certificate issuance is not supported by the SIGN transport"
+            )),
             _ => Err(km_err!(
                 IncompatibleAlgorithm,
                 "unexpected cert signing key type"
@@ -394,17 +382,11 @@ impl crate::KeyMintTa {
     ) -> Result<KeyCreationResult, Error> {
         // Remote mode: if a remote backend is enabled and attestation is
         // requested, mint the key on the B-side real TEE instead of locally.
-        // A caller-supplied attestation key (e.g. KeyAttestation's persistent
-        // key) must NOT go remote: the remote backend ignores it and mints
-        // with the device batch key, producing a leaf that cannot be linked
-        // to the attest key's own chain ("签名错误" in the UI). Sign locally
-        // with the provided attestation key instead.
         //
-        // An ATTEST_KEY-purpose key DOES go remote: the relay returns a cert
-        // chain, the TA stores it as `KeyMaterial::Remote` (public key only,
-        // no private key), and when the app later uses that attestation key to
-        // sign a child cert, `sign_cert_data`/`tbs_certificate` forward the
-        // TBS signing back to the relay, which holds the private key.
+        // 调用方自带证明密钥（App AttestKey）时也走远程：B 端真 TEE 用那把已有的
+        // ATTEST_KEY 原生签发子证书（`generateKey(.., AttestationKey)`），而不是本端
+        // 拿远程 SIGN 代签。真机实测（2026-10-23）：用证明密钥走 `begin(SIGN)` 恒被拒
+        // （-2/-3/-12）—— 那条路以前能跑通，只是因为 B 把 ATTEST_KEY 偷偷换成了 SIGN。
         //
         // STRONGBOX requests follow the SAME path as TEE: when a remote
         // backend is enabled they are forwarded to the relay, which tags the
@@ -415,16 +397,44 @@ impl crate::KeyMintTa {
         // `/strongbox` HAL here was tried but failed on devices where that HAL
         // is declared but not servable from the keystore context (Unknown error
         // -1000), so it is not wired in.
+        // 调用方自带的证明密钥（App AttestKey 委派）：只有当它在本端是 `Remote`
+        // （私钥在 B 端真 TEE）时，才改由 B 的原生 KeyMint 用它签发子证书；
+        // 如果那是一把本地签发密钥（私钥在本机），仍旧走本地路径。
+        let remote_issuer = if attestation_key.is_some()
+            && get_opt_tag_value!(params, AttestationChallenge)?.is_some()
+            && self.dev.remote.as_ref().is_some_and(|r| r.enabled())
+        {
+            let info = attestation_key.as_ref().unwrap();
+            let (blob, _) = self.keyblob_parse_decrypt(&info.key_blob, &info.attest_key_params)?;
+            blob.suitable_for(KeyPurpose::AttestKey, self.hw_info.security_level)?;
+            if info.issuer_subject_name.is_empty() {
+                return Err(km_err!(InvalidArgument, "empty subject name"));
+            }
+            match blob.key_material {
+                KeyMaterial::Remote(remote) => Some(device::RemoteAttestationKey {
+                    alias: remote.alias,
+                    public_key: remote.public_key,
+                    issuer_subject_name: info.issuer_subject_name.clone(),
+                }),
+                _ => None,
+            }
+        } else {
+            None
+        };
         let remote_attest = get_opt_tag_value!(params, AttestationChallenge)?.is_some()
-            && attestation_key.is_none()
-            && self.dev.remote.as_ref().is_some_and(|r| r.enabled());
+            && self.dev.remote.as_ref().is_some_and(|r| r.enabled())
+            && (attestation_key.is_none() || remote_issuer.is_some());
         if remote_attest {
             // `Ok(None)` from the remote backend means it was unavailable; fall
             // back to the local software keybox when `fallback_local` allows.
-            if let Some(result) = self.generate_key_remote(params, attestation_key.clone())? {
+            if let Some(result) = self.generate_key_remote(params, remote_issuer.as_ref())? {
                 return Ok(result);
             }
-            if !self.dev.remote.as_ref().is_some_and(|r| r.fallback_local()) {
+            // 显式委派不能回退：本地软件 keybox 签出来的子证书与调用方那把证明
+            // 密钥没有任何关系，回落等于交出一张无关的链。
+            if remote_issuer.is_some()
+                || !self.dev.remote.as_ref().is_some_and(|r| r.fallback_local())
+            {
                 return Err(km_err!(
                     UnknownError,
                     "remote attest unavailable and fallback disabled"
@@ -449,7 +459,7 @@ impl crate::KeyMintTa {
     fn generate_key_remote(
         &mut self,
         params: &[KeyParam],
-        _attestation_key: Option<AttestationKey>,
+        attestation_key: Option<&device::RemoteAttestationKey>,
     ) -> Result<Option<KeyCreationResult>, Error> {
         let challenge = get_opt_tag_value!(params, AttestationChallenge)?
             .ok_or_else(|| km_err!(AttestationChallengeMissing, "remote attest needs challenge"))?;
@@ -479,6 +489,8 @@ impl crate::KeyMintTa {
             _ => derived_serial.as_ref(),
         };
         let mut remote_params = extract_remote_attest_params(params);
+        // 显式委派：告诉 B「用这把已有的证明密钥签发子证书」。
+        remote_params.attestation_key = attestation_key.cloned();
         // Tag the relay-minted chain with the requesting security level so a
         // STRONGBOX request is not misreported as TEE by the relay's default.
         remote_params.security_level = Some(self.hw_info.security_level as i32);
@@ -511,6 +523,19 @@ impl crate::KeyMintTa {
             return Ok(None);
         }
 
+        // 显式委派：B 必须真的用了调用方指定的那把证明密钥。旧版 B 会忽略这个
+        // 参数、改用本机批量 key 签一张无关证书，那种链必须拒掉（不能静默接受）。
+        if let Some(issuer) = attestation_key {
+            crate::cert::validate_remote_delegation(&chain, issuer)?;
+        }
+        // 请求了 ATTEST_KEY 就核对叶子是不是真机的硬件证明密钥（不发 SIGN 冒充）。
+        if params
+            .iter()
+            .any(|p| matches!(p, KeyParam::Purpose(KeyPurpose::AttestKey)))
+        {
+            crate::cert::validate_native_attestation_issuer(&chain[0])?;
+        }
+
         // Derive the remote key's public key (SPKI) from the leaf certificate.
         let leaf_der = &chain[0];
         let leaf = x509_cert::Certificate::from_der(leaf_der)
@@ -538,7 +563,15 @@ impl crate::KeyMintTa {
         });
 
         let mut certificate_chain = Vec::new();
-        for der in chain.iter() {
+        // 未指定签发密钥时原样返回 B 的完整链；显式委派时只返回子证书 ——
+        // 调用方本来就持有自己的签发链（`setAttestKeyAlias`），它自己拼；AIDL 对
+        // `generateKey(.., AttestationKey)` 的要求也是只回这一张。
+        let returned_chain = if attestation_key.is_some() {
+            &chain[..1]
+        } else {
+            &chain[..]
+        };
+        for der in returned_chain.iter() {
             certificate_chain.try_push(keymint::Certificate {
                 encoded_certificate: der.clone(),
             })?;

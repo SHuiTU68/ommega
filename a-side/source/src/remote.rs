@@ -718,6 +718,18 @@ impl RemoteRelay {
         cert_serial: Option<&[u8]>,
     ) -> Result<Option<Value>> {
         let mut ctx = serde_json::Map::new();
+        // 调用方自带的证明密钥：让 B 端真 TEE 用这把已有的 ATTEST_KEY 原生签发
+        // 子证书（`generateKey(.., AttestationKey)`）。只下发 alias 与 Subject，
+        // 私钥和 keyblob 永不离开 B。
+        if let Some(issuer) = &params.attestation_key {
+            ctx.insert(
+                "attestation_key".to_string(),
+                json!({
+                    "alias": issuer.alias,
+                    "issuer_subject_name": base64_encode(&issuer.issuer_subject_name),
+                }),
+            );
+        }
         ctx.insert(
             "attestation_application_id".to_string(),
             Value::String(base64_encode(app_id_der)),

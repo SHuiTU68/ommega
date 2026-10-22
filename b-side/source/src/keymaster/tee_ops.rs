@@ -53,6 +53,10 @@ fn after_date_time() -> DateTime {
     }
 }
 
+use crate::android::hardware::security::keymint::AttestationKey::AttestationKey as NativeAttestationKey;
+use crate::android::hardware::security::keymint::IKeyMintDevice::IKeyMintDevice;
+use crate::android::hardware::security::keymint::KeyCharacteristics::KeyCharacteristics;
+use crate::android::hardware::security::keymint::KeyCreationResult::KeyCreationResult;
 use crate::android::hardware::security::keymint::KeyParameter::KeyParameter as KmKeyParameter;
 use crate::android::hardware::security::keymint::KeyPurpose::KeyPurpose;
 use crate::err as ks_err;
@@ -129,6 +133,20 @@ pub struct KeySpec {
     /// `user_auth_policy`). `USER_SECURE_ID` is required here even though it is
     /// never attested: without it the TEE cannot bind the key to the user.
     pub user_auth: Vec<(u32, i64)>,
+    /// 调用方自带的证明密钥（App AttestKey 委派）。有值时这一把 key 的证书
+    /// 必须由**真 TEE** 用那把已有的 ATTEST_KEY 原生签发
+    /// （`generateKey(.., AttestationKey)`），而不是由本进程另找钥匙代签。
+    pub attestation_key: Option<AttestationKeyRef>,
+}
+
+/// 调用方指定的证据签发密钥：本机 session 里的 alias + 它自己的证书 Subject（DER）。
+///
+/// `issuer_subject_name` 让本端能先核对「请求说的那把钥匙」和「我这儿存的那把」
+/// 是同一把，再交给 HAL；HAL 侧的权限来自那把钥匙 keyblob 里的 ATTEST_KEY 用途。
+#[derive(Clone, Debug)]
+pub struct AttestationKeyRef {
+    pub alias: String,
+    pub issuer_subject_name: Vec<u8>,
 }
 
 /// A single generated key, held for the lifetime of the relay process.
@@ -553,22 +571,41 @@ fn mint_attest_key_on(
     let km_version = probe_keymint_version(&keymint);
     let params = build_attestation_params(app_id_der, challenge, spec, km_version)?;
 
-    let result = match keymint.generateKey(&params, None) {
-        Ok(result) => result,
-        Err(status) => {
-            if is_dead_object_status(&status) {
-                clear_system_keymint(service);
-            }
-            // Extract the KeyMint ErrorCode (e.g., -74, -68) so the caller
-            // can distinguish "HAL not provisioned" from "parameter rejected".
-            let km_code = km_error_suffix(&status);
-            return Err(anyhow!(
-                "real keymint {service} generateKey failed {km_code}: {status}"
-            ));
-        }
+    // 调用方自带的证明密钥（App AttestKey 委派）：先在本机找到那把 key，确认它
+    // 属于同一个 HAL、证书 Subject 与请求一致，然后交给**真 TEE** 原生签发子证书。
+    // 本进程不持有任何私钥，也不用自己的批量 key 冒充。
+    let parent = match spec.attestation_key.as_ref() {
+        Some(request) => Some(resolve_issuer(request, service)?),
+        None => None,
     };
 
-    let cert_chain: Vec<Vec<u8>> = result
+    let result = match (spec.attestation_key.as_ref(), parent.as_ref()) {
+        (Some(request), Some(parent)) => {
+            generate_with_native_issuer(service, &*keymint, &params, request, parent)?
+        }
+        _ => match keymint.generateKey(&params, None) {
+            Ok(result) => result,
+            Err(status) => {
+                if is_dead_object_status(&status) {
+                    clear_system_keymint(service);
+                }
+                // Extract the KeyMint ErrorCode (e.g., -74, -68) so the caller
+                // can distinguish "HAL not provisioned" from "parameter rejected".
+                let km_code = km_error_suffix(&status);
+                return Err(anyhow!(
+                    "real keymint {service} generateKey failed {km_code}: {status}"
+                ));
+            }
+        },
+    };
+
+    // 请求了 ATTEST_KEY 就核对 HAL 真给了一把**独占**的硬件证明密钥：光信
+    // “我请求了”不够，要看它回的 keyCharacteristics。
+    if spec.purposes.contains(&KmKeyPurpose::AttestKey) {
+        validate_native_attestation_characteristics(&result.keyCharacteristics, service)?;
+    }
+
+    let mut cert_chain: Vec<Vec<u8>> = result
         .certificateChain
         .into_iter()
         .map(|cert| cert.encodedCertificate)
@@ -589,12 +626,164 @@ fn mint_attest_key_on(
         ));
     }
 
+    // 委派时 HAL 只回子证书（AIDL: "the returned certificate chain must contain
+    // only an attestation certificate signed with the specified key"），
+    // 父链由本端补上——A 端要靠它校验签发关系，校验完只把子证书交给调用方。
+    if parent.is_some() {
+        let parent = parent.as_ref().expect("checked above");
+        append_issuer_chain(&mut cert_chain, &parent.cert_chain)?;
+    }
+
     Ok(TeeSession {
         key_blob: result.keyBlob,
         cert_chain,
         algorithm: spec.algorithm,
         hal_service: service,
     })
+}
+
+/// 本机找回调用方指定的证明密钥，并与请求里的 alias/HAL/Subject 对齐。
+fn resolve_issuer(request: &AttestationKeyRef, service: &'static str) -> Result<TeeSession> {
+    if request.alias.is_empty() || request.issuer_subject_name.is_empty() {
+        bail!("attestation_key reference is incomplete");
+    }
+    let parent = session_get(&request.alias).with_context(|| {
+        ks_err!(
+            "issuer key '{}' is not available on this device",
+            request.alias
+        )
+    })?;
+    if parent.hal_service != service {
+        bail!(
+            "issuer key '{}' belongs to another HAL ({})",
+            request.alias,
+            parent.hal_service
+        );
+    }
+    let leaf = parent
+        .cert_chain
+        .first()
+        .ok_or_else(|| anyhow!("issuer certificate missing"))?;
+    if certificate_subject_der(leaf)? != request.issuer_subject_name {
+        bail!("issuer subject mismatch for '{}'", request.alias);
+    }
+    Ok(parent)
+}
+
+fn certificate_subject_der(cert_der: &[u8]) -> Result<Vec<u8>> {
+    use der::{Decode as _, Encode as _};
+    let cert = x509_cert::Certificate::from_der(cert_der).context("parse issuer certificate")?;
+    cert.tbs_certificate()
+        .subject()
+        .to_der()
+        .context("encode issuer subject")
+}
+
+/// 用已有证明密钥走真 TEE 的原生委派：`generateKey(params, AttestationKey)`。
+///
+/// 权限来自父 keyblob 的 ATTEST_KEY 用途，**不**做 PKIX 的 CA/keyCertSign 门槛
+/// （真机实测：那些叶子的 Key Usage 是 `Certificate Sign`，且没有 BasicConstraints）。
+fn generate_with_native_issuer(
+    service: &'static str,
+    keymint: &dyn IKeyMintDevice,
+    params: &[KmKeyParameter],
+    request: &AttestationKeyRef,
+    parent: &TeeSession,
+) -> Result<KeyCreationResult> {
+    let mut native = NativeAttestationKey {
+        keyBlob: parent.key_blob.clone(),
+        attestKeyParams: vec![],
+        issuerSubjectName: request.issuer_subject_name.clone(),
+    };
+    match keymint.generateKey(params, Some(&native)) {
+        Ok(result) => Ok(result),
+        Err(status) if is_upgrade_required(&status) => {
+            // HAL 要求先升级父 keyblob：升级结果先落盘、再重试一次（延续
+            // begin 那条路径的「持久化后再重试」协议，不生成新 key）。
+            let upgraded_blob = keymint
+                .upgradeKey(&parent.key_blob, &[])
+                .map_err(|status| {
+                    if is_dead_object_status(&status) {
+                        clear_system_keymint(service);
+                    }
+                    anyhow!(
+                        "real keymint {service} upgradeKey failed {}: {status}",
+                        km_error_suffix(&status)
+                    )
+                })?;
+            let upgraded = TeeSession {
+                key_blob: upgraded_blob,
+                cert_chain: parent.cert_chain.clone(),
+                algorithm: parent.algorithm,
+                hal_service: parent.hal_service,
+            };
+            session_put(&request.alias, upgraded.clone());
+            log::info!("event=issuer_keyblob_upgrade alias={}", request.alias);
+            native.keyBlob = upgraded.key_blob;
+            keymint.generateKey(params, Some(&native)).map_err(|status| {
+                if is_dead_object_status(&status) {
+                    clear_system_keymint(service);
+                }
+                let km_code = km_error_suffix(&status);
+                anyhow!(
+                    "real keymint {service} delegated generateKey failed after upgrade {km_code}: {status}"
+                )
+            })
+        }
+        Err(status) => {
+            if is_dead_object_status(&status) {
+                clear_system_keymint(service);
+            }
+            let km_code = km_error_suffix(&status);
+            Err(anyhow!(
+                "real keymint {service} delegated generateKey failed {km_code}: {status}"
+            ))
+        }
+    }
+}
+
+fn is_upgrade_required(status: &rsbinder::Status) -> bool {
+    // KEY_REQUIRES_UPGRADE = -62
+    extract_km_error_code(status) == Some(-62)
+}
+
+/// 核对 HAL 真的给了一把独占的硬件证明密钥（光看请求不够）。
+fn validate_native_attestation_characteristics(
+    characteristics: &[KeyCharacteristics],
+    service: &'static str,
+) -> Result<()> {
+    use crate::android::hardware::security::keymint::KeyParameterValue::KeyParameterValue;
+    use crate::android::hardware::security::keymint::SecurityLevel::SecurityLevel;
+    use crate::android::hardware::security::keymint::Tag::Tag;
+    let expected = if service == SYSTEM_KEYMINT_STRONGBOX {
+        SecurityLevel::STRONGBOX
+    } else {
+        SecurityLevel::TRUSTED_ENVIRONMENT
+    };
+    let attest_only = characteristics
+        .iter()
+        .filter(|entry| entry.securityLevel == expected)
+        .flat_map(|entry| &entry.authorizations)
+        .filter(|param| param.tag == Tag::PURPOSE)
+        .map(|param| &param.value)
+        .eq([&KeyParameterValue::KeyPurpose(KeyPurpose::ATTEST_KEY)]);
+    if !attest_only {
+        bail!("HAL did not authorize an exclusive hardware ATTEST_KEY");
+    }
+    Ok(())
+}
+
+/// 把父链拼到子证书后面（幂等；链不一致直接报错，不猜）。
+fn append_issuer_chain(chain: &mut Vec<Vec<u8>>, parent: &[Vec<u8>]) -> Result<()> {
+    if chain.is_empty() || parent.is_empty() {
+        bail!("delegated certificate missing");
+    }
+    if chain.len() == 1 {
+        chain.extend_from_slice(parent);
+    } else if chain[1..] != *parent {
+        bail!("unexpected delegated chain");
+    }
+    Ok(())
 }
 
 fn build_attestation_params(
@@ -615,22 +804,17 @@ fn build_attestation_params(
         KeyParam::AttestationApplicationId(app_id_der.to_vec()),
     ];
 
-    // Purpose set: forward the app's requested purposes, but never ask the
-    // real TEE to mint a key whose purpose is ATTEST_KEY — this qti TEE
-    // rejects ATTEST_KEY-purpose key generation with ServiceSpecific(-3).
-    // The A-side's "use attestation key" flow (Approach 2) only forwards the
-    // child-cert TBS for a plain begin(SIGN), so an attestation key is minted
-    // as a plain SIGNING key. The A-side's Remote keyblob carries the app's
-    // requested ATTEST_KEY purpose, so keystore-side purpose checks still
-    // pass.
+    // 用途原样下发（含 ATTEST_KEY）。
+    //
+    // 真机实测（2026-10-23，高通 sun/pineapple/taro/canoe/kalama、MTK mt6985/mt6991、
+    // Kirin）：**独占 ATTEST_KEY 是能铸的**，返回 purposes=[ATTEST_KEY]、
+    // Key Usage = Certificate Sign；只有 ATTEST_KEY+SIGN 同时要才回
+    // `-3 INCOMPATIBLE_PURPOSE`（历史注释里那句「qti 拒绝 ATTEST_KEY」其实说的
+    // 是这个混合形状）。以前把 ATTEST_KEY 翻成 SIGN 再补一个 SIGN，等于把「证明密钥」
+    // 换成一把普通签名密钥：链上看不到硬件 ATTEST_KEY 授权，调用方拿它当签发密钥
+    // 也只能走远程 SIGN 代签（真机恒被拒），所以那条路必须停掉。
+    let is_attest_key = spec.purposes.contains(&KmKeyPurpose::AttestKey);
     let mut purposes = spec.purposes.clone();
-    let is_attest_key = purposes.contains(&KmKeyPurpose::AttestKey);
-    if is_attest_key {
-        purposes.retain(|p| *p != KmKeyPurpose::AttestKey);
-    }
-    if !purposes.contains(&KmKeyPurpose::Sign) {
-        purposes.push(KmKeyPurpose::Sign);
-    }
     // DECRYPT 只在调用方真要求解密时才出现（RSA 加密类的 padding 说明它要
     // decrypt）。之前无条件给每把 RSA key 都补一个 DECRYPT，导致同一次认证里
     // RSA 叶子的授权列表比 EC 多一项 —— 检测方拿这个判
@@ -659,16 +843,20 @@ fn build_attestation_params(
         params.push(KeyParam::Digest(d));
     }
 
-    // Remote-proxy model: the B-side signs on behalf of the A-side, but the
-    // A-side's auth token cannot reach the B-side real TEE.  Without
-    // NO_AUTH_REQUIRED the TEE mints a user-auth-gated key and every relay
-    // begin(SIGN) fails with KEY_USER_NOT_AUTHENTICATED (-26).  The relay
-    // always signs without a token, so the key must be usable without auth —
-    // but only as long as the app's own authorization list has not already
-    // answered the question (see `needs_relay_no_auth_required`).
-    // 远程代理模型：relay 永远拿不到 A 端的 auth token，所以 B 端锐的 key 一律
-    // no-auth（见 needs_relay_no_auth_required）。
-    params.push(KeyParam::NoAuthRequired);
+    // 认证/授权列表：把调用方请求的策略**原样**下发给真 TEE。
+    //
+    // 以前这里一律只给一个 `NO_AUTH_REQUIRED`：因为 relay 签名给不出
+    // HardwareAuthToken，带 502/504 的 key 在 begin(SIGN) 会回 -26。可那是拿
+    // 「证书撒谎」换「操作能过」—— 请求要的是认证绑定，叶子却写着免认证，
+    // 检测方一眼就看出 `user_auth_metadata` / `user_auth_policy` 对不上，
+    // 顺便还把 USER_AUTH_TYPE 这类元信息抹掉了。
+    //
+    // 现在：请求里没有 502/503/504 才补一个 `NO_AUTH_REQUIRED`；有就照发（含
+    // 505~509）、未知 tag 直接报错，不降级成不设限的 key。代价是认证绑定的 key
+    // 在 B 上做硬件操作仍可能被拒（B 验不了 A 的 token）—— 那是明确失败，
+    // 比伪造链诚实。要回到旧行为可以给 relay.conf 设
+    // `OMMEGA_RELAY_USER_AUTH=force_no_auth`。
+    params.extend(relay_authorization_params(&spec.user_auth)?);
 
     match algo {
         KmAlgorithm::Rsa => {
@@ -688,12 +876,9 @@ fn build_attestation_params(
             for p in spec.paddings.iter() {
                 params.push(KeyParam::Padding(*p));
             }
-            // An attestation key signs the child-cert TBS with PKCS1v15
-            // (SHA256withRSA); ensure that padding is authorized too, even when
-            // the app only requested ATTEST_KEY use.
-            if is_attest_key && !spec.paddings.contains(&KmPadding::RsaPkcs115Sign) {
-                params.push(KeyParam::Padding(KmPadding::RsaPkcs115Sign));
-            }
+            // 证明密钥不再靠本进程代签，所以也不再为它偷塞 PKCS1v15Sign：
+            // 调用方要什么 padding 就发什么，否则叶子的授权列表比请求多一项。
+            let _ = is_attest_key;
             // MGF1 digest for RSA-OAEP. Always push an explicit MGF1 digest so
             // the TEE's key authorization carries the tag. begin(DECRYPT)
             // always sends RsaOaepMgfDigest (see decrypt_begin_params; SHA1 is
@@ -732,9 +917,7 @@ fn build_attestation_params(
     // stamps 504/505 — but not 503 NO_AUTH_REQUIRED — into the leaf. Without
     // them the minted chain contradicts an auth-bound request (TrustAttestor:
     // `hardware.attestation.user_auth_metadata` / `user_auth_policy`).
-    // App 带来的 user_auth（502/504/505...）不再下发给真 TEE：带着它们 TEE 会铸出
-    // “需要认证”的 key，而 relay 签名给不出 token，begin(SIGN) 一律 -26。
-    // 指纹策略仍由 A 端 keyblob / Keystore2 执行；503 已在上面统一 push。
+    // App 带来的 user_auth 按 `relay_authorization_params` 原样下发，这里不再丢。
     let _ = &spec.user_auth;
 
     // Certificate validity bounds (app-specified or default now / now+10y);
@@ -797,8 +980,33 @@ fn attestation_id_param(tag: u32, value: Vec<u8>) -> Result<KeyParam> {
 /// 必须一律 no-auth，否则 begin(SIGN) 返回 -26 (KeyUserNotAuthenticated)。
 /// App 带来的 502/504/505 只留在 A 端 keyblob / Keystore2 里做指纹校验，
 /// 不再往下传给真 TEE——否则证书说“要认证”，签名又给不出 token，死锁。
-fn needs_relay_no_auth_required(_user_auth: &[(u32, i64)]) -> bool {
-    true
+/// 组装下发真 TEE 的认证/授权 tag。
+///
+/// 默认：请求里**没有** 502/503/504（也就是压根没提认证策略）才补一个
+/// `NO_AUTH_REQUIRED`；有就按原 tag 照发（含 505~509），未知 tag 报错——
+/// 不降级成不设限的 key，也不悄悄把认证绑定的 key 改成免认证（叶子会撒谎）。
+///
+/// 代价：带 502 的 key 在本机 begin(SIGN) 会因拿不到 token 回 -26。想让
+/// 认证绑定的 key 在 B 上照旧能用（老行为，叶子写 NO_AUTH_REQUIRED），给
+/// relay.conf 设 `OMMEGA_RELAY_USER_AUTH=force_no_auth`。
+fn relay_authorization_params(user_auth: &[(u32, i64)]) -> Result<Vec<KeyParam>> {
+    let force_no_auth = std::env::var("OMMEGA_RELAY_USER_AUTH")
+        .map(|value| value.trim().eq_ignore_ascii_case("force_no_auth"))
+        .unwrap_or(false);
+    let auth_bound = user_auth.iter().any(|(tag, _)| matches!(*tag, 502..=504));
+    let mut params = Vec::with_capacity(user_auth.len() + 1);
+    if force_no_auth || !auth_bound {
+        params.push(KeyParam::NoAuthRequired);
+    }
+    if !force_no_auth {
+        for (tag, value) in user_auth {
+            let param = user_auth_param(*tag, *value)?;
+            if !params.contains(&param) {
+                params.push(param);
+            }
+        }
+    }
+    Ok(params)
 }
 
 /// Rebuild the `KeyParam` variant for a user-auth tag the A-side forwarded inside
@@ -1355,27 +1563,64 @@ fn is_dead_object_status(status: &rsbinder::Status) -> bool {
 mod tests {
     use super::*;
 
-    /// A key the app never said anything about user auth for still has to be
-    /// usable without a token, so the relay adds the tag itself.
+    /// 请求里没提认证策略时才补一个 `NO_AUTH_REQUIRED`；提了（502/503/504）就照发，
+    /// 不再偷偷改成免认证。
     #[test]
-    fn relay_adds_no_auth_required_when_app_is_silent() {
-        assert!(needs_relay_no_auth_required(&[]));
-        assert!(needs_relay_no_auth_required(&[(504, 2)]));
-        assert!(needs_relay_no_auth_required(&[(504, 2), (505, 30_000)]));
-        assert!(needs_relay_no_auth_required(&[(506, 1)]));
-        assert!(needs_relay_no_auth_required(&[(509, 1)]));
+    fn relay_adds_no_auth_required_only_when_the_app_is_silent() {
+        for user_auth in [vec![], vec![(506, 1)], vec![(509, 1)], vec![(505, 30_000)]] {
+            assert_eq!(
+                relay_authorization_params(&user_auth).unwrap(),
+                vec![KeyParam::NoAuthRequired]
+            );
+        }
+        // 只带 509 的请求：补 503 之外仍保留 509
+        assert_eq!(
+            relay_authorization_params(&[(509, 1)]).unwrap(),
+            vec![KeyParam::NoAuthRequired, KeyParam::UnlockedDeviceRequired]
+        );
     }
 
-    /// relay 锐的 key 一律 no-auth。旧的“重复 503 报 -40 / 502 矛盾”两条约束都建立在
-    /// “把 App 的 user_auth 转发给真 TEE”这个前提上，现在不转了，所以恒 true。
+    /// 认证绑定的请求原样下发给真 TEE（含 502/504/505/506/507/508/509）。
     #[test]
-    fn relay_always_mints_no_auth_required() {
-        assert!(needs_relay_no_auth_required(&[]));
-        assert!(needs_relay_no_auth_required(&[(503, 1)]));
-        assert!(needs_relay_no_auth_required(&[(504, 2), (505, 30_000)]));
-        assert!(needs_relay_no_auth_required(&[(502, 4242)]));
-        assert!(needs_relay_no_auth_required(&[(502, 4242), (504, 2)]));
-        assert!(needs_relay_no_auth_required(&[(509, 1), (503, 1)]));
+    fn auth_bound_requests_keep_their_policy() {
+        assert_eq!(
+            relay_authorization_params(&[(502, 4242), (504, 3), (505, 0)]).unwrap(),
+            vec![
+                KeyParam::UserSecureId(4242),
+                KeyParam::UserAuthType(3),
+                KeyParam::AuthTimeout(0),
+            ]
+        );
+        assert_eq!(
+            relay_authorization_params(&[
+                (502, 4242),
+                (504, 2),
+                (506, 1),
+                (507, 1),
+                (508, 1),
+                (509, 1),
+            ])
+            .unwrap(),
+            vec![
+                KeyParam::UserSecureId(4242),
+                KeyParam::UserAuthType(2),
+                KeyParam::AllowWhileOnBody,
+                KeyParam::TrustedUserPresenceRequired,
+                KeyParam::TrustedConfirmationRequired,
+                KeyParam::UnlockedDeviceRequired,
+            ]
+        );
+        // 显式 503 不会和自动补的那个重复。
+        assert_eq!(
+            relay_authorization_params(&[(503, 1)]).unwrap(),
+            vec![KeyParam::NoAuthRequired]
+        );
+    }
+
+    /// 未知 tag 报错，绝不降级成不设限的 key。
+    #[test]
+    fn unknown_auth_tags_fail_instead_of_becoming_unrestricted() {
+        assert!(relay_authorization_params(&[(510, 1)]).is_err());
     }
 
     #[test]

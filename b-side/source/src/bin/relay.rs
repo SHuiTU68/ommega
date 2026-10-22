@@ -927,7 +927,38 @@ fn parse_key_spec(payload: &Value) -> Result<KeySpec> {
             }
             tags
         },
+        // 调用方自带的证明密钥（App AttestKey 委派）：`{alias,
+        // issuer_subject_name(base64 DER X.501 Subject)}`。有值时真 TEE 用那把
+        // 已有的 ATTEST_KEY 原生签发子证书。
+        attestation_key: parse_attestation_key(get("attestation_key"))?,
     })
+}
+
+/// 解析委派字段。
+///
+/// 格式不对就报 InvalidArgument：**绝不能**默默忽略这一项——忽略意味着回落到
+/// 本机批量 key 签一张与调用方证明密钥无关的证书，调用方很难发现。
+fn parse_attestation_key(value: Option<&Value>) -> Result<Option<tee_ops::AttestationKeyRef>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let alias = value
+        .get("alias")
+        .and_then(Value::as_str)
+        .filter(|alias| !alias.is_empty())
+        .ok_or_else(|| anyhow!("attestation_key.alias is missing"))?;
+    let subject = value
+        .get("issuer_subject_name")
+        .ok_or_else(|| anyhow!("attestation_key.issuer_subject_name is missing"))?;
+    let issuer_subject_name =
+        b64_decode(subject).with_context(|| "decode attestation_key.issuer_subject_name")?;
+    if issuer_subject_name.is_empty() {
+        return Err(anyhow!("attestation_key.issuer_subject_name is empty"));
+    }
+    Ok(Some(tee_ops::AttestationKeyRef {
+        alias: alias.to_string(),
+        issuer_subject_name,
+    }))
 }
 
 fn b64(v: &[u8]) -> String {
@@ -1012,11 +1043,9 @@ fn handle_generate_attest(cfg: &RelayConfig, _task_type: &str, payload: &Value) 
     if let Some(note) = ommegaclient_b::plat::patchlevel::follow_a_side(payload, follow_this) {
         log::info!("attest: {note}");
     }
-    // The requested purposes are forwarded unchanged (see
-    // tee_ops::build_attestation_params). For an App Attest Key this mirrors
-    // AOSP keystore2: a lone PURPOSE_ATTEST_KEY is accepted by the real TEE
-    // (verified working on-device); such a key is later used only as an
-    // `AttestationKey` when the A-side signs a child certificate.
+    // 请求的用途（含 ATTEST_KEY）原样下发给真 TEE：真机实测独占 ATTEST_KEY
+    // 可以铸（purposes=[ATTEST_KEY]，Key Usage=Certificate Sign）。把它换成 SIGN
+    // 就等于把“证明密钥”换成普通签名密钥，链上看不到硬件授权。
 
     // The A-side forwards the requesting security level (1 = TEE, 2 = StrongBox)
     // in `device_attest_context.attestation_security_level`. A StrongBox request
