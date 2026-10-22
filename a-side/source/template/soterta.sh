@@ -210,6 +210,17 @@ service_present() {
   return 1
 }
 
+# 这台机器走 HIDL 还是 AIDL（
+# 结果在本次运行里缓存一下：一次 converge 里要问好几遍，每遍都扫 VINTF 太亏）。
+# 一次 soterta.sh 调用就是一个进程，缓存只在这一次里有效，够用。
+HIDL_PLATFORM=
+hidl_platform() {
+  if [ -z "$HIDL_PLATFORM" ]; then
+    if soter_hal_is_hidl; then HIDL_PLATFORM=1; else HIDL_PLATFORM=0; fi
+  fi
+  [ "$HIDL_PLATFORM" = "1" ]
+}
+
 daemon_pid() {
   [ -f "$PIDFILE" ] || return 1
   pid=$(cat "$PIDFILE" 2>/dev/null)
@@ -251,7 +262,7 @@ take_over() {
   # HIDL 平台的例外：老客户端只认 `@1.0::ISoter`，原厂 HAL 一停它们整条就不通，所以
   # 这种机器上**不停原厂**，我们只额外占住 AIDL 那个名字（工模查的就是它）。
   stop_stock=1
-  if soter_hal_is_hidl; then
+  if hidl_platform; then
     log "SOTER HAL is HIDL; keeping stock HAL and registering the AIDL name alongside"
     stop_stock=0
   fi
@@ -277,6 +288,10 @@ take_over() {
   # 宿主（soterserver）把 HAL 代理缓存在 static 字段里，我们一换服务实例那份代理就死了，
   # 但它不会自己重查 —— App 一调就 DeadObjectException（微信直接「系统错误」，而日志里
   # 一笔 HAL 调用都看不到）。详见 kick_host。
+  #
+  # HIDL 平台不踢：我们没顶掉 HIDL 那个服务名，宿主手里的代理还是原厂的、没失效；
+  # 反过来踢了还添乱 —— 新实例起来时载荷还没注上（daemon-injector 下一轮才注），
+  # 那几秒里客户端直接打原厂那个死掉的 TA，检测器一跑就是一片 -20。
   kick_host
   return 0
 }
@@ -308,6 +323,9 @@ start_daemon() {
 #
 # 幂等：同一个 TA 实例只踢一次。take_over 成功时调一次，hold 每轮也调一次。
 kick_host() {
+  # HIDL 平台不踢（原因见 take_over 里那段）。这两个字得放在最前面：kick 一次就是一次
+  # 载荷丢失 + 客户端打空窗，宁可少踢。
+  hidl_platform && return 0
   host_pid=$(pidof com.tencent.soter.soterserver 2>/dev/null | awk '{print $1}')
   ta_pid=$(cat "$PIDFILE" 2>/dev/null)
   kicked_ta=$(cat "$TAKEOVER_PID" 2>/dev/null)
@@ -345,6 +363,13 @@ release() {
 }
 
 case "$1" in
+  hidl)
+    # 给 daemon-injector 问的：这台机器的 SOTER 是不是 HIDL 平台。
+    # 是就打印 1、不是打印 0（它据此决定注不注 SOTER 宿主）。
+    resolve_hal
+    if hidl_platform; then echo 1; else echo 0; fi
+    exit 0
+    ;;
   status)
     if [ -n "$(daemon_pid)" ]; then
       echo "soterta=us hal=$(hal_state) service=$(service_present && echo yes || echo no)"

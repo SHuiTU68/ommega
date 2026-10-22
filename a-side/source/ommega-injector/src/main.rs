@@ -269,30 +269,59 @@ fn inject_soter_hidl_clients() {
     }
 }
 
-/// 按进程名找一个目标、把 payload 注进去，顺带把它的身份打进日志。
+/// 按进程名找目标、把 payload 注进去，顺带把它的身份打进日志。
+///
+/// 同名进程不止一个时每一个都注：多用户 / 分身会让 soterserver 起两份实例
+/// （2026-10-22 魅族 20 Pro 上 u999 与 system 各一个），客户端只认自己那个 uid
+/// 的实例，少注一个就是白干。
 fn inject_named_process(name: &str) -> anyhow::Result<()> {
-    let (pid, target_path) = utils::find_process_by_name(name)?;
-    match utils::executable_identity(&target_path) {
-        Ok(identity) => info!(
-            "{name} target pid={} exe={} sha256={} elf={}",
-            pid,
-            identity.path.display(),
-            identity.sha256,
-            identity.elf,
-        ),
-        Err(error) => error!(
-            "failed to describe {name} executable {}: {:#}",
-            target_path.display(),
-            error
-        ),
-    }
+    let targets = utils::find_processes_by_name(name)?;
+    let mut injected = 0usize;
+    let mut failures: Vec<String> = Vec::new();
+    for (pid, target_path) in targets {
+        match utils::executable_identity(&target_path) {
+            Ok(identity) => info!(
+                "{name} target pid={} exe={} sha256={} elf={}",
+                pid,
+                identity.path.display(),
+                identity.sha256,
+                identity.elf,
+            ),
+            Err(error) => error!(
+                "failed to describe {name} executable {}: {:#}",
+                target_path.display(),
+                error
+            ),
+        }
 
-    if payload_thread_present(pid) {
-        info!("{name} target pid={pid} already carries the payload; skipping injection");
-        return Ok(());
-    }
+        if payload_thread_present(pid) {
+            info!("{name} target pid={pid} already carries the payload; skipping injection");
+            injected += 1;
+            continue;
+        }
 
-    inject::inject_library(Pid::from_raw(pid))
+        match inject::inject_library(Pid::from_raw(pid)) {
+            Ok(()) => {
+                info!("{name} target pid={pid} injected");
+                injected += 1;
+            }
+            Err(error) => {
+                error!("{name} target pid={pid} injection failed: {error:#}");
+                failures.push(format!("{pid}: {error:#}"));
+            }
+        }
+    }
+    if injected == 0 {
+        anyhow::bail!("every {name} instance failed: {}", failures.join("; "));
+    }
+    if !failures.is_empty() {
+        warn!(
+            "{name}: {} instance(s) failed: {}",
+            failures.len(),
+            failures.join("; ")
+        );
+    }
+    Ok(())
 }
 
 /// 诊断用：只注其中几个目标，逗号分隔（`keystore2` / `soter` / `soter-hidl`），`all` 或没设

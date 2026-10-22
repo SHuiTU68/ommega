@@ -574,10 +574,18 @@ while true; do
   fi
 
 
-  # SOTER 不再注入宿主：改成接管 HAL 的服务名（见 soterta.sh）。宿主发出去的请求
-  # 只要打到我们的服务，效果一样；而在这台机型上宿主里的载荷根本装不上 —— 它的
-  # libbinder 带共享映射，lsplt 连一个 GOT 都认不下来，commit 全失败。
-  inject_targets=keystore2
+  # SOTER 走哪条路决定注不注宿主：
+  # - AIDL 平台（如 PLC110）：我们自己顶服务名，宿主手里的代理会失效、由 soterta.sh 踢它
+  #   重连；宿主里的载荷用不上，ptrace 去装一次反而浪费。
+  # - HIDL 平台（如 MEIZU 20 Pro / 骁龙 8 Gen2，`vendor.qti.hardware.soter@1.0::ISoter`）：
+  #   客户端走 hwservicemanager，我们顶不了那个名字，只能注进宿主，在它进程里把发往
+  #   HAL 的那笔截下来自己答（hook/soter.rs 按 HIDL 布局回包）。不注就等于没接管，
+  #   原厂 TA 死着的时候整族调用 -20。
+  if [ "$(sh "$MODDIR/soterta.sh" hidl 2>/dev/null | tr -d ' \r')" = "1" ] && soter_inject_enabled; then
+    inject_targets=keystore2,soter
+  else
+    inject_targets=keystore2
+  fi
 
   pid=$(get_keystore_pid)
   keystore_pending=0
