@@ -78,8 +78,10 @@ const CONNECT_TIMEOUT_MS: u64 = 3000;
 const READ_TIMEOUT_MS: u64 = 30_000;
 /// 一轮 poll 最多允许的墙钟时间。刻意比上面的 READ_TIMEOUT_MS 早一步收网：那个
 /// 30s 是 reqwest 自己的总超时，用单调钟算，设备 suspend 之后就不作数了。
-/// 短轮询下给 3s（一次往返 + 余量）。
-const POLL_WALL_LIMIT: Duration = Duration::from_secs(3);
+/// 短轮询下正常一个往返就回来（实测 20~40ms），给 8s 是留「Wi-Fi 抖一下、TCP 重传
+/// 一两次」的余地：原来只给 3s，实测多了 800ms 就被判超时，watchdog 直接退进程，
+/// `service.sh` 重拉要 2s，那 2s 里派给这台设备的任务全在队列里干等（实测 wait=2049ms）。
+const POLL_WALL_LIMIT: Duration = Duration::from_secs(8);
 /// 处理一个任务的上限。任务里有真 TEE 调用、还有带重试的结果回传（最坏 4×33s
 /// 再加退避），所以给得宽一点，这一条只用来兜「整个循环不再往前转」。
 const TASK_WALL_LIMIT: Duration = Duration::from_secs(180);
@@ -537,7 +539,13 @@ fn build_http_client(iface: Option<&str>) -> Result<Client> {
     let mut builder = Client::builder()
         .danger_accept_invalid_certs(true)
         .connect_timeout(Duration::from_millis(CONNECT_TIMEOUT_MS))
-        .timeout(Duration::from_millis(READ_TIMEOUT_MS));
+        .timeout(Duration::from_millis(READ_TIMEOUT_MS))
+        // 轮询每 70ms 一笔、回报紧跟其后，连接必须复用：默认 90s 的空闲回收对
+        // 这种节奏够用，但一旦碰上配置重读或探针失败就会重建客户端，所以把空闲
+        // 保留时间和 keepalive 都写死，别让「重建 + 重新握手」退化成每次 70ms。
+        .pool_idle_timeout(Duration::from_secs(300))
+        .pool_max_idle_per_host(8)
+        .tcp_keepalive(Duration::from_secs(30));
     if let Some(name) = iface {
         // `SO_BINDTODEVICE`：把 socket 钉在物理出口上，免得被路由规则抓进隧道。
         builder = builder.interface(name);
@@ -1309,9 +1317,9 @@ fn worker_loop(shared: Arc<RwLock<RelayConfig>>) {
     // 正常情况下服务端会挂着 15s 长轮询，一轮一个请求。但它要是立刻回 204
     // （老版本服务端、代理提前收掉连接等），这里不设下限就变成“能跑多快跑多快”，
     // 直接把服务器打满。失败路径同理，用指数退避兜住。
-    // 短轮询：服务端立即返回，两轮之间的间隔就是最坏延迟。实测下来的结论：80ms
-    // （每秒 12 次）是速度与稳定性的拐点 —— 再快收益很小，空转请求却线性上涨。
-    const MIN_POLL_INTERVAL: Duration = Duration::from_millis(80);
+    // 短轮询：服务端立即返回，两轮之间的间隔就是最坏延迟。定时下的结论：
+    // 70ms（每秒约 14 次）比 80ms 更贴近任务实际到达节奏，空转请求只多两成。
+    const MIN_POLL_INTERVAL: Duration = Duration::from_millis(70);
     const MAX_ERROR_BACKOFF: Duration = Duration::from_secs(30);
     // 长轮询卡死之后没人管，是线上那几次几小时静默 gap 的成因：请求停在 reqwest
     // 的 read 上，那一路超时都用单调钟算，设备 suspend 之后永远不到 —— 进程活着，

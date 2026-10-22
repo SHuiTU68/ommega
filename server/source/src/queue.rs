@@ -554,108 +554,123 @@ impl TaskStore {
         loop {
             {
                 let mut inner = self.inner.lock().await;
-                // Register the device as connected.  Carrying the previous
-                // boot/tee state forward keeps what the status page already
-                // knows about this device across the poll upsert.
-                let hb_now = Self::now_ms();
-                let (
-                    known_boot,
-                    known_aaid,
-                    known_tee_error,
-                    known_probe_at,
-                    known_supports_soter,
-                    known_soter_sign,
-                    known_soter_nosign,
-                    known_soter_stuck,
-                    known_supports_strongbox,
-                    known_version,
-                    known_from_module,
-                ) = match inner.devices.get(device_id) {
-                    Some(d) => (
-                        d.boot.clone(),
-                        d.last_aaid.clone(),
-                        d.tee_error.clone(),
-                        d.tee_probe_at_ms,
-                        d.supports_soter,
-                        d.soter_sign,
-                        d.soter_nosign,
-                        d.soter_stuck,
-                        d.supports_strongbox,
-                        d.version.clone(),
-                        d.from_module,
-                    ),
-                    None => (
-                        None, None, None, 0, None, None, None, None, None, None, false,
-                    ),
+                // 心跳节流：B 端现在是 70ms 一轮，每轮都重建一次 `DeviceEntry` 等于
+                // 每秒对全局队列锁写十几次，还带两次 String 分配。在线窗口是 120s，
+                // 500ms 刷一次完全够用，省下的锁时间留给 complete_task 那头。
+                let heartbeat_due = {
+                    let now = Self::now_ms();
+                    self.online_seen
+                        .read()
+                        .map(|m| {
+                            m.get(device_id)
+                                .is_none_or(|ts| now.saturating_sub(*ts) >= 500)
+                        })
+                        .unwrap_or(true)
                 };
-                let no_boot_yet = known_boot.is_none();
-                inner.devices.insert(
-                    device_id.to_string(),
-                    DeviceEntry {
-                        device_id: device_id.to_string(),
-                        machine_id: machine_id.to_string(),
-                        last_seen_ms: hb_now,
-                        connected: true,
-                        boot: known_boot,
-                        last_aaid: known_aaid,
-                        tee_error: known_tee_error,
-                        tee_probe_at_ms: known_probe_at,
-                        // 这次心跳没提的能力保留上次的结论，提了就按最新的算。
-                        supports_soter: caps.soter.or(known_supports_soter),
-                        soter_sign: caps.soter_sign.or(known_soter_sign),
-                        soter_nosign: caps.soter_nosign.or(known_soter_nosign),
-                        soter_stuck: caps.soter_stuck.or(known_soter_stuck),
-                        supports_strongbox: caps.strongbox.or(known_supports_strongbox),
-                        // 老版本 relay 不带 ver，保留上次记下的版本。
-                        version: known_version,
-                        from_module: known_from_module,
-                    },
-                );
-                self.mark_online_sync(device_id, hb_now);
-                if !machine_id.is_empty() {
-                    inner
-                        .active_machine
-                        .insert(device_id.to_string(), (machine_id.to_string(), hb_now));
-                }
-                // 自检只是兜底：给从来没有出过链的设备（刚装的、或者之前铸证一直
-                // 失败的那台）排一次，好让状态页有东西可看，也让它有机会报上真实
-                // 能力。链一旦出过就不再排 —— 那之后的启动信息、补丁日期靠真实请求
-                // 的链自己刷（B 端按 A 端声明的属性出链，本来就随请求变），不去盖掉。
-                if self.b_selfcheck
-                    && no_boot_yet
-                    && hb_now.saturating_sub(known_probe_at) > SELFCHECK_RETRY_MS
-                {
-                    let task_id = uuid::Uuid::new_v4().to_string();
-                    inner.tasks.insert(
-                        task_id.clone(),
-                        Task {
-                            task_id: task_id.clone(),
-                            task_type: "attest".to_string(),
-                            payload: Self::selfcheck_payload(device_id),
-                            target_device_id: device_id.to_string(),
-                            assigned_device_id: None,
-                            assigned_at_ms: 0,
-                            attempts: 0,
-                            result: None,
-                            created_at_ms: hb_now,
-                            completed_at_ms: 0,
-                            status: TaskStatus::Pending,
+                if heartbeat_due {
+                    // Register the device as connected.  Carrying the previous
+                    // boot/tee state forward keeps what the status page already
+                    // knows about this device across the poll upsert.
+                    let hb_now = Self::now_ms();
+                    let (
+                        known_boot,
+                        known_aaid,
+                        known_tee_error,
+                        known_probe_at,
+                        known_supports_soter,
+                        known_soter_sign,
+                        known_soter_nosign,
+                        known_soter_stuck,
+                        known_supports_strongbox,
+                        known_version,
+                        known_from_module,
+                    ) = match inner.devices.get(device_id) {
+                        Some(d) => (
+                            d.boot.clone(),
+                            d.last_aaid.clone(),
+                            d.tee_error.clone(),
+                            d.tee_probe_at_ms,
+                            d.supports_soter,
+                            d.soter_sign,
+                            d.soter_nosign,
+                            d.soter_stuck,
+                            d.supports_strongbox,
+                            d.version.clone(),
+                            d.from_module,
+                        ),
+                        None => (
+                            None, None, None, 0, None, None, None, None, None, None, false,
+                        ),
+                    };
+                    let no_boot_yet = known_boot.is_none();
+                    inner.devices.insert(
+                        device_id.to_string(),
+                        DeviceEntry {
+                            device_id: device_id.to_string(),
+                            machine_id: machine_id.to_string(),
+                            last_seen_ms: hb_now,
+                            connected: true,
+                            boot: known_boot,
+                            last_aaid: known_aaid,
+                            tee_error: known_tee_error,
+                            tee_probe_at_ms: known_probe_at,
+                            // 这次心跳没提的能力保留上次的结论，提了就按最新的算。
+                            supports_soter: caps.soter.or(known_supports_soter),
+                            soter_sign: caps.soter_sign.or(known_soter_sign),
+                            soter_nosign: caps.soter_nosign.or(known_soter_nosign),
+                            soter_stuck: caps.soter_stuck.or(known_soter_stuck),
+                            supports_strongbox: caps.strongbox.or(known_supports_strongbox),
+                            // 老版本 relay 不带 ver，保留上次记下的版本。
+                            version: known_version,
+                            from_module: known_from_module,
                         },
                     );
-                    inner
-                        .result_senders
-                        .insert(task_id.clone(), watch::channel(None).0);
-                    inner
-                        .pending_by_device
-                        .entry(device_id.to_string())
-                        .or_default()
-                        .push_back(task_id.clone());
-                    if let Some(entry) = inner.devices.get_mut(device_id) {
-                        entry.tee_probe_at_ms = hb_now;
+                    self.mark_online_sync(device_id, hb_now);
+                    if !machine_id.is_empty() {
+                        inner
+                            .active_machine
+                            .insert(device_id.to_string(), (machine_id.to_string(), hb_now));
                     }
-                    tracing::info!(
-                        "b_selfcheck: enqueued TEE self-check {task_id} for {device_id}"
-                    );
+                    // 自检只是兜底：给从来没有出过链的设备（刚装的、或者之前铸证一直
+                    // 失败的那台）排一次，好让状态页有东西可看，也让它有机会报上真实
+                    // 能力。链一旦出过就不再排 —— 那之后的启动信息、补丁日期靠真实请求
+                    // 的链自己刷（B 端按 A 端声明的属性出链，本来就随请求变），不去盖掉。
+                    if self.b_selfcheck
+                        && no_boot_yet
+                        && hb_now.saturating_sub(known_probe_at) > SELFCHECK_RETRY_MS
+                    {
+                        let task_id = uuid::Uuid::new_v4().to_string();
+                        inner.tasks.insert(
+                            task_id.clone(),
+                            Task {
+                                task_id: task_id.clone(),
+                                task_type: "attest".to_string(),
+                                payload: Self::selfcheck_payload(device_id),
+                                target_device_id: device_id.to_string(),
+                                assigned_device_id: None,
+                                assigned_at_ms: 0,
+                                attempts: 0,
+                                result: None,
+                                created_at_ms: hb_now,
+                                completed_at_ms: 0,
+                                status: TaskStatus::Pending,
+                            },
+                        );
+                        inner
+                            .result_senders
+                            .insert(task_id.clone(), watch::channel(None).0);
+                        inner
+                            .pending_by_device
+                            .entry(device_id.to_string())
+                            .or_default()
+                            .push_back(task_id.clone());
+                        if let Some(entry) = inner.devices.get_mut(device_id) {
+                            entry.tee_probe_at_ms = hb_now;
+                        }
+                        tracing::info!(
+                            "b_selfcheck: enqueued TEE self-check {task_id} for {device_id}"
+                        );
+                    }
                 }
                 // 回收超时派发 + 过期/超量剪枝。两个都是全表扫描，按
                 // `SWEEP_INTERVAL_MS` 节流（见常量注释）。

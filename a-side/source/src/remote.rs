@@ -132,6 +132,12 @@ fn build_client(insecure: bool, iface: Option<&str>) -> Client {
     let mut builder = Client::builder()
         .connect_timeout(Duration::from_millis(CONNECT_TIMEOUT_MS))
         .timeout(Duration::from_millis(READ_TIMEOUT_MS))
+        // 空闲连接留久一点：原来用 reqwest 默认的 90s，而 attest 这类请求隔几分钟
+        // 才来一笔，次次都落到「池里没可用连接」上，每一笔白付一个 TCP 握手的往返。
+        // 300s 覆盖得掉正常使用节奏，又不会把死连接留太久（下面还有 keepalive 探活）。
+        .pool_idle_timeout(Duration::from_secs(300))
+        .pool_max_idle_per_host(8)
+        .tcp_keepalive(Duration::from_secs(30))
         .user_agent("ommegaclient-a/1.3");
 
     if insecure {
