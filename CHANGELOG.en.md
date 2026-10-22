@@ -13,3 +13,6 @@
 - When the followed device is offline, another working one is picked instead of failing outright.
 - The local fallback path now actually answers: it used to stay silent because the device serial could not be read.
 - Logs live in one place and carry the process id, so a failure can be traced to the component that wrote it.
+- Apps using fingerprint auth no longer fail to sign.
+- Remote signing no longer slows down other key operations.
+- Keys keep working after the server restarts.
