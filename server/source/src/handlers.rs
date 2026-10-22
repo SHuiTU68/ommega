@@ -257,9 +257,12 @@ async fn try_b_device_layer(
         return Some(json!({ "error": "no B-side device online" }));
     }
     let target = state.store.resolve_online_target(device_id).await;
-    // 这台 B 明确说了“这些包我不跟随”（relay.conf 的黑名单，心跳里报上来）：
-    // 连这一跳都不走，直接交给下一层 —— 物理模式下就是服务端 keybox 层。
-    if task_type == "attest" {
+    // B 心跳里报上来的 `skip_pkgs` 原本是「补丁日期不跟随」的名单（relay.conf 的
+    // OMMEGA_RELAY_PATCHLEVEL_SKIP_PKGS），不是「这些包不服务」。以前拿它当派发黑名单，
+    // 结果检测器/微信/QQ 这些包永远到不了真机，一律掉到服务端密钥层 —— 看起来就像
+    // 「远程还是本地伪造」。现在只当补丁跟随用；真要禁止某些包走真机，
+    // 在服务端设 RELAY_DISPATCH_SKIP=1（或干脆维护在 B 端 relay.conf 的 patchlevel 名单里）。
+    if task_type == "attest" && std::env::var("RELAY_DISPATCH_SKIP").as_deref() == Ok("1") {
         let pkg = request_package(body);
         if !pkg.is_empty() {
             let skip = state.store.skip_pkgs_for(&target).await;
