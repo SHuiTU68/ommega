@@ -239,48 +239,62 @@ if [ -r "$PROP_OVERRIDES" ]; then
   done < "$PROP_OVERRIDES"
 fi
 
-# ---- "声明不支持 StrongBox"（flat config 键 hide_strongbox）----
+# ---- 能力声明隐藏（flat config 键 hide_strongbox / hide_device_ids）----
 # 挂载完全交给 root 管理器（Magisk magic mount / KernelSU overlayfs）：
 # customize.sh 安装时按设备实际情况在模块 system/<分区>/etc/permissions/ 下
-# 放置了 0:0 dummy 设备（whiteout），管理器开机挂载时据此删掉对应的
-# strongbox_keystore feature XML，PackageManager 即报不支持；keystore 守护
-# 进程（Rust 侧）读同一开关决定是否注册 STRONGBOX security level（config
-# watcher 热生效）。这里只按开关增删标记文件，改动下次重启生效。
-WL_NAME="android.hardware.security.strongbox_keystore.xml"
-# 每项是"模块 system/ 底下的相对路径"：/system 自己不带分区前缀，其余分区要带。
+# 放置了 0:0 dummy 设备（whiteout），管理器开机挂载时据此删掉对应的 feature
+# XML，PackageManager 即报不支持；keystore 守护进程（Rust 侧）读同一开关决定
+# 是否注册 STRONGBOX security level（config watcher 热生效）。这里只按开关
+# 增删标记文件，改动下次重启生效。
+#
+# 两个开关共用这套机制：
+#   hide_strongbox   → android.hardware.security.strongbox_keystore.xml
+#   hide_device_ids  → android.software.device_id_attestation.xml
+# 后者声明「不支持 ID 认证」之后，应用/检测器会整体跳过设备 ID 证明（而不是每笔
+# 都回 CannotAttestIds），也就不需要再把本机型号/品牌同步成远端那台机器。
 WL_RELS="vendor/etc/permissions product/etc/permissions system_ext/etc/permissions etc/permissions"
-hide_strongbox=false
-if [ -f "$TARGET_CONF" ]; then
-  hide_value=$(grep -iE '^[[:space:]]*(hide_strongbox|no_strongbox|hide_strongbox_keystore)[[:space:]]*:' "$TARGET_CONF" 2>/dev/null | head -n 1 | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r')
-  case "$hide_value" in
-    1|true|yes|on) hide_strongbox=true ;;
-  esac
-  unset hide_value
-fi
-for rel in $WL_RELS; do
-  marker="$MODDIR/system/$rel/$WL_NAME"
-  # 换算回系统里的真实路径：vendor 那种自带分区前缀，system 的要补上
-  case "$rel" in
-    vendor/*|product/*|system_ext/*) src_file="/$rel/$WL_NAME" ;;
-    *) src_file="/system/$rel/$WL_NAME" ;;
-  esac
-  if [ "$hide_strongbox" = true ]; then
-    # 系统里真实存在声明、且模块还没有标记时补建（覆盖安装后才出现声明、
-    # 或曾被关闭删掉的情形）；设备上不存在的分区路径自然跳过，零副作用
-    [ -f "$src_file" ] || continue
-    [ -e "$marker" ] && continue
-    mkdir -p "$MODDIR/system/$rel"
-    if mknod "$marker" c 0 0 2>/dev/null; then
-      log_line "ommega: hide_strongbox on; whiteout restored at $rel"
-    elif printf '<?xml version="1.0" encoding="utf-8"?>\n<permissions/>\n' > "$marker" 2>/dev/null; then
-      log_line "ommega: hide_strongbox on; overlay restored at $rel"
-    fi
-  elif [ -e "$marker" ]; then
-    rm -f "$marker"
-    log_line "ommega: hide_strongbox off; whiteout removed from $rel"
+
+# mask_feature <feature xml 文件名> <配置键...>
+mask_feature() {
+  mf_name=$1
+  shift
+  mf_enabled=false
+  if [ -f "$TARGET_CONF" ]; then
+    mf_pat=$(printf '%s|' "$@")
+    mf_pat=${mf_pat%|}
+    mf_value=$(grep -iE "^[[:space:]]*(${mf_pat})[[:space:]]*:" "$TARGET_CONF" 2>/dev/null | head -n 1 | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r')
+    case "$mf_value" in
+      1|true|yes|on) mf_enabled=true ;;
+    esac
   fi
-done
-unset WL_NAME WL_RELS hide_strongbox
+  for mf_rel in $WL_RELS; do
+    mf_marker="$MODDIR/system/$mf_rel/$mf_name"
+    # 换算回系统里的真实路径：vendor 那种自带分区前缀，system 的要补上
+    case "$mf_rel" in
+      vendor/*|product/*|system_ext/*) mf_src="/$mf_rel/$mf_name" ;;
+      *) mf_src="/system/$mf_rel/$mf_name" ;;
+    esac
+    if [ "$mf_enabled" = true ]; then
+      # 系统里真实存在声明、且模块还没有标记时补建（覆盖安装后才出现声明、
+      # 或曾被关闭删掉的情形）；设备上不存在的分区路径自然跳过，零副作用
+      [ -f "$mf_src" ] || continue
+      [ -e "$mf_marker" ] && continue
+      mkdir -p "$MODDIR/system/$mf_rel"
+      if mknod "$mf_marker" c 0 0 2>/dev/null; then
+        log_line "ommega: $mf_name hidden; whiteout restored at $mf_rel"
+      elif printf '<?xml version="1.0" encoding="utf-8"?>\n<permissions/>\n' > "$mf_marker" 2>/dev/null; then
+        log_line "ommega: $mf_name hidden; overlay restored at $mf_rel"
+      fi
+    elif [ -e "$mf_marker" ]; then
+      rm -f "$mf_marker"
+      log_line "ommega: $mf_name shown again; marker removed from $mf_rel"
+    fi
+  done
+}
+
+mask_feature android.hardware.security.strongbox_keystore.xml hide_strongbox no_strongbox hide_strongbox_keystore
+mask_feature android.software.device_id_attestation.xml hide_device_ids no_device_ids hide_device_id_attestation
+unset WL_RELS mf_name mf_enabled mf_pat mf_value mf_rel mf_marker mf_src
 
 # ── 尽早把两个守护拉起来 ─────────────────────────────────────────────────
 # 为什么抢在 post-fs-data（最早那个阶段）而不是 service.sh（late_start）：注入 keystore2

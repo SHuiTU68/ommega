@@ -245,6 +245,7 @@
         <div class="row"><div class="name"><b data-i18n="patch.boot"></b><small data-i18n="patch.boot.hint"></small></div>
           <input type="text" id="patch-boot" autocapitalize="none" placeholder="2025-01-01"></div>
         <!-- 设备身份：链是真机出的，本机属性必须说同一台机器，否则检测器两边对不上 -->
+        <div id="patch-identity">
         <div class="row"><div class="name"><b data-i18n="patch.brand"></b><small data-i18n="patch.brand.hint"></small></div>
           <input type="text" id="ident-brand" autocapitalize="none"></div>
         <div class="row"><div class="name"><b data-i18n="patch.device"></b><small data-i18n="patch.device.hint"></small></div>
@@ -257,6 +258,7 @@
           <input type="text" id="ident-model" autocapitalize="none"></div>
         <div class="row"><div class="name"><b data-i18n="patch.serial"></b><small data-i18n="patch.serial.hint"></small></div>
           <input type="text" id="ident-serial" autocapitalize="none"></div>
+        </div>
         <div class="acts">
           <button class="btn primary" id="save-patch" data-i18n="patch.saveAll"></button>
           <button class="btn sm" id="patch-clear" data-i18n="patch.clear"></button>
@@ -441,6 +443,7 @@ var REMOTE_FIELDS = [
   {key:"tls_insecure",  type:"bool"},
   {key:"global_scope",  type:"bool"},
   {key:"hide_strongbox",type:"bool"},
+  {key:"hide_device_ids",type:"bool"},
   {key:"soter_hide",    type:"bool", oneZero:true},
   {key:"soter_inject",  type:"bool", oneZero:true},
   {key:"device_id",     type:"text", group:"patch"}
@@ -457,6 +460,22 @@ var DEVICE_ID_HINT = {
 };
 Object.keys(DEVICE_ID_HINT).forEach(function(code){
   if (I18N[code]) I18N[code]["f.device_id.hint"] = DEVICE_ID_HINT[code];
+});
+
+/* 「声明不支持 ID 认证」开关的文案。开了之后系统不再上报 device_id_attestation，
+   应用/检测器会整项跳过，于是也不用再把型号/品牌同步成远端那台机器。 */
+var HIDE_DEVICE_IDS_TEXT = {
+  "zh-CN": {label: "声明不支持 ID 认证", hint: "系统不再要求设备 ID 证明（型号/品牌/序列号）；开了就不用同步机型那几项"},
+  "zh-TW": {label: "宣告不支援 ID 認證", hint: "系統不再要求裝置 ID 證明（型號/品牌/序號）；開了就不用同步機型那幾項"},
+  "en": {label: "Declare no device ID attestation", hint: "The system stops advertising device ID attestation, so brand/model/serial no longer need syncing"},
+  "ja": {label: "ID 認証非対応を宣言", hint: "端末 ID 証明を要求しなくなり、機種や型番の同期は不要になります"},
+  "ko": {label: "ID 인증 미지원 선언", hint: "기기 ID 증명을 요구하지 않으므로 모델·브랜드 동기화가 필요 없습니다"},
+  "ru": {label: "Объявить отсутствие ID attestation", hint: "Система перестаёт требовать подтверждение ID устройства, синхронизация модели/бренда больше не нужна"}
+};
+Object.keys(HIDE_DEVICE_IDS_TEXT).forEach(function(code){
+  if (!I18N[code]) return;
+  I18N[code]["f.hide_device_ids"] = HIDE_DEVICE_IDS_TEXT[code].label;
+  I18N[code]["f.hide_device_ids.hint"] = HIDE_DEVICE_IDS_TEXT[code].hint;
 });
 var MANAGED = REMOTE_FIELDS.map(function(f){ return f.key; });
 var curConfText = "", curPropsText = "";
@@ -761,6 +780,13 @@ function renderRemote(conf){
     if (f.type === "bool") buildBoolRow(f, truthy(raw), target);
     else buildTextRow(f, raw, target);
   });
+  /* 「声明不支持 ID 认证」一变就跟着隐藏/显示型号那几项。 */
+  var ids = host.querySelector('input[data-key="hide_device_ids"]');
+  if (ids && !ids.dataset.bound){
+    ids.dataset.bound = "1";
+    ids.addEventListener("change", applyIdentityVisibility);
+  }
+  applyIdentityVisibility();
 }
 function collectRemote(){
   var vals = {};
@@ -1320,7 +1346,21 @@ async function fetchDeviceBoot(){
     for (var i = 0; i < list.length; i++){ if (list[i] && list[i].device_id === id){ hit = list[i]; break; } }
     if (!hit){ toast(t("toast.noDevice", {id: id}), true); return false; }
   } else {
-    hit = pickBestDevice(list, document.getElementById("patch-boot").value);
+    /* 先跟服务端指定的那台 KeyMint 设备；它不满足条件（离线 / 没锁 / 验证启动
+       非绿 / 自检失败）再按原来的规则自动挑。 */
+    var want = (data && data.default_keymint_device_id) || "";
+    if (want){
+      for (var wi = 0; wi < list.length; wi++){
+        var cand = list[wi];
+        if (!cand || cand.device_id !== want) continue;
+        if (cand.boot && !cand.tee_error && cand.module !== false &&
+            cand.boot.device_locked === true && Number(cand.boot.verified_boot_state) === 0){
+          hit = cand;
+        }
+        break;
+      }
+    }
+    if (!hit) hit = pickBestDevice(list, document.getElementById("patch-boot").value);
     auto = true;
     if (!hit){ toast(t("toast.noCandidate", {n: list.length}), true); return false; }
     document.querySelector('input[data-key="device_id"]').value = hit.device_id;
@@ -1331,13 +1371,15 @@ async function fetchDeviceBoot(){
   document.getElementById("patch-boot").value = patchDate(b.patch_boot);
   /* 设备身份：B 端心跳上报的那一套（老版本 relay 没报就是空，不覆盖已填的）。 */
   var ident = hit.identity || {};
-  [['ident-brand', 'brand'], ['ident-device', 'device'], ['ident-product', 'product'],
-   ['ident-manufacturer', 'manufacturer'], ['ident-model', 'model'], ['ident-serial', 'serial']]
-    .forEach(function(pair){
-      var el = document.getElementById(pair[0]);
-      var val = ident[pair[1]];
-      if (el && val) el.value = val;
-    });
+  if (identityEnabled()) {
+    [['ident-brand', 'brand'], ['ident-device', 'device'], ['ident-product', 'product'],
+     ['ident-manufacturer', 'manufacturer'], ['ident-model', 'model'], ['ident-serial', 'serial']]
+      .forEach(function(pair){
+        var el = document.getElementById(pair[0]);
+        var val = ident[pair[1]];
+        if (el && val) el.value = val;
+      });
+  }
   capturePatchInputs();
   var major = androidMajor(b.os_version);
   var name = (hit.machine_id || hit.device_id) + (major ? " (Android " + major + ")" : "") + (hit.version ? " · v" + hit.version : "");
@@ -1360,6 +1402,7 @@ async function savePatch(){
   if (hash) kv["ro.boot.vbmeta.digest"] = hash;
   if (boot) kv["ro.boot.build.security_patch"] = boot;
   IDENT_FIELDS.forEach(function(pair){
+    if (!identityEnabled()) return;
     var el = document.getElementById(pair[0]);
     var val = el ? el.value.trim() : "";
     if (val) kv[pair[1]] = val;
@@ -1387,7 +1430,7 @@ async function savePatch(){
 
 /* -------------------------------- 语言切换 ------------------------------- */
 function capturePatchInputs(){
-  ["boot-hash", "patch-boot"].concat(IDENT_FIELDS.map(function(p){ return p[0]; })).forEach(function(id){
+  ["boot-hash", "patch-boot"].concat(identityEnabled() ? IDENT_FIELDS.map(function(p){ return p[0]; }) : []).forEach(function(id){
     var e = document.getElementById(id);
     if (e) patchValues[id] = e.value;
   });
@@ -1398,6 +1441,20 @@ function fillPatchInputs(){
     if (e && patchValues[id] !== undefined) e.value = patchValues[id];
   });
 }
+/* 「声明不支持 ID 认证」开着的时候，型号/品牌那几项就隐藏起来（也不需要同步）：
+   系统不再上报 device_id_attestation，应用和检测器会整项跳过。 */
+function identityEnabled(){
+  var box = document.querySelector('input[data-key="hide_device_ids"]');
+  if (box) return !box.checked;
+  var text = /^[\s\S]*hide_device_ids[\s\S]*$/.test(curConfText || "") ? curConfText : "";
+  var m = /^[ \t]*hide_device_ids[ \t]*:[ \t]*([^\r\n]*)/m.exec(text);
+  return !(m && /^(1|true|yes|on)$/i.test((m[1] || "").trim()));
+}
+function applyIdentityVisibility(){
+  var box = document.getElementById("patch-identity");
+  if (box) box.classList.toggle("hidden", !identityEnabled());
+}
+
 function setLang(code){
   if (!I18N[code]) code = "zh-CN";
   LANG = code;

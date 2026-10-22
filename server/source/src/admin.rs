@@ -1419,6 +1419,9 @@ pub async fn public_status(State(state): State<AppState>) -> Response {
         "mode": if state.fulfill.is_enabled() { "serverbox" } else { "physical" },
         "online_b_devices": connected,
         "cert_devices": cert_devices,
+        // A 端面板「从服务器同步」优先跟这台 KeyMint 设备；它不可用/不在线
+        // 时再按原来的规则（锁、验证启动、负载）自动挑。
+        "default_keymint_device_id": crate::default_device::get(crate::default_device::Chain::Keymint),
         "server_time_ms": chrono::Utc::now().timestamp_millis(),
     }))
     .into_response()

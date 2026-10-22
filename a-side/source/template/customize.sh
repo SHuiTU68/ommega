@@ -175,29 +175,51 @@ if [ -f "$CLIENTA_CONF" ]; then
 fi
 
 STRONGBOX_FEATURE="android.hardware.security.strongbox_keystore.xml"
-if [ "$STRONGBOX_HIDDEN" = true ]; then
+DEVICE_IDS_FEATURE="android.software.device_id_attestation.xml"
+
+# 声明「不支持 ID 认证」：置上 hide_device_ids 就给声明的 XML 种 whiteout。
+# 与 StrongBox 同一套机制，安装时就把两种开关都读一遍。
+DEVICE_IDS_HIDDEN=false
+CLIENTA_CONF=/data/misc/keystore/ommega/config
+if [ -f "$CLIENTA_CONF" ]; then
+  ids_val=$(grep -iE '^[[:space:]]*(hide_device_ids|no_device_ids|hide_device_id_attestation)[[:space:]]*:' "$CLIENTA_CONF" 2>/dev/null | head -n 1 | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r')
+  case "$ids_val" in
+    1|true|yes|on) DEVICE_IDS_HIDDEN=true ;;
+  esac
+  unset ids_val
+fi
+
+place_feature_mask() {
+  pf_feature=$1
   for src_dir in \
     /system/etc/permissions \
     /system_ext/etc/permissions \
     /vendor/etc/permissions \
     /product/etc/permissions; do
-    [ -f "$src_dir/$STRONGBOX_FEATURE" ] || continue
+    [ -f "$src_dir/$pf_feature" ] || continue
     # 模块镜像里的路径：Magisk 约定是 system/<分区>/...，而 /system 自己
     # 不再带一层前缀（不然会变成 /system/system/...）。
     rel=${src_dir#/}
     rel=${rel#system/}
     tgt="$MODPATH/system/$rel"
     mkdir -p "$tgt"
-    if mknod "$tgt/$STRONGBOX_FEATURE" c 0 0 2>/dev/null; then
-      ui_print "- StrongBox whiteout: $rel/$STRONGBOX_FEATURE"
+    if mknod "$tgt/$pf_feature" c 0 0 2>/dev/null; then
+      ui_print "- $pf_feature whiteout: $rel"
     else
       # mknod 被拒（SELinux/内核限制）时退化为空声明覆盖，效果一致
-      printf '<?xml version="1.0" encoding="utf-8"?>\n<permissions/>\n' > "$tgt/$STRONGBOX_FEATURE"
-      ui_print "- StrongBox overlay: $rel/$STRONGBOX_FEATURE (whiteout unavailable)"
+      printf '<?xml version="1.0" encoding="utf-8"?>\n<permissions/>\n' > "$tgt/$pf_feature"
+      ui_print "- $pf_feature overlay: $rel (whiteout unavailable)"
     fi
   done
+}
+
+if [ "$STRONGBOX_HIDDEN" = true ]; then
+  place_feature_mask "$STRONGBOX_FEATURE"
 fi
-unset STRONGBOX_FEATURE STRONGBOX_HIDDEN CLIENTA_CONF
+if [ "$DEVICE_IDS_HIDDEN" = true ]; then
+  place_feature_mask "$DEVICE_IDS_FEATURE"
+fi
+unset STRONGBOX_FEATURE DEVICE_IDS_FEATURE STRONGBOX_HIDDEN DEVICE_IDS_HIDDEN CLIENTA_CONF
 
 # resetprop：模块自己带一个（实现是 vendor/ 里的 resetprop-rs，源码在 vendor/prop-rs*、
 # vendor/prop-rs-android 和 resetprop/src/）。
