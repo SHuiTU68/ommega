@@ -30,9 +30,6 @@ pub const FOLLOW_PKGS_KEY: &str = "OMMEGA_RELAY_PATCHLEVEL_SKIP_PKGS";
 
 const OS_PROP: &str = "ro.build.version.security_patch";
 const VENDOR_PROP: &str = "ro.vendor.build.security_patch";
-/// `os_version`（tag 705，形如 160000）在 Trustonic 那边就是从 `ro.build.version.release`
-/// 算出来的：主版本 ×10000 + 次版本 ×100 + 补丁号。空值改它没用，必须重启 HAL 重读。
-const RELEASE_PROP: &str = "ro.build.version.release";
 
 /// 用户存储（CE）是否已就绪。`true` 等于「开机后至少解过一次锁」。
 const CE_AVAILABLE_PROP: &str = "sys.user.0.ce_available";
@@ -168,48 +165,6 @@ fn vendor_prop_value(v: i64) -> Option<String> {
     ymd(v / 10000, (v / 100) % 100, v % 100)
 }
 
-/// A 端的 `os_version`（160000 = Android 16.0.0）→ `ro.build.version.release` 的写法。
-/// 次版本/补丁号为 0 时写成 "16"，跟原厂属性的写法一致，不制造无意义的差异。
-fn release_from_os_version(v: i64) -> Option<String> {
-    if v <= 0 {
-        return None;
-    }
-    let major = v / 10000;
-    let minor = (v / 100) % 100;
-    let patch = v % 100;
-    if !(5..=99).contains(&major) {
-        return None;
-    }
-    Some(match (minor, patch) {
-        (0, 0) => format!("{major}"),
-        (_, 0) => format!("{major}.{minor}"),
-        _ => format!("{major}.{minor}.{patch}"),
-    })
-}
-
-/// `ro.build.version.release` 的写法不统一（"16" / "16.0" / "15.1"），按数字比才不会
-/// 因为少了 ".0" 就每笔都去弹一次 HAL。
-fn release_matches(current: &str, want: &str) -> bool {
-    fn parts(s: &str) -> Option<(i64, i64, i64)> {
-        let mut it = s.trim().split('.');
-        let major = it.next()?.parse::<i64>().ok()?;
-        let minor = it.next().unwrap_or("0").parse::<i64>().ok()?;
-        let patch = it
-            .next()
-            .unwrap_or("0")
-            .split(['-', '+', '_'])
-            .next()
-            .unwrap_or("0")
-            .parse::<i64>()
-            .ok()?;
-        Some((major, minor, patch))
-    }
-    match (parts(current), parts(want)) {
-        (Some(a), Some(b)) => a == b,
-        _ => current.trim() == want.trim(),
-    }
-}
-
 /// tag 709 的 DER 里含请求方的包名；列表命中才跟随。
 fn payload_package(payload: &Value) -> Option<String> {
     let ctx = payload.get("device_attest_context").unwrap_or(payload);
@@ -283,35 +238,12 @@ pub fn client_version_ok(payload: &Value) -> bool {
         .is_some_and(|v| v >= FOLLOW_MIN_VERSION)
 }
 
-/// 系统版本（`os_version` → `ro.build.version.release`）默认**不跟着改**：
-///
-/// 每改一次要重启 keymint HAL + keystore2（5~7 秒），而 Play Integrity 那边看的是
-/// 「链里的值对不对得上它自己的机型库」，不是比对本机属性；真正会比的是本地检测器，
-/// 而那个用 A 端把 `ro.build.version.release` 静态同步成 B 的值就够了，没必要每笔都弹 HAL。
-/// 只有明确需要逐笔改（比如一台 A 配多台不同大版本的 B）才把开关打开。
-const OS_VERSION_FOLLOW_KEY: &str = "OMMEGA_RELAY_OS_VERSION_FOLLOW";
-
-fn os_version_follow_enabled() -> bool {
-    std::env::var(OS_VERSION_FOLLOW_KEY)
-        .map(|v| {
-            matches!(
-                v.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false)
-}
-
 /// 这个值要不要动：和**本机原值**（开机时的真实值）比，一样就不动。
 ///
 /// 之所以要拿基线比而不是「当前属性值」：上一次搞脏了（比如还原失败）之后属性已经不
 /// 是本机原值了，拿它当参照会把本该改的回合当成「已经匹配」。
-fn value_matches(prop: &str, base: &str, want: &str) -> bool {
-    if prop == RELEASE_PROP {
-        release_matches(base, want)
-    } else {
-        base.trim() == want.trim()
-    }
+fn value_matches(_prop: &str, base: &str, want: &str) -> bool {
+    base.trim() == want.trim()
 }
 
 /// 把 A 端在 `device_attest_context` 里声明的版本号/补丁日期落到本机 TEE 上。
@@ -333,14 +265,7 @@ pub fn follow_a_side(payload: &Value, on: bool) -> Option<String> {
         .get("vendor_patch_level")
         .and_then(Value::as_i64)
         .and_then(vendor_prop_value);
-    let want_release = if os_version_follow_enabled() {
-        ctx.get("os_version")
-            .and_then(Value::as_i64)
-            .and_then(release_from_os_version)
-    } else {
-        None
-    };
-    if want_os.is_none() && want_vendor.is_none() && want_release.is_none() {
+    if want_os.is_none() && want_vendor.is_none() {
         return None;
     }
 
@@ -352,12 +277,8 @@ pub fn follow_a_side(payload: &Value, on: bool) -> Option<String> {
     }
 
     let mut applied: Vec<String> = Vec::new();
-    remember_baseline(&[OS_PROP, VENDOR_PROP, RELEASE_PROP]);
-    for (prop, want) in [
-        (OS_PROP, want_os),
-        (VENDOR_PROP, want_vendor),
-        (RELEASE_PROP, want_release),
-    ] {
+    remember_baseline(&[OS_PROP, VENDOR_PROP]);
+    for (prop, want) in [(OS_PROP, want_os), (VENDOR_PROP, want_vendor)] {
         let Some(want) = want else { continue };
         let current = match getprop(prop) {
             Ok(v) => v,
@@ -631,38 +552,12 @@ mod tests {
         assert_eq!(vendor_prop_value(20261301), None);
     }
 
-    /// 160000 → "16"，160100 → "16.1"，160101 → "16.1.1"；离谱的值不接。
-    #[test]
-    fn os_version_to_release() {
-        assert_eq!(release_from_os_version(160000).as_deref(), Some("16"));
-        assert_eq!(release_from_os_version(150000).as_deref(), Some("15"));
-        assert_eq!(release_from_os_version(160100).as_deref(), Some("16.1"));
-        assert_eq!(release_from_os_version(160101).as_deref(), Some("16.1.1"));
-        assert_eq!(release_from_os_version(0), None);
-        assert_eq!(release_from_os_version(-1), None);
-        assert_eq!(release_from_os_version(30000), None);
-    }
-
-    /// 属性写 "16" 而 A 要 160000 时不能当成不一样，否则每笔都去弹 HAL。
-    #[test]
-    fn release_compare_ignores_trailing_zeros() {
-        assert!(release_matches("16", "16"));
-        assert!(release_matches("16.0", "16"));
-        assert!(release_matches("16", "16.0.0"));
-        assert!(!release_matches("15", "16"));
-        assert!(!release_matches("16.1", "16"));
-        // 读不到/畸形时就退回字面比较
-        assert!(release_matches("", ""));
-        assert!(!release_matches("", "16"));
-    }
-
     /// 跟本机原值一样就不动（A 端已经全同步的情况），不一样才动。
     #[test]
     fn decides_by_local_original_value() {
         assert!(value_matches(OS_PROP, "2026-08-01", "2026-08-01"));
         assert!(!value_matches(OS_PROP, "2026-08-01", "2026-09-01"));
-        assert!(value_matches(RELEASE_PROP, "16", "16.0.0"));
-        assert!(!value_matches(RELEASE_PROP, "16", "15"));
+        assert!(!value_matches(OS_PROP, "2026-08-01", ""));
     }
 
     #[test]
