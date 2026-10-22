@@ -146,6 +146,8 @@ pub struct DeviceIdentityReport {
     pub manufacturer: Option<String>,
     pub model: Option<String>,
     pub serial: Option<String>,
+    /// `ro.build.fingerprint`，整条版本指纹（A 端「声明不支持 ID 认证」时跟着机型一起同步）。
+    pub fingerprint: Option<String>,
 }
 
 impl DeviceIdentityReport {
@@ -158,6 +160,7 @@ impl DeviceIdentityReport {
             (&mut self.manufacturer, &other.manufacturer),
             (&mut self.model, &other.model),
             (&mut self.serial, &other.serial),
+            (&mut self.fingerprint, &other.fingerprint),
         ];
         for (slot, value) in pairs {
             if let Some(value) = value {

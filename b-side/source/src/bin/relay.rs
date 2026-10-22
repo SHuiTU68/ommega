@@ -1003,16 +1003,18 @@ fn b64(v: &[u8]) -> String {
 /// 去 resetprop；缺一项就少一项，不会因为读不到属性而报错。
 fn device_identity_query() -> String {
     let mut out = String::new();
-    for (key, prop) in [
-        ("brand", "ro.product.brand"),
-        ("product_device", "ro.product.device"),
-        ("product", "ro.product.name"),
-        ("manufacturer", "ro.product.manufacturer"),
-        ("product_model", "ro.product.model"),
-        ("serial", "ro.serialno"),
+    for (key, prop, max_len) in [
+        ("brand", "ro.product.brand", 48usize),
+        ("product_device", "ro.product.device", 48),
+        ("product", "ro.product.name", 48),
+        ("manufacturer", "ro.product.manufacturer", 48),
+        ("product_model", "ro.product.model", 48),
+        ("serial", "ro.serialno", 48),
+        // 整条指纹很长（brand/product/device:ver/id/incremental:type/tags），单独放宽上限。
+        ("fingerprint", "ro.build.fingerprint", 192),
     ] {
         let value = ommegaclient_b::keymaster::tee_ops::device_prop(prop)
-            .filter(|v| !v.is_empty() && v.len() <= 64 && !v.contains('\n'))
+            .filter(|v| !v.is_empty() && v.len() <= max_len && !v.contains('\n'))
             .unwrap_or_default();
         if value.is_empty() {
             continue;

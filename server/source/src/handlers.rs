@@ -2498,6 +2498,8 @@ pub struct PollQuery {
     pub manufacturer: Option<String>,
     pub product_model: Option<String>,
     pub serial: Option<String>,
+    /// `ro.build.fingerprint`（整条指纹，很长，单独一项）。
+    pub fingerprint: Option<String>,
 }
 
 pub async fn b_poll(
@@ -2561,6 +2563,7 @@ pub async fn b_poll(
                 manufacturer: q.manufacturer.clone(),
                 model: q.product_model.clone(),
                 serial: q.serial.clone(),
+                fingerprint: q.fingerprint.clone(),
             },
         )
         .await;
