@@ -66,6 +66,7 @@ MODULE_TEXT_FILES = (
     "README.md",
     "adbr-daemon.sh",
     "customize.sh",
+    "layout.sh",
     "module.prop",
     "post-fs-data.sh",
     "relay.conf",

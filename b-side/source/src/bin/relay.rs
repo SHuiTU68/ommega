@@ -93,8 +93,8 @@ const PATH_FAIL_TTL: Duration = Duration::from_secs(1);
 /// 多久看一眼 wakelock 还在不在。它不是自己掉，而是可能被人解掉（卸载脚本、
 /// 手滑、别的工具），补回去要快，但也不用每秒看。
 const WAKELOCK_CHECK_INTERVAL: Duration = Duration::from_secs(30);
-const CONF_PATH: &str = "/data/adb/ommega/relay.conf";
-const RESTART_MARKER: &str = "/data/adb/ommega/restart.all";
+const CONF_PATH: &str = "/data/adb/ommega/conf/relay.conf";
+const RESTART_MARKER: &str = "/data/adb/ommega/run/restart.all";
 const RELOAD_POLL_MS: u64 = 1000;
 /// Only used when the module root cannot be derived from the running binary
 /// (relay started from a user-placed copy under `/data/adb/ommega/`).

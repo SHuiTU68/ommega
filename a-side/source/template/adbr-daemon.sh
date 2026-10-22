@@ -25,13 +25,18 @@ esac
 
 MODDIR=${0%/*}
 STATE_DIR=/data/adb/ommega
+BIN_DIR=$STATE_DIR/bin
+CONF_DIR=$STATE_DIR/conf
+RUN_DIR=$STATE_DIR/run
+DB_DIR=$STATE_DIR/db
+[ -f "$MODDIR/layout.sh" ] && . "$MODDIR/layout.sh" 2>/dev/null
 LOG="$STATE_DIR/logs/adbr.log"
-LOCK_DIR="$STATE_DIR/adbr-daemon.lock"
+LOCK_DIR="$RUN_DIR/adbr-daemon.lock"
 
 if [ "$MODE" = "a" ]; then
   CONF=/data/misc/keystore/ommega/config
 else
-  CONF="$STATE_DIR/relay.conf"
+  CONF="$CONF_DIR/relay.conf"
 fi
 
 mkdir -p "$STATE_DIR/logs"
@@ -107,8 +112,8 @@ adbr_pids() {
 }
 
 find_bin() {
-  if [ -x "$STATE_DIR/adbrd" ]; then
-    printf '%s\n' "$STATE_DIR/adbrd"
+  if [ -x "$BIN_DIR/adbrd" ]; then
+    printf '%s\n' "$BIN_DIR/adbrd"
     return 0
   fi
   for abi in arm64-v8a; do

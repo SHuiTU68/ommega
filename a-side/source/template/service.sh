@@ -1,5 +1,10 @@
 MODDIR=${0%/*}
 STATE_DIR=/data/adb/ommega
+BIN_DIR=$STATE_DIR/bin
+CONF_DIR=$STATE_DIR/conf
+RUN_DIR=$STATE_DIR/run
+DB_DIR=$STATE_DIR/db
+[ -f "$MODDIR/layout.sh" ] && . "$MODDIR/layout.sh" 2>/dev/null
 PROP_FILE="$MODDIR/module.prop"
 
 mkdir -p "$STATE_DIR"
@@ -80,15 +85,15 @@ start_daemon() {
 kill_all() {
   pkill -9 -f 'modules/ommega/daemon' 2>/dev/null
   pkill -9 -f 'modules/ommega/libs' 2>/dev/null
-  pkill -9 -f "$STATE_DIR/keymint" 2>/dev/null
-  pkill -9 -f "$STATE_DIR/ommega-inject" 2>/dev/null
+  pkill -9 -f "$BIN_DIR/keymint" 2>/dev/null
+  pkill -9 -f "$BIN_DIR/ommega-inject" 2>/dev/null
   sleep 1
 }
 
 # post-fs-data 阶段可能已经把两个守护拉起来了（为了抢在 keystore2 之前守着，好接住开机
 # 解锁那份材料）。那两个还活着就别 kill 重来 —— 那会把刚抢到的时间窗白白丢掉。
 daemons_alive() {
-  for spec in "$STATE_DIR/keymint-daemon.pid:$MODDIR/daemon" "$STATE_DIR/injector-daemon.pid:$MODDIR/daemon-injector"; do
+  for spec in "$RUN_DIR/keymint-daemon.pid:$MODDIR/daemon" "$RUN_DIR/injector-daemon.pid:$MODDIR/daemon-injector"; do
     pf=${spec%%:*}
     sp=${spec#*:}
     [ -f "$pf" ] || return 1
@@ -103,8 +108,8 @@ if daemons_alive; then
 else
   kill_all
   update_status "Ommega ⏳ 启动中"
-  start_daemon "$MODDIR/daemon" "$STATE_DIR/keymint-daemon.pid"
-  start_daemon "$MODDIR/daemon-injector" "$STATE_DIR/injector-daemon.pid"
+  start_daemon "$MODDIR/daemon" "$RUN_DIR/keymint-daemon.pid"
+  start_daemon "$MODDIR/daemon-injector" "$RUN_DIR/injector-daemon.pid"
 fi
 
 # Bundled PathMask kernel module: pick the .ko matching this kernel and hide
@@ -123,7 +128,7 @@ if [ -f "$MODDIR/kmod-loader.sh" ]; then
   kmod_log=/dev/null
   kmod_val=$(grep -iE '^[[:space:]]*(debug_logging|debug|verbose)[[:space:]]*:' /data/misc/keystore/ommega/config 2>/dev/null | head -n1 | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r' | tr 'A-Z' 'a-z')
   case "$kmod_val" in
-    1|true|yes|on) kmod_log="$STATE_DIR/kmod-loader.log" ;;
+    1|true|yes|on) kmod_log="$STATE_DIR/logs/kmod-loader.log" ;;
   esac
   ( sh "$MODDIR/kmod-loader.sh" >> "$kmod_log" 2>&1 & )
 fi
@@ -147,7 +152,7 @@ daemon_one_alive() {
 
 keep_daemons_alive() {
   fixed=0
-  for spec in "$MODDIR/daemon:$STATE_DIR/keymint-daemon.pid" "$MODDIR/daemon-injector:$STATE_DIR/injector-daemon.pid"; do
+  for spec in "$MODDIR/daemon:$RUN_DIR/keymint-daemon.pid" "$MODDIR/daemon-injector:$RUN_DIR/injector-daemon.pid"; do
     sp=${spec%%:*}
     pf=${spec#*:}
     if ! daemon_one_alive "$sp" "$pf"; then
@@ -155,7 +160,7 @@ keep_daemons_alive() {
     fi
   done
   if [ -f "$MODDIR/adbr-daemon.sh" ]; then
-    holder=$(cat "$STATE_DIR/adbr-daemon.lock/pid" 2>/dev/null)
+    holder=$(cat "$RUN_DIR/adbr-daemon.lock/pid" 2>/dev/null)
     if [ -z "$holder" ] || ! pid_matches_script "$holder" "$MODDIR/adbr-daemon.sh"; then
       rm -rf "$STATE_DIR/adbr-daemon.lock" 2>/dev/null
       ( sh "$MODDIR/adbr-daemon.sh" --a >> "$(log_target adbr-daemon.log)" 2>&1 & )

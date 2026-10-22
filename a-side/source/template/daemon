@@ -2,9 +2,14 @@
 
 MODDIR=${0%/*}
 STATE_DIR=/data/adb/ommega
-RESTART_FILE=$STATE_DIR/restart.keymint
-PEER_RESTART_FILE=$STATE_DIR/restart.injector
-RESTART_ALL_FILE=$STATE_DIR/restart.all
+BIN_DIR=$STATE_DIR/bin
+CONF_DIR=$STATE_DIR/conf
+RUN_DIR=$STATE_DIR/run
+DB_DIR=$STATE_DIR/db
+[ -f "$MODDIR/layout.sh" ] && . "$MODDIR/layout.sh" 2>/dev/null
+RESTART_FILE=$RUN_DIR/restart.keymint
+PEER_RESTART_FILE=$RUN_DIR/restart.injector
+RESTART_ALL_FILE=$RUN_DIR/restart.all
 CONF_PATH=${OMMEGA_CONF_PATH:-/data/misc/keystore/ommega/config}
 LOG_DIR=/data/misc/keystore/ommega/logs
 LOG_FILE=$LOG_DIR/daemon.log
@@ -62,8 +67,8 @@ device_abi() {
 }
 
 find_module_keymint() {
-  if [ -f "/data/adb/ommega/keymint" ]; then
-    echo /data/adb/ommega/keymint
+  if [ -f "$BIN_DIR/keymint" ]; then
+    echo "$BIN_DIR/keymint"
     return 0
   fi
   if [ -f "$MODDIR/keymint" ]; then
@@ -114,7 +119,7 @@ mkdir -p "$STATE_DIR"
 # （管理器把 service.sh 拉起多次、或旧循环没清干净），每份都会 fork 一个本脚本，
 # 而本脚本每轮开头都会 `pkill -9 -f <keymint 路径>` —— 多份并存时彼此把对方的
 # shadow 反复 SIGKILL（daemon.log 里一串 exited with code 137）。抢不到锁的直接退。
-LOCK_DIR=$STATE_DIR/keymint-daemon.lock
+LOCK_DIR=$RUN_DIR/keymint-daemon.lock
 
 # 锁里的 pid 可能是上一个实例留下的，而那个 pid 号早被别的进程复用了 —— 只看 kill -0
 # 会一直以为「还有人在跑」，守护就永久起不来（2026-10-16 在 NX721J / OPD2409 上都踩到：
@@ -167,12 +172,12 @@ LOG_ON=0
 # 所以文件是“时全时缺”的。这里做**合并**：`remote_identity.applied` 就是当前已知
 # 身份，只把非空字段并进去；只有真的出现新值才重启 zygote（否则会反复重启）。
 REMOTE_IDENTITY_FILE=/data/misc/keystore/ommega/remote_identity
-REMOTE_IDENTITY_APPLIED=$STATE_DIR/remote_identity.applied
+REMOTE_IDENTITY_APPLIED=$CONF_DIR/remote_identity.applied
 
 resetprop_set() {
   [ -n "$1" ] && [ -n "$2" ] || return 0
-  if [ -x "$STATE_DIR/resetprop" ]; then
-    "$STATE_DIR/resetprop" "$1" "$2" >/dev/null 2>&1
+  if [ -x "$BIN_DIR/resetprop" ]; then
+    "$BIN_DIR/resetprop" "$1" "$2" >/dev/null 2>&1
   else
     resetprop "$1" "$2" >/dev/null 2>&1
   fi
@@ -195,7 +200,7 @@ id_prop_name() {
 sync_remote_identity() {
   [ -f "$REMOTE_IDENTITY_FILE" ] || return 0
   # 面板「伪装参数」里手动写过身份就以面板为准（props.conf 里有 ro.product.model 就不动）。
-  if [ -f "$STATE_DIR/props.conf" ] && grep -q '^[[:space:]]*ro\.product\.model[[:space:]]*:' "$STATE_DIR/props.conf" 2>/dev/null; then
+  if [ -f "$CONF_DIR/props.conf" ] && grep -q '^[[:space:]]*ro\.product\.model[[:space:]]*:' "$CONF_DIR/props.conf" 2>/dev/null; then
     return 0
   fi
   changed=0
@@ -240,7 +245,7 @@ sync_remote_identity() {
     # 以前在这里自动 `setprop ctl.restart zygote`，就变成「重启 → 应用重启 → 又认证
     # → 又写文件 → 又重启」的死循环，最后把系统保护触到 recovery。
     # 现在只落一个标记文件，重启由人手动决定（或面板按钮）。
-    printf '%s\n' "$brand/$model" > "$STATE_DIR/remote_identity.updated" 2>/dev/null
+    printf '%s\n' "$brand/$model" > "$CONF_DIR/remote_identity.updated" 2>/dev/null
   fi
 }
 

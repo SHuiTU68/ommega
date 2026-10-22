@@ -1,5 +1,10 @@
 MODDIR=${0%/*}
 STATE_DIR=/data/adb/ommega
+BIN_DIR=$STATE_DIR/bin
+CONF_DIR=$STATE_DIR/conf
+RUN_DIR=$STATE_DIR/run
+DB_DIR=$STATE_DIR/db
+[ -f "$MODDIR/layout.sh" ] && . "$MODDIR/layout.sh" 2>/dev/null
 
 mkdir -p "$STATE_DIR" "$STATE_DIR/logs"
 rm -f "$STATE_DIR/restart.all"

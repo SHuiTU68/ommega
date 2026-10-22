@@ -45,7 +45,7 @@ const CLIENTA_LOG_FLAG_PATH: &str = "/data/misc/ommega/log_flag";
 /// 同一份开关的另一个副本（root / `su` 域看这个）。曾经 daemon-injector 只写这一份、
 /// payload 只读上面那一份，两边对不上：SOTER 宿主读到的是一份没人更新的旧值，
 /// 于是日志在 03:21 之后一个字都不再写。现在两份都写、两份都读，先读能读到的那个。
-const CLIENTA_LOG_FLAG_FALLBACK_PATH: &str = "/data/adb/ommega/log_flag";
+const CLIENTA_LOG_FLAG_FALLBACK_PATH: &str = "/data/adb/ommega/conf/log_flag";
 const CURRENT_CONFIG_VERSION: u32 = 1;
 const REPLACE_SAVE_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 const REPLACE_SAVE_RETRY_LIMIT: usize = 10;

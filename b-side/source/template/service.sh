@@ -7,9 +7,15 @@
 
 MODDIR=${0%/*}
 STATE_DIR=/data/adb/ommega
-CONF_FILE=$STATE_DIR/relay.conf
-LOCK_DIR=$STATE_DIR/relay-service.lock
-RELAY_PID_FILE=$STATE_DIR/relay.pid
+BIN_DIR=$STATE_DIR/bin
+CONF_DIR=$STATE_DIR/conf
+RUN_DIR=$STATE_DIR/run
+DB_DIR=$STATE_DIR/db
+[ -f "$MODDIR/layout.sh" ] && . "$MODDIR/layout.sh" 2>/dev/null
+STATE_DIR=/data/adb/ommega
+CONF_FILE=$CONF_DIR/relay.conf
+LOCK_DIR=$RUN_DIR/relay-service.lock
+RELAY_PID_FILE=$RUN_DIR/relay.pid
 
 # Android 17's system liblog.so references __hash_memory from the system
 # libc++.so.  Some vendor images still ship an older libc++.so; keeping

@@ -10,6 +10,11 @@ TARGET_INJECTOR_CONFIG=$TARGET_DIR/injector.toml
 TARGET_CONF=$TARGET_DIR/config
 TARGET_TARGET_LIST=$TARGET_DIR/target.txt
 STATE_DIR=/data/adb/ommega
+BIN_DIR=$STATE_DIR/bin
+CONF_DIR=$STATE_DIR/conf
+RUN_DIR=$STATE_DIR/run
+DB_DIR=$STATE_DIR/db
+[ -f "$MODDIR/layout.sh" ] && . "$MODDIR/layout.sh" 2>/dev/null
 # A-side config directory (webroot UI writes here; `ommegadata` is a symlink to
 # $TARGET_DIR, so the UI and the keystore process (uid 1017) share one copy).
 CLIENTA_DIR=/data/adb/ommega
@@ -18,7 +23,7 @@ CLIENTA_DIR=/data/adb/ommega
 # customize.sh 安装时会把与设备 ABI 匹配的那份拷到状态目录）。以前靠管理器提供：
 # Magisk 自带、APatch/KSU 走 busybox/ksud，不是每家都有、行为也不一致，所以不再依赖。
 # 定成同名函数，下面那一串调用一字不用改；实在找不到自己的才退回 PATH 里那个。
-RESETPROP_BIN=/data/adb/ommega/resetprop
+RESETPROP_BIN=$BIN_DIR/resetprop
 if [ ! -x "$RESETPROP_BIN" ]; then
   rp_abi=$(getprop ro.product.cpu.abi 2>/dev/null)
   case "$rp_abi" in
@@ -92,7 +97,7 @@ if debug_logging_enabled; then
   chown 0:1000 "$APP_LOG_DIR"
 fi
 mkdir -p "$STATE_DIR"
-rm -f "$STATE_DIR/keymint-daemon.pid" "$STATE_DIR/injector-daemon.pid"
+rm -f "$RUN_DIR/keymint-daemon.pid" "$RUN_DIR/injector-daemon.pid"
 
 # 只落文件，不再往 stdout 打（那会进管理器的日志，也是系统日志）。
 log_line() {
@@ -101,7 +106,7 @@ log_line() {
   printf '%s [INFO] %s\n' "$(date -u '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE" 2>/dev/null
   return 0
 }
-rm -f "$STATE_DIR/restart.keymint" "$STATE_DIR/restart.injector" "$STATE_DIR/restart.all"
+rm -f "$RUN_DIR/restart.keymint" "$RUN_DIR/restart.injector" "$RUN_DIR/restart.all"
 
 # Make the shared A-side config directory traversable and expose the data dir.
 mkdir -p "$CLIENTA_DIR"
@@ -219,7 +224,7 @@ fi
 # 放在最后应用：它是用户在面板上明确点的，优先级高于上面那套默认值和 config.toml
 # 里的开机期声明。一行一项 `键: 值`；值可以带引号，不带空格；**空值 = 不覆盖**
 # （那一项就由模块自己的默认值决定）。
-PROP_OVERRIDES=$STATE_DIR/props.conf
+PROP_OVERRIDES=$CONF_DIR/props.conf
 if [ -r "$PROP_OVERRIDES" ]; then
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in ''|'#'*) continue ;; esac
@@ -387,14 +392,14 @@ start_daemon_early() {
 }
 
 if [ -f "$MODDIR/daemon" ]; then
-  if start_daemon_early "$MODDIR/daemon" "$STATE_DIR/keymint-daemon.pid"; then
+  if start_daemon_early "$MODDIR/daemon" "$RUN_DIR/keymint-daemon.pid"; then
     log_line "ommega: keymint daemon started early in post-fs-data"
   else
     log_line "ommega: keymint daemon early start failed; service.sh will retry"
   fi
 fi
 if [ -f "$MODDIR/daemon-injector" ]; then
-  if start_daemon_early "$MODDIR/daemon-injector" "$STATE_DIR/injector-daemon.pid"; then
+  if start_daemon_early "$MODDIR/daemon-injector" "$RUN_DIR/injector-daemon.pid"; then
     log_line "ommega: injector daemon started early in post-fs-data"
   else
     log_line "ommega: injector daemon early start failed; service.sh will retry"

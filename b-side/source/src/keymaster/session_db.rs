@@ -25,10 +25,10 @@ use base64::Engine as _;
 use rusqlite::{params, Connection, OptionalExtension};
 
 /// 库文件位置的默认值。演练/换机器时可以用 `OMMEGA_SESSIONS_DB` 指到别处。
-pub const DEFAULT_DB_PATH: &str = "/data/adb/ommega/sessions.db";
+pub const DEFAULT_DB_PATH: &str = "/data/adb/ommega/db/sessions.db";
 /// 旧版「一个别名一个 JSON」的目录，只在库还空着的时候导入一次。
 /// 跟库文件一样可以用 `OMMEGA_SESSIONS_DIR` 顶掉。
-pub const DEFAULT_LEGACY_DIR: &str = "/data/adb/ommega/sessions";
+pub const DEFAULT_LEGACY_DIR: &str = "/data/adb/ommega/db/sessions";
 
 pub fn db_path() -> PathBuf {
     std::env::var_os("OMMEGA_SESSIONS_DB")

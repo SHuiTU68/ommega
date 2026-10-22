@@ -2,10 +2,15 @@
 
 MODDIR=${0%/*}
 STATE_DIR=/data/adb/ommega
-PAYLOAD_STATE_FILE=$STATE_DIR/injector.payload
-RESTART_FILE=$STATE_DIR/restart.injector
-PEER_RESTART_FILE=$STATE_DIR/restart.keymint
-RESTART_ALL_FILE=$STATE_DIR/restart.all
+BIN_DIR=$STATE_DIR/bin
+CONF_DIR=$STATE_DIR/conf
+RUN_DIR=$STATE_DIR/run
+DB_DIR=$STATE_DIR/db
+[ -f "$MODDIR/layout.sh" ] && . "$MODDIR/layout.sh" 2>/dev/null
+PAYLOAD_STATE_FILE=$CONF_DIR/injector.payload
+RESTART_FILE=$RUN_DIR/restart.injector
+PEER_RESTART_FILE=$RUN_DIR/restart.keymint
+RESTART_ALL_FILE=$RUN_DIR/restart.all
 
 # A 端平铺 config（WebUI 写的），只有 soter_inject 这个键是本脚本读的：
 # 关着（键不在、或写了 0/false）就完全不碰 SOTER 宿主——不起服务、不注入；
@@ -66,8 +71,8 @@ device_abi() {
 }
 
 find_module_injector() {
-  if [ -f "$STATE_DIR/ommega-inject" ]; then
-    echo "$STATE_DIR/ommega-inject"
+  if [ -f "$BIN_DIR/ommega-inject" ]; then
+    echo "$BIN_DIR/ommega-inject"
     return 0
   fi
   if [ -f "$MODDIR/ommega-inject" ]; then

@@ -18,11 +18,16 @@
 
 MODDIR=${0%/*}
 STATE_DIR=/data/adb/ommega
+BIN_DIR=$STATE_DIR/bin
+CONF_DIR=$STATE_DIR/conf
+RUN_DIR=$STATE_DIR/run
+DB_DIR=$STATE_DIR/db
+[ -f "$MODDIR/layout.sh" ] && . "$MODDIR/layout.sh" 2>/dev/null
 CONF=${OMMEGA_CONF_PATH:-/data/misc/keystore/ommega/config}
-PIDFILE=$STATE_DIR/soterta.pid
-KICKED_FILE=$STATE_DIR/soterta.host.kicked
+PIDFILE=$RUN_DIR/soterta.pid
+KICKED_FILE=$RUN_DIR/soterta.host.kicked
 # 最后一次踢宿主时对应的 TA 实例（pid）。换实例就要重踢，见 kick_host。
-TAKEOVER_PID=$STATE_DIR/soterta.takeover.pid
+TAKEOVER_PID=$RUN_DIR/soterta.takeover.pid
 LOG=$STATE_DIR/logs/soterta.log
 # 服务名和 init 服务名都不写死：各厂商的 SOTER HAL 叫什么的都有（高通
 # `vendor.qti.hardware.soter`、小米 `vendor.xiaomi.hardware.soterservice`、联发科
@@ -61,7 +66,7 @@ device_abi() {
 
 find_bin() {
   [ -n "$BIN" ] && return 0
-  for candidate in "$STATE_DIR/ommega-inject" "$MODDIR/ommega-inject"; do
+  for candidate in "$BIN_DIR/ommega-inject" "$MODDIR/ommega-inject"; do
     if [ -x "$candidate" ]; then BIN=$candidate; return 0; fi
   done
   abi=$(device_abi)
@@ -78,7 +83,7 @@ find_bin() {
 # 拷一份到独立文件名，离开那条 pkill 的匹配。
 stage_bin() {
   [ -n "$BIN" ] || return 1
-  dst="$STATE_DIR/soterta-ta"
+  dst="$BIN_DIR/soterta-ta"
   if [ ! -x "$dst" ] || ! cmp -s "$BIN" "$dst" 2>/dev/null; then
     cp -f "$BIN" "$dst.tmp" 2>/dev/null && chmod 755 "$dst.tmp" && mv -f "$dst.tmp" "$dst"
   fi
