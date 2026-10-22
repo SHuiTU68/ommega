@@ -167,6 +167,24 @@ pub struct Fulfill {
     state: Arc<crate::statedb::StateDb>,
 }
 
+/// 服务端密钥层自己声明型号（tag 717 ATTESTATION_ID_MODEL）。
+///
+/// serverbox 模式里这条链的签发密钥、root of trust 都来自服务端存下来的那份身份，
+/// 叶子再写调用方（A 端）那台机的型号就自相矛盾。所以只要调用方要求了 ID 证明，
+/// 型号就取身份自己的 `machine_id`，不再拿 A 端上报的值充当。
+fn apply_identity_model(params: &mut crate::cert::AttestationParams, identity: &DeviceIdentity) {
+    if identity.machine_id.is_empty() {
+        return;
+    }
+    if let Some(entry) = params
+        .attestation_ids
+        .iter_mut()
+        .find(|(tag, _)| *tag == 717)
+    {
+        entry.1 = identity.machine_id.as_bytes().to_vec();
+    }
+}
+
 impl Fulfill {
     /// 运行期开关在 statedb 里的键。
     const MODE_KEY: &'static str = "serverbox";
@@ -796,6 +814,46 @@ impl Fulfill {
         p
     }
 
+    /// 找出请求指定的那把「服务端自持」的证明密钥。
+    ///
+    /// 返回 `Ok(None)` 表示这把 key 不在本端（在 B 端真机）—— 那时本层不该硬逞，
+    /// 交给下一层用真 TEE 签。
+    fn server_issuer(&self, ctx: &Value) -> anyhow::Result<Option<(String, String)>> {
+        let Some(reference) = ctx.get("attestation_key") else {
+            return Ok(None);
+        };
+        let Some(alias) = reference.get("alias").and_then(Value::as_str) else {
+            anyhow::bail!("attestation_key.alias missing");
+        };
+        let subject = match reference.get("issuer_subject_name").and_then(Value::as_str) {
+            Some(value) => Some(
+                base64::engine::general_purpose::STANDARD
+                    .decode(value)
+                    .map_err(|e| anyhow::anyhow!("decode issuer_subject_name: {e}"))?,
+            ),
+            None => None,
+        };
+        let Some(session) = self.get_session(alias) else {
+            return Ok(None);
+        };
+        // 请求说的那把钥匙必须是这条 session 的叶子，否则不予委派。
+        if let Some(subject) = subject {
+            let ders = cert::parse_chain_pem(&session.chain_pem)?;
+            let leaf = ders
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("issuer session has no leaf"))?;
+            let (_, parsed) = cert::parse_x509_certificate(leaf)
+                .map_err(|e| anyhow::anyhow!("parse issuer leaf: {e}"))?;
+            if parsed.subject().as_raw() != subject.as_slice() {
+                anyhow::bail!("issuer subject mismatch for alias {alias}");
+            }
+        }
+        Ok(Some((
+            session.leaf_key_pem.clone(),
+            session.chain_pem.clone(),
+        )))
+    }
+
     /// Generate the leaf + attested chain, cache it in the session.
     fn attest_and_cache(
         &self,
@@ -804,9 +862,24 @@ impl Fulfill {
         ctx: &Value,
         challenge: &[u8],
     ) -> anyhow::Result<(String, String)> {
-        let params = self.parse_ctx(ctx, challenge);
+        let mut params = self.parse_ctx(ctx, challenge);
+        // 服务端密钥层把「型号」按自己的身份写：这条链的 root of trust、签发密钥
+        // 都来自存下来的这份身份，叶子再报调用方那台机的型号就自相矛盾。
+        apply_identity_model(&mut params, identity);
+        // 调用方带了证明密钥（App AttestKey 委派）：若那把 key 就在本服务端
+        // （serverbox 模式下的 session），就用它自己签发子证书；不在本端则交给
+        // 下一层（真机 B），**不**改用身份自带的签发密钥冒充。
+        let issuer = self.server_issuer(ctx)?;
         let (session, generated) = self.session_or_generate(alias, || {
-            let (chain_pem, leaf_key_pem) = cert::build_attested_chain(identity, &params)?;
+            let (chain_pem, leaf_key_pem) = match &issuer {
+                Some((issuer_key_pem, issuer_chain_pem)) => cert::build_attested_chain_with_issuer(
+                    identity,
+                    &params,
+                    issuer_key_pem,
+                    issuer_chain_pem,
+                )?,
+                None => cert::build_attested_chain(identity, &params)?,
+            };
             let now_ms = Utc::now().timestamp_millis() as u64;
             Ok(Session {
                 chain_pem,
