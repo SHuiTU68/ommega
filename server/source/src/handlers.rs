@@ -1531,16 +1531,17 @@ async fn run_soter_task_inner(state: &AppState, body: &Value) -> Response {
     // 回什么见 `soter_off_target_reply`：写操作回 -5（这把钥匙不在这台，去原地重建），
     // 要签名的回 -204（会话不在这台，就是 App 自己也会算出来的那个 `OPERATEID_NULL`）。
     let substituted = if b_target.as_deref() != Some(requested) && !requested.is_empty() {
-        state
-            .store
-            .soter_substitute_of(requested)
-            .await
-            .as_deref()
-            == b_target.as_deref()
+        state.store.soter_substitute_of(requested).await.as_deref() == b_target.as_deref()
     } else {
         false
     };
-    if soter_mutation_cross_served(op, requested, b_target.as_deref(), session_present, substituted) {
+    if soter_mutation_cross_served(
+        op,
+        requested,
+        b_target.as_deref(),
+        session_present,
+        substituted,
+    ) {
         tracing::warn!(
             "soter: op={op} uid={probe_uid} 点名设备 {requested} 这会儿接不了这笔写操作\
              （b_target={:?} requested_online={requested_online}），不换设备、不落兜底层",
@@ -2996,12 +2997,14 @@ mod soter_device_layer_tests {
             "generate_auth_key_pair",
             "device-b-a",
             Some("device-b-b"),
+            false,
             false
         ));
         assert!(soter_mutation_cross_served(
             "init_sign",
             "device-b-a",
             Some("device-b-b"),
+            false,
             false
         ));
         // 派给点名那台才算数：别的设备、乃至一台都没派出去（点名那台离线 / 服务端
@@ -3010,12 +3013,14 @@ mod soter_device_layer_tests {
             "generate_auth_key_pair",
             "device-b-a",
             Some("device-b-a"),
+            false,
             false
         ));
         assert!(soter_mutation_cross_served(
             "remove_auth_key",
             "device-b-a",
             None,
+            false,
             false
         ));
         // 读操作照旧可以换设备（ASK 身份类另有 `soter_identity_op` 那条）。
@@ -3023,6 +3028,7 @@ mod soter_device_layer_tests {
             "has_auth_key",
             "device-b-a",
             Some("device-b-b"),
+            false,
             false
         ));
         // `finish_sign` 带会话时按会话记的设备走，那不算顶替。
@@ -3030,13 +3036,15 @@ mod soter_device_layer_tests {
             "finish_sign",
             "device-b-a",
             Some("device-b-b"),
-            true
+            true,
+            false
         ));
         // 配置里根本没写设备 id 的老客户端：没法点名，按原样放行。
         assert!(!soter_mutation_cross_served(
             "generate_ask_key_pair",
             "",
             Some("device-b-b"),
+            false,
             false
         ));
     }

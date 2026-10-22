@@ -252,6 +252,11 @@ fn write_auth_list(w: yasna::DERWriter<'_>, p: &AttestationParams) {
         .collect();
     user_auth.sort_unstable();
     user_auth.dedup();
+    // 如实反映 App 的请求：auth-bound key 带 504/505、不带 503，普通 key 只带 503。
+    // server_keybox 模式下签名用的是 keybox 私钥（软件签），不需要 auth token，
+    // 所以这里不能像“给真 TEE 转发”那样把 504/505 抹成 503——抹了就是“证书说
+    // 不要认证”，而 App 明明是 setUserAuthenticationRequired(true) 建的 key，
+    // TrustAttestor 的 user_auth_metadata（bit 35）会直接判异常。
     if user_auth.iter().any(|tag| *tag != 503) {
         user_auth.retain(|tag| *tag != 503);
     }
@@ -3019,14 +3024,12 @@ Xt/5rgIhAKcd9MUqGQDOEBWOSMJT91iefsC+ku4SOVF9MDlUHn32
         assert!(!der.windows(5).any(|w| w == b"nubia"));
     }
 
-    /// A key the app created with `setUserAuthenticationRequired(true)` must be
-    /// attested with `USER_AUTH_TYPE` (504) + `AUTH_TIMEOUT` (505) and *without*
-    /// `NO_AUTH_REQUIRED` (503) — the framework expands that call into 502 + 504 +
-    /// 505, and a leaf claiming "no auth required" is self-contradictory. That
-    /// contradiction is what TrustAttestor reports as
-    /// `hardware.attestation.user_auth_metadata` / `user_auth_policy`. The SID
-    /// (502) must stay out of the leaf: AOSP emits it for `importWrappedKey()`
-    /// only.
+    /// auth-bound key（`setUserAuthenticationRequired(true)`，framework 展开成 502 + 504 +
+    /// 505）必须带 `USER_AUTH_TYPE` (504) + `AUTH_TIMEOUT` (505) 且**不带**
+    /// `NO_AUTH_REQUIRED` (503)：证书说“不要认证”跟 App 的请求直接矛盾，
+    /// TrustAttestor 会报 `hardware.attestation.user_auth_metadata`。
+    /// SID (502) 不进叶证书，只用于 A 端本地校验指纹。
+    /// （server_keybox 模式签名用 keybox 私钥，不需要 auth token，所以带 504/505 不受影响。）
     #[test]
     fn key_description_carries_requested_user_auth_policy() {
         /// Whether the DER contains a context-specific tag `n` (high-tag-number

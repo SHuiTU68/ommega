@@ -21,7 +21,7 @@ use sha1::Sha1;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
 use crate::cert::{self, AttestationParams, RootOfTrust};
@@ -69,6 +69,10 @@ static LAST_PURGE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::
 struct Session {
     chain_pem: String,
     leaf_key_pem: String,
+    /// 解析好的叶子私钥，惰性缓存。以前每次 sign/decrypt 都现 `parse_leaf_key`
+    /// （PEM 框架 + EC/RSA 大整数解码），高频时纯属白烧 CPU，而这整段时间都在
+    /// A 端那柄全局锁的占用窗口里。Arc 让 Session 被 clone 出去后仍共享同一份。
+    cached_key: Arc<OnceLock<Arc<LeafKey>>>,
     /// 落盘用的 Fernet 密文。构造时算一次、之后每轮写盘直接复用 —— 以前是
     /// 每写一次盘就把表里所有会话重新加密一遍，几千条就是几百毫秒，还全程
     /// 持着全局锁。
@@ -120,10 +124,24 @@ impl From<SessionFile> for Session {
         Session {
             chain_pem: sf.chain_pem,
             leaf_key_pem: crate::crypto::decrypt_private_pem(&sf.leaf_key_pem),
+            cached_key: Arc::new(OnceLock::new()),
             leaf_key_cipher: cipher,
             created_epoch_ms: sf.created_epoch_ms,
             used_epoch_ms: used,
         }
+    }
+}
+
+impl Session {
+    /// 取解析好的叶子私钥，第一次用时解析并缓存。
+    fn leaf_key(&self) -> anyhow::Result<Arc<LeafKey>> {
+        if let Some(k) = self.cached_key.get() {
+            return Ok(k.clone());
+        }
+        let parsed = Arc::new(parse_leaf_key(&self.leaf_key_pem)?);
+        // 并发下可能别人先塞了，谁先谁算，反正同一份 PEM 解析结果一样。
+        let _ = self.cached_key.set(parsed.clone());
+        Ok(self.cached_key.get().cloned().unwrap_or(parsed))
     }
 }
 
@@ -793,6 +811,7 @@ impl Fulfill {
             Ok(Session {
                 chain_pem,
                 leaf_key_pem,
+                cached_key: Arc::new(OnceLock::new()),
                 leaf_key_cipher: String::new(),
                 created_epoch_ms: now_ms,
                 used_epoch_ms: now_ms,
@@ -1027,7 +1046,7 @@ impl Fulfill {
             .get("data")
             .and_then(Value::as_str)
             .and_then(|s| base64::engine::general_purpose::STANDARD.decode(s).ok())?;
-        let key = parse_leaf_key(&s.leaf_key_pem).ok()?;
+        let key = s.leaf_key().ok()?;
         let sig = sign_data(&key, &data).ok()?;
         let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig);
         // A-side reads `signature` first, then falls back to `data`; the B-side
@@ -1050,7 +1069,7 @@ impl Fulfill {
             .get("data")
             .and_then(Value::as_str)
             .and_then(|s| base64::engine::general_purpose::STANDARD.decode(s).ok())?;
-        let key = parse_leaf_key(&s.leaf_key_pem).ok()?;
+        let key = s.leaf_key().ok()?;
         let plain = decrypt_data(&key, &data).ok()?;
         let plain_b64 = base64::engine::general_purpose::STANDARD.encode(plain);
         // A-side reads `data` for decrypt (same field the B-side returns).
@@ -1164,6 +1183,16 @@ enum LeafKey {
     Rsa(Box<RsaPrivateKey>),
 }
 
+impl std::fmt::Debug for LeafKey {
+    /// 只标类型，不打印私钥（`EcKey` 自己没实现 Debug，也别为了日志把它引进来）。
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LeafKey::Ec(_) => f.write_str("LeafKey::Ec(..)"),
+            LeafKey::Rsa(_) => f.write_str("LeafKey::Rsa(..)"),
+        }
+    }
+}
+
 fn parse_leaf_key(pem_data: &str) -> anyhow::Result<LeafKey> {
     // Reuse cert::parse_private_key so P-256/P-384/P-521 and RSA (PKCS#1/PKCS#8)
     // are all handled identically to the stored server identities.
@@ -1250,6 +1279,7 @@ mod tests {
         Session {
             chain_pem: format!("chain-{key}"),
             leaf_key_pem: key.to_string(),
+            cached_key: Arc::new(OnceLock::new()),
             leaf_key_cipher: String::new(),
             created_epoch_ms: now,
             used_epoch_ms: now,

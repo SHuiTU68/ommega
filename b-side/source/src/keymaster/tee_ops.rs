@@ -666,9 +666,9 @@ fn build_attestation_params(
     // always signs without a token, so the key must be usable without auth —
     // but only as long as the app's own authorization list has not already
     // answered the question (see `needs_relay_no_auth_required`).
-    if needs_relay_no_auth_required(&spec.user_auth) {
-        params.push(KeyParam::NoAuthRequired);
-    }
+    // 远程代理模型：relay 永远拿不到 A 端的 auth token，所以 B 端锐的 key 一律
+    // no-auth（见 needs_relay_no_auth_required）。
+    params.push(KeyParam::NoAuthRequired);
 
     match algo {
         KmAlgorithm::Rsa => {
@@ -732,9 +732,10 @@ fn build_attestation_params(
     // stamps 504/505 — but not 503 NO_AUTH_REQUIRED — into the leaf. Without
     // them the minted chain contradicts an auth-bound request (TrustAttestor:
     // `hardware.attestation.user_auth_metadata` / `user_auth_policy`).
-    for (tag, value) in &spec.user_auth {
-        params.push(user_auth_param(*tag, *value)?);
-    }
+    // App 带来的 user_auth（502/504/505...）不再下发给真 TEE：带着它们 TEE 会铸出
+    // “需要认证”的 key，而 relay 签名给不出 token，begin(SIGN) 一律 -26。
+    // 指纹策略仍由 A 端 keyblob / Keystore2 执行；503 已在上面统一 push。
+    let _ = &spec.user_auth;
 
     // Certificate validity bounds (app-specified or default now / now+10y);
     // real TEEs require NOT_BEFORE/NOT_AFTER (else MISSING_NOT_BEFORE -80).
@@ -792,8 +793,12 @@ fn attestation_id_param(tag: u32, value: Vec<u8>) -> Result<KeyParam> {
 /// keybox layer (whose public keybox is on Google's revocation list) instead of
 /// getting a real-TEE chain.  The A-side's keybox layer drops 503 in exactly the
 /// same situation (`server/src/cert.rs`), so this keeps both layers consistent.
-fn needs_relay_no_auth_required(user_auth: &[(u32, i64)]) -> bool {
-    !user_auth.iter().any(|(tag, _)| *tag == 502 || *tag == 503)
+/// 远程代理模型下 relay 永远拿不到 A 端的 auth token，B 端真 TEE 锐的 key
+/// 必须一律 no-auth，否则 begin(SIGN) 返回 -26 (KeyUserNotAuthenticated)。
+/// App 带来的 502/504/505 只留在 A 端 keyblob / Keystore2 里做指纹校验，
+/// 不再往下传给真 TEE——否则证书说“要认证”，签名又给不出 token，死锁。
+fn needs_relay_no_auth_required(_user_auth: &[(u32, i64)]) -> bool {
+    true
 }
 
 /// Rebuild the `KeyParam` variant for a user-auth tag the A-side forwarded inside
@@ -1361,34 +1366,16 @@ mod tests {
         assert!(needs_relay_no_auth_required(&[(509, 1)]));
     }
 
-    /// The A-side forwards `NO_AUTH_REQUIRED` (503) for every ordinary key. A
-    /// second copy is a duplicate tag, which the qti TEE answers with
-    /// `ServiceSpecific(-40)` — that is what pushed every ordinary request to
-    /// the server keybox layer. Regression guard for the `user_auth=[[503,1]]`
-    /// shape (200 requests in one TrustAttestor scan).
+    /// relay 锐的 key 一律 no-auth。旧的“重复 503 报 -40 / 502 矛盾”两条约束都建立在
+    /// “把 App 的 user_auth 转发给真 TEE”这个前提上，现在不转了，所以恒 true。
     #[test]
-    fn relay_does_not_duplicate_app_no_auth_required() {
-        assert!(!needs_relay_no_auth_required(&[(503, 1)]));
-        assert!(!needs_relay_no_auth_required(&[(503, 1), (503, 1)]));
-        assert!(!needs_relay_no_auth_required(&[
-            (503, 1),
-            (504, 2),
-            (505, 30_000)
-        ]));
-        assert!(!needs_relay_no_auth_required(&[(509, 1), (503, 1)]));
-    }
-
-    /// `USER_SECURE_ID` asks for the opposite of NO_AUTH_REQUIRED; the pair is
-    /// contradictory, so the relay leaves the auth binding to the app (the
-    /// server keybox layer drops 503 the same way).
-    #[test]
-    fn relay_does_not_contradict_user_secure_id() {
-        assert!(!needs_relay_no_auth_required(&[(502, 4242)]));
-        assert!(!needs_relay_no_auth_required(&[(502, 4242), (504, 2)]));
-        assert!(!needs_relay_no_auth_required(&[
-            (502, 6_862_392_016_876_761_225),
-            (504, 2)
-        ]));
+    fn relay_always_mints_no_auth_required() {
+        assert!(needs_relay_no_auth_required(&[]));
+        assert!(needs_relay_no_auth_required(&[(503, 1)]));
+        assert!(needs_relay_no_auth_required(&[(504, 2), (505, 30_000)]));
+        assert!(needs_relay_no_auth_required(&[(502, 4242)]));
+        assert!(needs_relay_no_auth_required(&[(502, 4242), (504, 2)]));
+        assert!(needs_relay_no_auth_required(&[(509, 1), (503, 1)]));
     }
 
     #[test]
