@@ -72,6 +72,18 @@ fn baseline_slot() -> &'static Mutex<Option<Vec<(String, String)>>> {
     BASELINE.get_or_init(|| Mutex::new(None))
 }
 
+/// 读基线里某一项（没记过就 None）。
+fn baseline_value(prop: &str) -> Option<String> {
+    let slot = match baseline_slot().lock() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+    slot.as_ref()?
+        .iter()
+        .find(|(k, _)| k == prop)
+        .map(|(_, v)| v.clone())
+}
+
 /// 第一次动属性前把三项的原值记下来（只记一次）。
 fn remember_baseline(props: &[&str]) {
     let mut slot = match baseline_slot().lock() {
@@ -271,10 +283,42 @@ pub fn client_version_ok(payload: &Value) -> bool {
         .is_some_and(|v| v >= FOLLOW_MIN_VERSION)
 }
 
-/// 把 A 端在 `device_attest_context` 里声明的补丁日期落到本机 TEE 上。
+/// 系统版本（`os_version` → `ro.build.version.release`）默认**不跟着改**：
+///
+/// 每改一次要重启 keymint HAL + keystore2（5~7 秒），而 Play Integrity 那边看的是
+/// 「链里的值对不对得上它自己的机型库」，不是比对本机属性；真正会比的是本地检测器，
+/// 而那个用 A 端把 `ro.build.version.release` 静态同步成 B 的值就够了，没必要每笔都弹 HAL。
+/// 只有明确需要逐笔改（比如一台 A 配多台不同大版本的 B）才把开关打开。
+const OS_VERSION_FOLLOW_KEY: &str = "OMMEGA_RELAY_OS_VERSION_FOLLOW";
+
+fn os_version_follow_enabled() -> bool {
+    std::env::var(OS_VERSION_FOLLOW_KEY)
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+/// 这个值要不要动：和**本机原值**（开机时的真实值）比，一样就不动。
+///
+/// 之所以要拿基线比而不是「当前属性值」：上一次搞脏了（比如还原失败）之后属性已经不
+/// 是本机原值了，拿它当参照会把本该改的回合当成「已经匹配」。
+fn value_matches(prop: &str, base: &str, want: &str) -> bool {
+    if prop == RELEASE_PROP {
+        release_matches(base, want)
+    } else {
+        base.trim() == want.trim()
+    }
+}
+
+/// 把 A 端在 `device_attest_context` 里声明的版本号/补丁日期落到本机 TEE 上。
 ///
 /// 返回 `Some(说明)` 表示这次真动了属性（并让 HAL 重读了）；`None` 表示不用动——
-/// 开关没开、请求里没带日期、或者本机已经是这个值。
+/// 开关没开、请求里没带、或者**跟本机原值一样**（A 端已经同步成全一致时就是这样，
+/// 这时候不该为了一笔请求去折腾 HAL 和 keystore2）。
 pub fn follow_a_side(payload: &Value, on: bool) -> Option<String> {
     if !on {
         return None;
@@ -289,10 +333,13 @@ pub fn follow_a_side(payload: &Value, on: bool) -> Option<String> {
         .get("vendor_patch_level")
         .and_then(Value::as_i64)
         .and_then(vendor_prop_value);
-    let want_release = ctx
-        .get("os_version")
-        .and_then(Value::as_i64)
-        .and_then(release_from_os_version);
+    let want_release = if os_version_follow_enabled() {
+        ctx.get("os_version")
+            .and_then(Value::as_i64)
+            .and_then(release_from_os_version)
+    } else {
+        None
+    };
     if want_os.is_none() && want_vendor.is_none() && want_release.is_none() {
         return None;
     }
@@ -319,12 +366,12 @@ pub fn follow_a_side(payload: &Value, on: bool) -> Option<String> {
                 continue;
             }
         };
-        let same = if prop == RELEASE_PROP {
-            release_matches(&current, &want)
-        } else {
-            current.trim() == want.trim()
-        };
-        if same {
+        let base = baseline_value(prop).unwrap_or_else(|| current.clone());
+        // 请求要的就是本机原值 → 不碰属性、不弹 HAL（A 端全同步之后每笔都走这条）。
+        if value_matches(prop, &base, &want) {
+            continue;
+        }
+        if value_matches(prop, &current, &want) {
             continue;
         }
         if let Err(e) = resetprop(prop, &want) {
@@ -386,12 +433,7 @@ pub fn restore_after_mint() -> Option<String> {
         let Ok(current) = getprop(&prop) else {
             continue;
         };
-        let same = if prop == RELEASE_PROP {
-            release_matches(&current, &want)
-        } else {
-            current.trim() == want.trim()
-        };
-        if same {
+        if value_matches(&prop, &current, &want) {
             continue;
         }
         match resetprop(&prop, &want) {
@@ -612,6 +654,15 @@ mod tests {
         // 读不到/畸形时就退回字面比较
         assert!(release_matches("", ""));
         assert!(!release_matches("", "16"));
+    }
+
+    /// 跟本机原值一样就不动（A 端已经全同步的情况），不一样才动。
+    #[test]
+    fn decides_by_local_original_value() {
+        assert!(value_matches(OS_PROP, "2026-08-01", "2026-08-01"));
+        assert!(!value_matches(OS_PROP, "2026-08-01", "2026-09-01"));
+        assert!(value_matches(RELEASE_PROP, "16", "16.0.0"));
+        assert!(!value_matches(RELEASE_PROP, "16", "15"));
     }
 
     #[test]
