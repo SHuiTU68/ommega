@@ -1,9 +1,11 @@
-# B-side changelog
+# B-side module changelog
 
 [中文](CHANGELOG-B.md)
 
-## 1.7.7
+## 1.7.8
 
-- Patch-level following no longer slows attestation down: the date is applied directly instead of restarting the key service.
-- If the system asks for a key upgrade before signing, it is upgraded and the operation continues instead of failing.
-- The "unlocked device required" constraint is now written into the certificate.
+- Following the A-side patch dates no longer restores them right away, so a
+  repeated request from the same caller is served without another restart.
+- Two panel buttons stop the module or restore the device values and reboot.
+- The state directory moved to /data/adb/ommega-b, separate from the A side.
+- The adbr remote-control switch now finds and starts adbrd properly.
