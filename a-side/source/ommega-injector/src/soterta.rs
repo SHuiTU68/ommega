@@ -114,33 +114,56 @@ const INTERFACE_TRANSACTION: u32 = 0x5f4e_5446;
 /// `hasAskAlready` 在 4 槽里是 9、连号里是 7，而且都只带一个 int（4 字节）。
 /// 于是第一次见到它就定下布局并缓存，之后把连号的号换算成 4 槽的规范号，
 /// 后续所有逻辑只用一套写法。
-static LAYOUT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+static LAYOUTS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, u8>>> =
+    std::sync::OnceLock::new();
 const LAYOUT_UNKNOWN: u8 = 0;
 const LAYOUT_14: u8 = 1;
 const LAYOUT_11: u8 = 2;
 
-fn note_layout(code: u32, avail: usize) {
-    use std::sync::atomic::Ordering;
-    if LAYOUT.load(Ordering::Relaxed) != LAYOUT_UNKNOWN {
+/// 调用方是谁（`/proc/<pid>/cmdline` 的第一段）。拿不到就给空串，那些调用共用
+/// 一个匿名槽位，行为跟以前的全局判定一样。
+fn caller_key() -> String {
+    let pid = rsbinder::get_calling_pid();
+    if pid <= 0 {
+        return String::new();
+    }
+    let Ok(raw) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
+        return String::new();
+    };
+    let name = raw.split(|byte| *byte == 0).next().unwrap_or_default();
+    String::from_utf8_lossy(name).into_owned()
+}
+
+fn layout_slot(caller: &str) -> u8 {
+    let map = LAYOUTS.get_or_init(Default::default);
+    let guard = map.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard.get(caller).copied().unwrap_or(LAYOUT_UNKNOWN)
+}
+
+/// 布局按**调用方**分开记，不能全局一个值：同一台机器上 soterserver 和第三方检测器
+/// 可能用不同版本的 ISoter 号表（4 槽 vs 1–11 连号），定成一个值会让后到的那个
+/// 客户端全程调到错的方法上。MEIZU 20 Pro（391QYGDJ2244E）实测：SoterChecker 走连号
+/// （7 = hasAskAlready），被按 4 槽解释成 generateAuthKeyPair，于是它读到
+/// hasAsk=false、generate 记 -20、export 记 -5，五项全红。
+fn note_layout(caller: &str, code: u32, avail: usize) {
+    if layout_slot(caller) != LAYOUT_UNKNOWN {
         return;
     }
-    match (code, avail) {
+    let layout = match (code, avail) {
         // hasAskAlready / generateAskKeyPair：两种排布里都只带一个 int，号却不同。
-        (9, 4) | (5, 4) => {
-            LAYOUT.store(LAYOUT_14, Ordering::Relaxed);
-        }
-        (7, 4) | (4, 4) => {
-            LAYOUT.store(LAYOUT_11, Ordering::Relaxed);
-        }
-        _ => {}
-    }
+        (9, 4) | (5, 4) => LAYOUT_14,
+        (7, 4) | (4, 4) => LAYOUT_11,
+        _ => return,
+    };
+    let map = LAYOUTS.get_or_init(Default::default);
+    let mut guard = map.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard.insert(caller.to_string(), layout);
 }
 
 /// 把任意排布的号码换成 4 槽的规范号（后面的逻辑只认这套）。
-fn canonical_code(code: u32, avail: usize) -> u32 {
-    use std::sync::atomic::Ordering;
-    note_layout(code, avail);
-    if LAYOUT.load(Ordering::Relaxed) != LAYOUT_11 {
+fn canonical_code(caller: &str, code: u32, avail: usize) -> u32 {
+    note_layout(caller, code, avail);
+    if layout_slot(caller) != LAYOUT_11 {
         return code;
     }
     match code {
@@ -289,8 +312,10 @@ impl Remotable for SoterTa {
         // 错位 4 字节（soterserver 把方法返回值当 status、把非空标记当返回值，
         // exportAsk 的 exportData 就解不出来，Duck/微信卡在 askModel）。
         reply.write_i32(0)?;
-        // 号码先归一到「4 槽规范号」：不同设备的排布不一样（见 LAYOUT）。
-        let code = canonical_code(code, reader.data_avail());
+        // 号码先归一到「4 槽规范号」：不同设备的排布不一样，同一台上不同客户端
+        // 也可能不一样（见 note_layout），所以按调用方各自记。
+        let caller = caller_key();
+        let code = canonical_code(&caller, code, reader.data_avail());
         // 先按 AIDL 定义把入参读干净：读错位的话后面拿到的 uid/alias 全是垃圾。
         let mut uid = None;
         let mut alias = None;
