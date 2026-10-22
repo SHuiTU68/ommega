@@ -1200,11 +1200,24 @@ fn handle_generate_attest(cfg: &RelayConfig, _task_type: &str, payload: &Value) 
                     "strongbox generateKey failed"
                 };
                 log::warn!("B-side StrongBox unavailable ({reason}): {err_str}");
+                // 这一笔已经把属性改成 A 的值了（如果有），失败也得还原。
+                if live_guard.is_none() {
+                    if let Some(note) = ommegaclient_b::plat::patchlevel::restore_after_mint() {
+                        log::info!("attest: {note}");
+                    }
+                }
                 return Ok(json!({ "error": format!("strongbox not supported: {reason}") }));
             }
         }
     } else {
-        tee_ops::generate_attest_key(&alias, &challenge, &app_id_der, &spec)?
+        let minted = tee_ops::generate_attest_key(&alias, &challenge, &app_id_der, &spec);
+        // 出链这一步做完就把属性回原值（成没成都回）：本机不能一直顶着 A 的系统版本。
+        if live_guard.is_none() {
+            if let Some(note) = ommegaclient_b::plat::patchlevel::restore_after_mint() {
+                log::info!("attest: {note}");
+            }
+        }
+        minted?
     };
 
     log_cert_chain("attest", &session.cert_chain);

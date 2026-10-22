@@ -30,6 +30,9 @@ pub const FOLLOW_PKGS_KEY: &str = "OMMEGA_RELAY_PATCHLEVEL_SKIP_PKGS";
 
 const OS_PROP: &str = "ro.build.version.security_patch";
 const VENDOR_PROP: &str = "ro.vendor.build.security_patch";
+/// `os_version`（tag 705，形如 160000）在 Trustonic 那边就是从 `ro.build.version.release`
+/// 算出来的：主版本 ×10000 + 次版本 ×100 + 补丁号。空值改它没用，必须重启 HAL 重读。
+const RELEASE_PROP: &str = "ro.build.version.release";
 
 /// 用户存储（CE）是否已就绪。`true` 等于「开机后至少解过一次锁」。
 const CE_AVAILABLE_PROP: &str = "sys.user.0.ce_available";
@@ -46,14 +49,48 @@ fn ce_unlocked_from_prop(value: Option<&str>) -> bool {
     matches!(value, Some("true"))
 }
 
-/// 找 resetprop：KernelSU / APatch 都自带，模块目录里也可能放了一份。
+/// 找 resetprop：模块目录、KernelSU、APatch、Magisk 都试一遍，最后再靠 PATH。
+/// 不同 root 管理器的位置就是不一样，只认一个等于「换了管理器这功能就没了」。
 const RESETPROP_CANDIDATES: &[&str] = &[
     "/data/adb/ommega-b/bin/resetprop",
     "/data/adb/ksu/bin/resetprop",
     "/data/adb/ap/bin/resetprop",
+    "/data/adb/magisk/resetprop",
+    "/debug_ramdisk/resetprop",
 ];
 
 static KNOWN_SERVICE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+/// 本机原始的三个值（第一次跟着改之前记下来）。
+///
+/// 为什么要记：跟完之后属性会一直是 A 的值，本机所有应用看到的系统版本/补丁日期
+/// 都变成别人的。所以每笔出完链必须自己回原值 —— 用这份基线，而不是「上一笔的值」：
+/// 上一笔可能已经是 A 的，拿它当基线就永远回不去了。
+static BASELINE: OnceLock<Mutex<Option<Vec<(String, String)>>>> = OnceLock::new();
+
+fn baseline_slot() -> &'static Mutex<Option<Vec<(String, String)>>> {
+    BASELINE.get_or_init(|| Mutex::new(None))
+}
+
+/// 第一次动属性前把三项的原值记下来（只记一次）。
+fn remember_baseline(props: &[&str]) {
+    let mut slot = match baseline_slot().lock() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+    if slot.is_some() {
+        return;
+    }
+    let mut pairs = Vec::new();
+    for prop in props {
+        if let Ok(v) = getprop(prop) {
+            if !v.is_empty() {
+                pairs.push(((*prop).to_string(), v));
+            }
+        }
+    }
+    *slot = Some(pairs);
+}
 
 /// 对齐 + 出链之间不能被别的请求插进来，见 [`lock`]。
 static ATTEST_LOCK: Mutex<()> = Mutex::new(());
@@ -117,6 +154,48 @@ fn os_prop_value(v: i64) -> Option<String> {
 /// A 端的 `vendor_patch_level` 是 YYYYMMDD → 属性要 "YYYY-MM-DD"。
 fn vendor_prop_value(v: i64) -> Option<String> {
     ymd(v / 10000, (v / 100) % 100, v % 100)
+}
+
+/// A 端的 `os_version`（160000 = Android 16.0.0）→ `ro.build.version.release` 的写法。
+/// 次版本/补丁号为 0 时写成 "16"，跟原厂属性的写法一致，不制造无意义的差异。
+fn release_from_os_version(v: i64) -> Option<String> {
+    if v <= 0 {
+        return None;
+    }
+    let major = v / 10000;
+    let minor = (v / 100) % 100;
+    let patch = v % 100;
+    if !(5..=99).contains(&major) {
+        return None;
+    }
+    Some(match (minor, patch) {
+        (0, 0) => format!("{major}"),
+        (_, 0) => format!("{major}.{minor}"),
+        _ => format!("{major}.{minor}.{patch}"),
+    })
+}
+
+/// `ro.build.version.release` 的写法不统一（"16" / "16.0" / "15.1"），按数字比才不会
+/// 因为少了 ".0" 就每笔都去弹一次 HAL。
+fn release_matches(current: &str, want: &str) -> bool {
+    fn parts(s: &str) -> Option<(i64, i64, i64)> {
+        let mut it = s.trim().split('.');
+        let major = it.next()?.parse::<i64>().ok()?;
+        let minor = it.next().unwrap_or("0").parse::<i64>().ok()?;
+        let patch = it
+            .next()
+            .unwrap_or("0")
+            .split(['-', '+', '_'])
+            .next()
+            .unwrap_or("0")
+            .parse::<i64>()
+            .ok()?;
+        Some((major, minor, patch))
+    }
+    match (parts(current), parts(want)) {
+        (Some(a), Some(b)) => a == b,
+        _ => current.trim() == want.trim(),
+    }
 }
 
 /// tag 709 的 DER 里含请求方的包名；列表命中才跟随。
@@ -210,7 +289,11 @@ pub fn follow_a_side(payload: &Value, on: bool) -> Option<String> {
         .get("vendor_patch_level")
         .and_then(Value::as_i64)
         .and_then(vendor_prop_value);
-    if want_os.is_none() && want_vendor.is_none() {
+    let want_release = ctx
+        .get("os_version")
+        .and_then(Value::as_i64)
+        .and_then(release_from_os_version);
+    if want_os.is_none() && want_vendor.is_none() && want_release.is_none() {
         return None;
     }
 
@@ -222,7 +305,12 @@ pub fn follow_a_side(payload: &Value, on: bool) -> Option<String> {
     }
 
     let mut applied: Vec<String> = Vec::new();
-    for (prop, want) in [(OS_PROP, want_os), (VENDOR_PROP, want_vendor)] {
+    remember_baseline(&[OS_PROP, VENDOR_PROP, RELEASE_PROP]);
+    for (prop, want) in [
+        (OS_PROP, want_os),
+        (VENDOR_PROP, want_vendor),
+        (RELEASE_PROP, want_release),
+    ] {
         let Some(want) = want else { continue };
         let current = match getprop(prop) {
             Ok(v) => v,
@@ -231,7 +319,12 @@ pub fn follow_a_side(payload: &Value, on: bool) -> Option<String> {
                 continue;
             }
         };
-        if current == want {
+        let same = if prop == RELEASE_PROP {
+            release_matches(&current, &want)
+        } else {
+            current.trim() == want.trim()
+        };
+        if same {
             continue;
         }
         if let Err(e) = resetprop(prop, &want) {
@@ -270,8 +363,70 @@ pub fn follow_a_side(payload: &Value, on: bool) -> Option<String> {
         }
     };
     Some(format!(
-        "B 端补丁日期跟随 A 端：{}；{note}",
+        "B 端版本/补丁日期跟随 A 端：{}；{note}",
         applied.join(", ")
+    ))
+}
+
+/// 照 `follow_a_side` 改完之后调用一次：把三项还原成本机原值。
+///
+/// 属性和 TEE 里的配置是两回事 —— 只 resetprop 不会变（HAL 只在启动时读一次），
+/// 所以真改过属性就得再弹一次 HAL + 重启 keystore2。没改过就什么都不做（零开销）。
+pub fn restore_after_mint() -> Option<String> {
+    let baseline = {
+        let slot = match baseline_slot().lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        slot.clone()?
+    };
+
+    let mut restored: Vec<String> = Vec::new();
+    for (prop, want) in baseline {
+        let Ok(current) = getprop(&prop) else {
+            continue;
+        };
+        let same = if prop == RELEASE_PROP {
+            release_matches(&current, &want)
+        } else {
+            current.trim() == want.trim()
+        };
+        if same {
+            continue;
+        }
+        match resetprop(&prop, &want) {
+            Ok(()) => restored.push(format!("{prop}: {current} -> {want}")),
+            Err(e) => log::warn!("patchlevel restore: 写 {prop}={want} 失败: {e:#}"),
+        }
+    }
+    if restored.is_empty() {
+        return None;
+    }
+
+    let note = match restart_keymint_hal() {
+        Ok(mut note) => {
+            clear_system_keymint(SYSTEM_KEYMINT_DEFAULT);
+            clear_system_keymint(SYSTEM_KEYMINT_STRONGBOX);
+            match restart_keystore2() {
+                Ok(k) => {
+                    note.push_str("; ");
+                    note.push_str(&k);
+                    note
+                }
+                Err(e) => {
+                    log::warn!("patchlevel restore: keystore2 重启失败: {e:#}");
+                    format!("{note}; keystore2 重启失败({e:#})")
+                }
+            }
+        }
+        Err(e) => {
+            log::warn!("patchlevel restore: keymint HAL 重启失败: {e:#}");
+            format!("重读失败({e:#})")
+        }
+    };
+    Some(format!(
+        "B 端已恢复本机原值：{}；{note}",
+        restored.join(", ")
     ))
 }
 
@@ -432,6 +587,31 @@ mod tests {
         assert_eq!(vendor_prop_value(20260801).as_deref(), Some("2026-08-01"));
         assert_eq!(os_prop_value(0), None);
         assert_eq!(vendor_prop_value(20261301), None);
+    }
+
+    /// 160000 → "16"，160100 → "16.1"，160101 → "16.1.1"；离谱的值不接。
+    #[test]
+    fn os_version_to_release() {
+        assert_eq!(release_from_os_version(160000).as_deref(), Some("16"));
+        assert_eq!(release_from_os_version(150000).as_deref(), Some("15"));
+        assert_eq!(release_from_os_version(160100).as_deref(), Some("16.1"));
+        assert_eq!(release_from_os_version(160101).as_deref(), Some("16.1.1"));
+        assert_eq!(release_from_os_version(0), None);
+        assert_eq!(release_from_os_version(-1), None);
+        assert_eq!(release_from_os_version(30000), None);
+    }
+
+    /// 属性写 "16" 而 A 要 160000 时不能当成不一样，否则每笔都去弹 HAL。
+    #[test]
+    fn release_compare_ignores_trailing_zeros() {
+        assert!(release_matches("16", "16"));
+        assert!(release_matches("16.0", "16"));
+        assert!(release_matches("16", "16.0.0"));
+        assert!(!release_matches("15", "16"));
+        assert!(!release_matches("16.1", "16"));
+        // 读不到/畸形时就退回字面比较
+        assert!(release_matches("", ""));
+        assert!(!release_matches("", "16"));
     }
 
     #[test]

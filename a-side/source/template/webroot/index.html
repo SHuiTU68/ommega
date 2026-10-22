@@ -242,8 +242,12 @@
       <div id="patch-manual" class="hidden">
         <div class="row"><div class="name"><b data-i18n="patch.hash"></b><small data-i18n="patch.hash.hint"></small></div>
           <input type="text" id="boot-hash" autocapitalize="none"></div>
+        <div class="row"><div class="name"><b data-i18n="patch.system"></b><small data-i18n="patch.system.hint"></small></div>
+          <input type="text" id="patch-system" autocapitalize="none" placeholder="2025-01-01"></div>
         <div class="row"><div class="name"><b data-i18n="patch.boot"></b><small data-i18n="patch.boot.hint"></small></div>
           <input type="text" id="patch-boot" autocapitalize="none" placeholder="2025-01-01"></div>
+        <div class="row"><div class="name"><b data-i18n="patch.vendor"></b><small data-i18n="patch.vendor.hint"></small></div>
+          <input type="text" id="patch-vendor" autocapitalize="none" placeholder="2025-01-01"></div>
         <!-- 设备身份：链是真机出的，本机属性必须说同一台机器，否则检测器两边对不上 -->
         <div id="patch-identity">
         <div class="row"><div class="name"><b data-i18n="patch.brand"></b><small data-i18n="patch.brand.hint"></small></div>
@@ -479,7 +483,8 @@ Object.keys(HIDE_DEVICE_IDS_TEXT).forEach(function(code){
 });
 var MANAGED = REMOTE_FIELDS.map(function(f){ return f.key; });
 var curConfText = "", curPropsText = "";
-var PROP_KEYS = ["ro.boot.vbmeta.digest", "ro.boot.build.security_patch",
+var PROP_KEYS = ["ro.boot.vbmeta.digest", "ro.build.version.security_patch",
+  "ro.boot.build.security_patch", "ro.vendor.build.security_patch",
   "ro.product.brand", "ro.product.device", "ro.product.name",
   "ro.product.manufacturer", "ro.product.model", "ro.serialno"];
 var RETIRED_KEYS = ["ro.boot.vbmeta.public_key_digest"];
@@ -1253,7 +1258,9 @@ function refreshPatchSummary(){
   if (!box) return;
   function v(id){ var e = document.getElementById(id); return e ? (e.value || "").trim() : ""; }
   var rows = [];
+  if (v("patch-system")) rows.push([t("patch.short.system"), v("patch-system")]);
   if (v("patch-boot")) rows.push([t("patch.short.boot"), v("patch-boot")]);
+  if (v("patch-vendor")) rows.push([t("patch.short.vendor"), v("patch-vendor")]);
   /* 设备身份：品牌/型号/序列号，有哪几项列哪几项。 */
   var model = v("ident-model"), brand = v("ident-brand"), serial = v("ident-serial");
   if (brand || model) rows.push([t("patch.model"), (brand ? brand + " / " : "") + (model || "—")]);
@@ -1393,7 +1400,9 @@ async function fetchDeviceBoot(){
   if (!hit.boot){ toast(t("toast.noBoot"), true); return false; }
   var b = hit.boot;
   document.getElementById("boot-hash").value = b.boot_hash || "";
+  document.getElementById("patch-system").value = patchDate(b.patch_system);
   document.getElementById("patch-boot").value = patchDate(b.patch_boot);
+  document.getElementById("patch-vendor").value = patchDate(b.patch_vendor);
   /* 设备身份：B 端心跳上报的那一套（老版本 relay 没报就是空，不覆盖已填的）。 */
   var ident = hit.identity || {};
   if (identityEnabled()) {
@@ -1420,12 +1429,18 @@ async function syncPatch(){
 }
 async function savePatch(){
   var hash = document.getElementById("boot-hash").value.trim().toLowerCase();
+  var osPatch = document.getElementById("patch-system").value.trim();
   var boot = document.getElementById("patch-boot").value.trim();
+  var vendor = document.getElementById("patch-vendor").value.trim();
   if (hash && !/^[0-9a-f]{64}$/.test(hash)){ toast(t("toast.hashBad"), true); return; }
+  if (osPatch && !/^\d{4}-\d{2}-\d{2}$/.test(osPatch)){ toast(t("toast.patchBad", {field: t("patch.system")}), true); return; }
   if (boot && !/^\d{4}-\d{2}-\d{2}$/.test(boot)){ toast(t("toast.patchBad", {field: t("patch.boot")}), true); return; }
+  if (vendor && !/^\d{4}-\d{2}-\d{2}$/.test(vendor)){ toast(t("toast.patchBad", {field: t("patch.vendor")}), true); return; }
   var kv = {};
   if (hash) kv["ro.boot.vbmeta.digest"] = hash;
+  if (osPatch) kv["ro.build.version.security_patch"] = osPatch;
   if (boot) kv["ro.boot.build.security_patch"] = boot;
+  if (vendor) kv["ro.vendor.build.security_patch"] = vendor;
   IDENT_FIELDS.forEach(function(pair){
     if (!identityEnabled()) return;
     var el = document.getElementById(pair[0]);
@@ -1443,7 +1458,12 @@ async function savePatch(){
   curPropsText = text;
   aDirty = false;
   var now = [], vals = {};
-  if (boot){ now.push("ro.boot.build.security_patch"); vals["ro.boot.build.security_patch"] = boot; }
+  [["ro.build.version.security_patch", osPatch], ["ro.boot.build.security_patch", boot],
+   ["ro.vendor.build.security_patch", vendor]].forEach(function(pair){
+    if (!pair[1]) return;
+    now.push(pair[0]);
+    vals[pair[0]] = pair[1];
+  });
   if (now.length){
     await exec(now.map(function(k){
       return '(R=' + RESETPROP + '; [ -x "$R" ] || R=resetprop; "$R" -n ' + k + " " + quoteShell(vals[k]) + ")";
@@ -1455,13 +1475,13 @@ async function savePatch(){
 
 /* -------------------------------- 语言切换 ------------------------------- */
 function capturePatchInputs(){
-  ["boot-hash", "patch-boot"].concat(identityEnabled() ? IDENT_FIELDS.map(function(p){ return p[0]; }) : []).forEach(function(id){
+  ["boot-hash", "patch-system", "patch-boot", "patch-vendor"].concat(identityEnabled() ? IDENT_FIELDS.map(function(p){ return p[0]; }) : []).forEach(function(id){
     var e = document.getElementById(id);
     if (e) patchValues[id] = e.value;
   });
 }
 function fillPatchInputs(){
-  ["boot-hash", "patch-boot"].concat(IDENT_FIELDS.map(function(p){ return p[0]; })).forEach(function(id){
+  ["boot-hash", "patch-system", "patch-boot", "patch-vendor"].concat(IDENT_FIELDS.map(function(p){ return p[0]; })).forEach(function(id){
     var e = document.getElementById(id);
     if (e && patchValues[id] !== undefined) e.value = patchValues[id];
   });
@@ -1522,7 +1542,9 @@ function propsToPatchFields(){
   });
   patchValues = {
     "boot-hash": rp["ro.boot.vbmeta.digest"] || "",
-    "patch-boot": rp["ro.boot.build.security_patch"] || ""
+    "patch-system": rp["ro.build.version.security_patch"] || "",
+    "patch-boot": rp["ro.boot.build.security_patch"] || "",
+    "patch-vendor": rp["ro.vendor.build.security_patch"] || ""
   };
   IDENT_FIELDS.forEach(function(pair){ patchValues[pair[0]] = rp[pair[1]] || ""; });
   fillPatchInputs();
@@ -1684,7 +1706,7 @@ document.addEventListener("change", function(ev){ if (!(ev && ev.target && ev.ta
       runBusy("patch-sync", t("patch.syncing"), function(){ return syncPatch(); });
     };
     document.getElementById("patch-clear").onclick = function(){
-      ["boot-hash", "patch-boot"].forEach(function(id){
+      ["boot-hash", "patch-system", "patch-boot", "patch-vendor"].forEach(function(id){
         var e = document.getElementById(id);
         if (!e) return;
         e.value = "";

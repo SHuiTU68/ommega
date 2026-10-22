@@ -340,6 +340,10 @@ mask_feature() {
         *) chcon u:object_r:system_file:s0 "$mf_stage" 2>/dev/null ;;
       esac
       if mount --bind "$mf_stage" "$mf_src" 2>/dev/null; then
+        # bind 默认是 rw：检测器（DuckDetector 的 "System RW"）看到 system 分区上有
+        # rw 挂载直接判脏，所以绑上去立刻降成只读 —— 反正我们只要它读出来是空的。
+        mount -o remount,ro,bind "$mf_src" 2>/dev/null || \
+          log_line "ommega: $mf_src 没能降成只读（可能内核不支持 remount,bind）"
         log_line "ommega: $mf_name masked by $mf_stage over $mf_src"
       else
         log_line "ommega: bind for $mf_src failed; feature stays visible"
