@@ -295,11 +295,15 @@ mask_feature() {
   # `/vendor` 是独立 erofs、`/system/vendor` 只是软链）—— 那 whiteout 白种了。
   # 不再把 /data 里的文件 bind 到 /vendor 的那个 XML 上：那条挂载在 mountinfo 里长
   # 这样 `... /adb/ommega/empty_permissions.xml /vendor/etc/permissions/xxx.xml ...
-  # f2fs`，连源路径都写着，用户态一眼看出来。改成跟 metamodule 一样的做法：先在
-  # /mnt/vendor/ 下挂一个小 tmpfs（看起来像 OEM 自己挂的），把目录完整拷进去、
-  # 逐文件镜像 SELinux 标签，把要隐藏的那个换成空 `<permissions/>`，最后把假目录
-  # bind 到真实目录。mountinfo 里只剩 tmpfs + bind，无 /data、无 f2fs。
+  # f2fs`，连源路径都写着，用户态一眼看出来。这里改成：先在 /mnt/vendor/ 下挂一个
+  # 小 tmpfs（看起来像 OEM 自己挂的），里面放一个空 `<permissions/>`，再把这个
+  # **单文件** bind 到真实 XML 上。
+  #
+  # 只盖这一个文件，**绝不动目录**：早先试过把整目录 bind 成暂存副本，结果那个
+  # 暂存目录的目录标签/挂载参数跟 system_server 期望的不一致，PackageManager 读不
+  # 到权限 XML，框架直接起不来、卡开机。一个文件被盖，旁边 59 个 XML 还是原样。
   if [ "$mf_enabled" = true ]; then
+    mf_fake_base=${OMMEGA_FAKE_MOUNT_BASE:-/mnt/vendor/vendor_permissions}
     for mf_rel in $WL_RELS; do
       case "$mf_rel" in
         vendor/*|product/*|system_ext/*) mf_src="/$mf_rel/$mf_name" ;;
@@ -307,9 +311,10 @@ mask_feature() {
       esac
       mf_dir=$(dirname "$mf_src")
       [ -f "$mf_src" ] || continue
+      # overlay 真生效时这里已经是 whiteout 设备或空声明，不用再盖
       grep -q '<permissions/>' "$mf_src" 2>/dev/null && continue
-      grep -q " $mf_dir " /proc/mounts 2>/dev/null && continue
-      mf_fake_base=${OMMEGA_FAKE_MOUNT_BASE:-/mnt/vendor/vendor_permissions}
+      grep -q " $mf_src " /proc/mounts 2>/dev/null && continue
+
       if ! grep -q " $mf_fake_base " /proc/mounts 2>/dev/null; then
         mkdir -p "$mf_fake_base" 2>/dev/null
         mount -t tmpfs -o mode=0755,seclabel tmpfs "$mf_fake_base" 2>/dev/null || {
@@ -317,25 +322,20 @@ mask_feature() {
           continue
         }
       fi
-      mf_stage="$mf_fake_base$(printf '%s' "$mf_dir" | tr '/' '_')"
-      mkdir -p "$mf_stage" 2>/dev/null || continue
-      rm -rf "$mf_stage"/* 2>/dev/null
-      cp -a "$mf_dir"/. "$mf_stage"/ 2>/dev/null
-      for mf_one in "$mf_dir"/*; do
-        [ -e "$mf_one" ] || continue
-        mf_ctx=$(ls -Zd "$mf_one" 2>/dev/null | awk '{print $1}')
-        [ -n "$mf_ctx" ] && chcon "$mf_ctx" "$mf_stage/$(basename "$mf_one")" 2>/dev/null
-      done
-      printf '<?xml version="1.0" encoding="utf-8"?>\n<permissions/>\n' > "$mf_stage/$mf_name" 2>/dev/null || continue
-      chmod 0644 "$mf_stage/$mf_name" 2>/dev/null
+      # 暂存文件名别把目标写进去：mountinfo 里会原样显示挂载根的路径，
+      # 写 `_vendor_etc_permissions_android.software.device_id_attestation.xml`
+      # 等于自己把“我遮了哪个文件”写在脸上。
+      mf_stage="$mf_fake_base/vendor.conf"
+      printf '<?xml version="1.0" encoding="utf-8"?>\n<permissions/>\n' > "$mf_stage" 2>/dev/null || continue
+      chmod 0644 "$mf_stage" 2>/dev/null
       case "$mf_src" in
-        /vendor/*) chcon u:object_r:vendor_file:s0 "$mf_stage/$mf_name" 2>/dev/null ;;
-        *) chcon u:object_r:system_file:s0 "$mf_stage/$mf_name" 2>/dev/null ;;
+        /vendor/*) chcon u:object_r:vendor_file:s0 "$mf_stage" 2>/dev/null ;;
+        *) chcon u:object_r:system_file:s0 "$mf_stage" 2>/dev/null ;;
       esac
-      if mount --bind "$mf_stage" "$mf_dir" 2>/dev/null; then
-        log_line "ommega: $mf_name masked via staged fake mount $mf_stage over $mf_dir"
+      if mount --bind "$mf_stage" "$mf_src" 2>/dev/null; then
+        log_line "ommega: $mf_name masked by $mf_stage over $mf_src"
       else
-        log_line "ommega: bind for $mf_dir failed; feature stays visible"
+        log_line "ommega: bind for $mf_src failed; feature stays visible"
       fi
     done
   fi
