@@ -2,11 +2,8 @@
 
 [中文](CHANGELOG-B.md)
 
-## 1.7.6
+## 1.7.7
 
-- The panel can now toggle "follow A-side patch level" and the skip list, no more hand-editing the config file.
-
-## 1.7.4
-
-- Task pickup interval dropped from seconds to 80 ms: no more fixed delay where a task waited for the real device to poll.
-- The uplink is only bound when a VPN is up, so long polls are no longer dragged down by the tunnel (which made the relay restart itself).
+- Patch-level following no longer slows attestation down: the date is applied directly instead of restarting the key service.
+- If the system asks for a key upgrade before signing, it is upgraded and the operation continues instead of failing.
+- The "unlocked device required" constraint is now written into the certificate.

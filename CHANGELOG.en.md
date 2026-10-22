@@ -2,19 +2,7 @@
 
 [中文](CHANGELOG.md)
 
-## 1.7.6
+## 1.7.7
 
-- The SOTER checks no longer fail: the device id is returned in the same form as on a real device, and the codes for a missing key or a missing session now match too.
-- On older platforms that only expose the legacy interface, SOTER no longer keeps dropping out.
-- The SOTER key row on the factory engineering-mode page passes as well.
-- SOTER takeover also works on MediaTek (Trustonic) devices.
-- Fixed adbr screen mirroring failing to connect on some devices.
-- Fixed SOTER signing occasionally reporting errors.
-- When the followed device is offline, another working one is picked instead of failing outright.
-- The local fallback path now actually answers: it used to stay silent because the device serial could not be read.
-- Logs live in one place and carry the process id, so a failure can be traced to the component that wrote it.
-- Apps using fingerprint auth no longer fail to sign.
-- Remote signing no longer slows down other key operations.
-- Keys keep working after the server restarts.
-- On some Qualcomm devices (the HIDL ones) the SOTER takeover only covered half the path, so the related checks failed; it is complete now and they pass.
-- The server's default device is now split per chain: KeyMint (attest / sign / decrypt) and SOTER each have their own, so an empty device_id lands on the right one; a request that carries a device_id still follows it.
+- Keys that require user authentication (fingerprint / lock screen) now carry the correct authorization list in their certificates.
+- Remote attestation no longer probes the network before every request, so opening an app is faster.
