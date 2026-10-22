@@ -925,7 +925,8 @@ impl Default for RemoteConfig {
             debug_logging: false,
             hide_strongbox: false,
             soter_hide: false,
-            soter_inject: false,
+            // 默认接管 SOTER：接管后才能自己答 ASK/签名，不接管就只能透传原厂 HAL。
+            soter_inject: true,
             soter_uid_map: String::new(),
             soter_local_only_prefixes: default_soter_local_only_prefixes(),
             soter_local_only_uids: String::new(),

@@ -31,6 +31,9 @@ pub const FOLLOW_PKGS_KEY: &str = "OMMEGA_RELAY_PATCHLEVEL_SKIP_PKGS";
 const OS_PROP: &str = "ro.build.version.security_patch";
 const VENDOR_PROP: &str = "ro.vendor.build.security_patch";
 
+/// 开机时真机原值的落盘位置（面板恢复按钮读它）。
+const BASELINE_FILE: &str = "/data/adb/ommega-b/conf/baseline.props";
+
 /// 用户存储（CE）是否已就绪。`true` 等于「开机后至少解过一次锁」。
 const CE_AVAILABLE_PROP: &str = "sys.user.0.ce_available";
 
@@ -69,7 +72,6 @@ fn baseline_slot() -> &'static Mutex<Option<Vec<(String, String)>>> {
     BASELINE.get_or_init(|| Mutex::new(None))
 }
 
-/// 读基线里某一项（没记过就 None）。
 fn baseline_value(prop: &str) -> Option<String> {
     let slot = match baseline_slot().lock() {
         Ok(g) => g,
@@ -95,6 +97,25 @@ fn remember_baseline(props: &[&str]) {
         if let Ok(v) = getprop(prop) {
             if !v.is_empty() {
                 pairs.push(((*prop).to_string(), v));
+            }
+        }
+    }
+    // 落一份到磁盘：面板的「停止模块 / 恢复并重启」要拿它把真机原值写回去，
+    // 而面板是另一个进程、拿不到这里的内存。
+    let mut text = String::new();
+    for (k, v) in &pairs {
+        text.push_str(k);
+        text.push_str(": ");
+        text.push_str(v);
+        text.push('\n');
+    }
+    if !text.is_empty() {
+        if let Some(dir) = std::path::Path::new(BASELINE_FILE).parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if !std::path::Path::new(BASELINE_FILE).exists() {
+            if let Err(e) = std::fs::write(BASELINE_FILE, text) {
+                log::warn!("patchlevel: 写基线文件失败: {e:#}");
             }
         }
     }
@@ -333,63 +354,6 @@ pub fn follow_a_side(payload: &Value, on: bool) -> Option<String> {
     Some(format!(
         "B 端版本/补丁日期跟随 A 端：{}；{note}",
         applied.join(", ")
-    ))
-}
-
-/// 照 `follow_a_side` 改完之后调用一次：把三项还原成本机原值。
-///
-/// 属性和 TEE 里的配置是两回事 —— 只 resetprop 不会变（HAL 只在启动时读一次），
-/// 所以真改过属性就得再弹一次 HAL + 重启 keystore2。没改过就什么都不做（零开销）。
-pub fn restore_after_mint() -> Option<String> {
-    let baseline = {
-        let slot = match baseline_slot().lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
-        slot.clone()?
-    };
-
-    let mut restored: Vec<String> = Vec::new();
-    for (prop, want) in baseline {
-        let Ok(current) = getprop(&prop) else {
-            continue;
-        };
-        if value_matches(&prop, &current, &want) {
-            continue;
-        }
-        match resetprop(&prop, &want) {
-            Ok(()) => restored.push(format!("{prop}: {current} -> {want}")),
-            Err(e) => log::warn!("patchlevel restore: 写 {prop}={want} 失败: {e:#}"),
-        }
-    }
-    if restored.is_empty() {
-        return None;
-    }
-
-    let note = match restart_keymint_hal() {
-        Ok(mut note) => {
-            clear_system_keymint(SYSTEM_KEYMINT_DEFAULT);
-            clear_system_keymint(SYSTEM_KEYMINT_STRONGBOX);
-            match restart_keystore2() {
-                Ok(k) => {
-                    note.push_str("; ");
-                    note.push_str(&k);
-                    note
-                }
-                Err(e) => {
-                    log::warn!("patchlevel restore: keystore2 重启失败: {e:#}");
-                    format!("{note}; keystore2 重启失败({e:#})")
-                }
-            }
-        }
-        Err(e) => {
-            log::warn!("patchlevel restore: keymint HAL 重启失败: {e:#}");
-            format!("重读失败({e:#})")
-        }
-    };
-    Some(format!(
-        "B 端已恢复本机原值：{}；{note}",
-        restored.join(", ")
     ))
 }
 

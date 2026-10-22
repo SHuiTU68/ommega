@@ -179,11 +179,14 @@ DEVICE_IDS_FEATURE="android.software.device_id_attestation.xml"
 
 # 声明「不支持 ID 认证」：置上 hide_device_ids 就给声明的 XML 种 whiteout。
 # 与 StrongBox 同一套机制，安装时就把两种开关都读一遍。
-DEVICE_IDS_HIDDEN=false
+# 新默认：这一项**默认开**（没写也当开）—— 链是从真机出的，本机不声明 ID 认证反而
+# 更省事（应用/检测器整项跳过）；显式写 0/false 才关。
+DEVICE_IDS_HIDDEN=true
 CLIENTA_CONF=/data/misc/keystore/ommega/config
 if [ -f "$CLIENTA_CONF" ]; then
   ids_val=$(grep -iE '^[[:space:]]*(hide_device_ids|no_device_ids|hide_device_id_attestation)[[:space:]]*:' "$CLIENTA_CONF" 2>/dev/null | head -n 1 | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r')
   case "$ids_val" in
+    0|false|no|off) DEVICE_IDS_HIDDEN=false ;;
     1|true|yes|on) DEVICE_IDS_HIDDEN=true ;;
   esac
   unset ids_val

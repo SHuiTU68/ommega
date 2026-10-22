@@ -272,6 +272,9 @@ mask_feature() {
     mf_value=$(grep -iE "^[[:space:]]*(${mf_pat})[[:space:]]*:" "$TARGET_CONF" 2>/dev/null | head -n 1 | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r')
     case "$mf_value" in
       1|true|yes|on) mf_enabled=true ;;
+      0|false|no|off) mf_enabled=false ;;
+      # 没写这个键时看调用方的默认值：device_id 那一项默认开，strongbox 默认关。
+      *) [ "${OMMEGA_MASK_DEFAULT:-0}" = "1" ] && mf_enabled=true ;;
     esac
   fi
   for mf_rel in $WL_RELS; do
@@ -352,8 +355,8 @@ mask_feature() {
   fi
 }
 
-mask_feature android.hardware.security.strongbox_keystore.xml hide_strongbox no_strongbox hide_strongbox_keystore
-mask_feature android.software.device_id_attestation.xml hide_device_ids no_device_ids hide_device_id_attestation
+OMMEGA_MASK_DEFAULT=0 mask_feature android.hardware.security.strongbox_keystore.xml hide_strongbox no_strongbox hide_strongbox_keystore
+OMMEGA_MASK_DEFAULT=1 mask_feature android.software.device_id_attestation.xml hide_device_ids no_device_ids hide_device_id_attestation
 unset WL_RELS mf_name mf_enabled mf_pat mf_value mf_rel mf_marker mf_src
 
 # ── 尽早把两个守护拉起来 ─────────────────────────────────────────────────

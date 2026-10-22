@@ -70,6 +70,7 @@ MODULE_TEXT_FILES = (
     "module.prop",
     "post-fs-data.sh",
     "relay.conf",
+    "restore.sh",
     "sepolicy.rule",
     "service.sh",
     "verify.sh",

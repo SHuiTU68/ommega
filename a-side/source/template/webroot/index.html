@@ -240,35 +240,12 @@
       <p class="hint" data-i18n="patch.sync.hint"></p>
       <p class="hint" data-i18n="patch.store.hint"></p>
       <div id="patch-manual" class="hidden">
-        <div class="row"><div class="name"><b data-i18n="patch.release"></b><small data-i18n="patch.release.hint"></small></div>
-          <input type="text" id="patch-release" autocapitalize="none" placeholder="16"></div>
         <div class="row"><div class="name"><b data-i18n="patch.hash"></b><small data-i18n="patch.hash.hint"></small></div>
           <input type="text" id="boot-hash" autocapitalize="none"></div>
-        <div class="row"><div class="name"><b data-i18n="patch.system"></b><small data-i18n="patch.system.hint"></small></div>
-          <input type="text" id="patch-system" autocapitalize="none" placeholder="2025-01-01"></div>
         <div class="row"><div class="name"><b data-i18n="patch.boot"></b><small data-i18n="patch.boot.hint"></small></div>
           <input type="text" id="patch-boot" autocapitalize="none" placeholder="2025-01-01"></div>
-        <div class="row"><div class="name"><b data-i18n="patch.vendor"></b><small data-i18n="patch.vendor.hint"></small></div>
-          <input type="text" id="patch-vendor" autocapitalize="none" placeholder="2025-01-01"></div>
-        <!-- 设备身份：链是真机出的，本机属性必须说同一台机器，否则检测器两边对不上 -->
-        <div id="patch-identity">
-        <div class="row"><div class="name"><b data-i18n="patch.brand"></b><small data-i18n="patch.brand.hint"></small></div>
-          <input type="text" id="ident-brand" autocapitalize="none"></div>
-        <div class="row"><div class="name"><b data-i18n="patch.device"></b><small data-i18n="patch.device.hint"></small></div>
-          <input type="text" id="ident-device" autocapitalize="none"></div>
-        <div class="row"><div class="name"><b data-i18n="patch.product"></b><small data-i18n="patch.product.hint"></small></div>
-          <input type="text" id="ident-product" autocapitalize="none"></div>
-        <div class="row"><div class="name"><b data-i18n="patch.manufacturer"></b><small data-i18n="patch.manufacturer.hint"></small></div>
-          <input type="text" id="ident-manufacturer" autocapitalize="none"></div>
-        <div class="row"><div class="name"><b data-i18n="patch.model"></b><small data-i18n="patch.model.hint"></small></div>
-          <input type="text" id="ident-model" autocapitalize="none"></div>
-        <div class="row"><div class="name"><b data-i18n="patch.serial"></b><small data-i18n="patch.serial.hint"></small></div>
-          <input type="text" id="ident-serial" autocapitalize="none"></div>
-        <div class="row"><div class="name"><b data-i18n="patch.fingerprint"></b><small data-i18n="patch.fingerprint.hint"></small></div>
-          <input type="text" id="ident-fingerprint" autocapitalize="none"></div>
-        </div>
         <div class="acts">
-          <button class="btn primary" id="save-patch" data-i18n="patch.saveAll"></button>
+          <button class="btn primary" id="save-patch" data-i18n="patch.save"></button>
           <button class="btn sm" id="patch-clear" data-i18n="patch.clear"></button>
         </div>
         <p class="hint" data-i18n="patch.save.hint"></p>
@@ -487,11 +464,7 @@ Object.keys(HIDE_DEVICE_IDS_TEXT).forEach(function(code){
 });
 var MANAGED = REMOTE_FIELDS.map(function(f){ return f.key; });
 var curConfText = "", curPropsText = "";
-var PROP_KEYS = ["ro.build.version.release", "ro.boot.vbmeta.digest", "ro.build.version.security_patch",
-  "ro.boot.build.security_patch", "ro.vendor.build.security_patch",
-  "ro.product.brand", "ro.product.device", "ro.product.name",
-  "ro.product.manufacturer", "ro.product.model", "ro.serialno",
-  "ro.build.fingerprint"];
+var PROP_KEYS = ["ro.boot.vbmeta.digest", "ro.boot.build.security_patch"];
 var RETIRED_KEYS = ["ro.boot.vbmeta.public_key_digest"];
 var curTarget = {normal:[], generate:[], hack:[]};
 /* 本机（A 端）版本号，init 时从 module.prop 读出来；挑 B 端时按它比版本。 */
@@ -509,15 +482,7 @@ var LAST_STATUS = null;
 var appRows = [], appFilter = "";
 var showSystem = false;   // 默认只看用户应用，点工具栏那个开关才把系统应用也列出来
 /* 伪装参数表单里每一项：输入框 id → 要写的属性名。 */
-var IDENT_FIELDS = [
-  ["ident-brand", "ro.product.brand"],
-  ["ident-device", "ro.product.device"],
-  ["ident-product", "ro.product.name"],
-  ["ident-manufacturer", "ro.product.manufacturer"],
-  ["ident-model", "ro.product.model"],
-  ["ident-serial", "ro.serialno"],
-  ["ident-fingerprint", "ro.build.fingerprint"]
-];
+var IDENT_FIELDS = [];
 var patchValues = {};
 var fpTarget = "";           // 选文件的目标：keybox / ask
 var fpDir = "/sdcard/Download";
@@ -1264,10 +1229,7 @@ function refreshPatchSummary(){
   if (!box) return;
   function v(id){ var e = document.getElementById(id); return e ? (e.value || "").trim() : ""; }
   var rows = [];
-  if (v("patch-release")) rows.push([t("patch.release"), v("patch-release")]);
-  if (v("patch-system")) rows.push([t("patch.short.system"), v("patch-system")]);
   if (v("patch-boot")) rows.push([t("patch.short.boot"), v("patch-boot")]);
-  if (v("patch-vendor")) rows.push([t("patch.short.vendor"), v("patch-vendor")]);
   /* 设备身份：品牌/型号/序列号，有哪几项列哪几项。 */
   var model = v("ident-model"), brand = v("ident-brand"), serial = v("ident-serial");
   if (brand || model) rows.push([t("patch.model"), (brand ? brand + " / " : "") + (model || "—")]);
@@ -1406,24 +1368,8 @@ async function fetchDeviceBoot(){
   }
   if (!hit.boot){ toast(t("toast.noBoot"), true); return false; }
   var b = hit.boot;
-  document.getElementById("patch-release").value = androidMajor(b.os_version);
   document.getElementById("boot-hash").value = b.boot_hash || "";
-  document.getElementById("patch-system").value = patchDate(b.patch_system);
   document.getElementById("patch-boot").value = patchDate(b.patch_boot);
-  document.getElementById("patch-vendor").value = patchDate(b.patch_vendor);
-  /* 设备身份：B 端心跳上报的那一套（老版本 relay 没报就是空，不覆盖已填的）。
-     只在开了「声明不支持 ID 认证」时拉取 —— 没开的时候只需要哈希 + 三个补丁日期。 */
-  if (identityEnabled()) {
-    var ident = hit.identity || {};
-    [['ident-brand', 'brand'], ['ident-device', 'device'], ['ident-product', 'product'],
-     ['ident-manufacturer', 'manufacturer'], ['ident-model', 'model'], ['ident-serial', 'serial'],
-     ['ident-fingerprint', 'fingerprint']]
-      .forEach(function(pair){
-        var el = document.getElementById(pair[0]);
-        var val = ident[pair[1]];
-        if (el && val) el.value = val;
-      });
-  }
   capturePatchInputs();
   var major = androidMajor(b.os_version);
   var name = (hit.machine_id || hit.device_id) + (major ? " (Android " + major + ")" : "") + (hit.version ? " · v" + hit.version : "");
@@ -1438,27 +1384,13 @@ async function syncPatch(){
   refreshSoter().catch(function(){});
 }
 async function savePatch(){
-  var release = document.getElementById("patch-release").value.trim();
   var hash = document.getElementById("boot-hash").value.trim().toLowerCase();
-  var osPatch = document.getElementById("patch-system").value.trim();
   var boot = document.getElementById("patch-boot").value.trim();
-  var vendor = document.getElementById("patch-vendor").value.trim();
-  if (release && !/^\d{1,2}(\.\d{1,2}){0,2}$/.test(release)){ toast(t("toast.patchBad", {field: t("patch.release")}), true); return; }
   if (hash && !/^[0-9a-f]{64}$/.test(hash)){ toast(t("toast.hashBad"), true); return; }
-  if (osPatch && !/^\d{4}-\d{2}-\d{2}$/.test(osPatch)){ toast(t("toast.patchBad", {field: t("patch.system")}), true); return; }
   if (boot && !/^\d{4}-\d{2}-\d{2}$/.test(boot)){ toast(t("toast.patchBad", {field: t("patch.boot")}), true); return; }
-  if (vendor && !/^\d{4}-\d{2}-\d{2}$/.test(vendor)){ toast(t("toast.patchBad", {field: t("patch.vendor")}), true); return; }
   var kv = {};
-  if (release) kv["ro.build.version.release"] = release;
   if (hash) kv["ro.boot.vbmeta.digest"] = hash;
-  if (osPatch) kv["ro.build.version.security_patch"] = osPatch;
   if (boot) kv["ro.boot.build.security_patch"] = boot;
-  if (vendor) kv["ro.vendor.build.security_patch"] = vendor;
-  IDENT_FIELDS.forEach(function(pair){
-    var el = document.getElementById(pair[0]);
-    var val = el ? el.value.trim() : "";
-    if (val) kv[pair[1]] = val;
-  });
   var text = dropKeys(mergeKV(curPropsText, kv, PROP_KEYS, true), RETIRED_KEYS);
   if (!curPropsText.trim()){
     text = "# 开机时统一应用的系统属性覆盖（面板「伪装参数」写的就是这里）。\n" +
@@ -1470,12 +1402,7 @@ async function savePatch(){
   curPropsText = text;
   aDirty = false;
   var now = [], vals = {};
-  [["ro.build.version.release", release], ["ro.build.version.security_patch", osPatch],
-   ["ro.boot.build.security_patch", boot], ["ro.vendor.build.security_patch", vendor]].forEach(function(pair){
-    if (!pair[1]) return;
-    now.push(pair[0]);
-    vals[pair[0]] = pair[1];
-  });
+  if (boot){ now.push("ro.boot.build.security_patch"); vals["ro.boot.build.security_patch"] = boot; }
   if (now.length){
     await exec(now.map(function(k){
       return '(R=' + RESETPROP + '; [ -x "$R" ] || R=resetprop; "$R" -n ' + k + " " + quoteShell(vals[k]) + ")";
@@ -1487,13 +1414,13 @@ async function savePatch(){
 
 /* -------------------------------- 语言切换 ------------------------------- */
 function capturePatchInputs(){
-  ["patch-release", "boot-hash", "patch-system", "patch-boot", "patch-vendor"].concat(IDENT_FIELDS.map(function(p){ return p[0]; })).forEach(function(id){
+  ["boot-hash", "patch-boot"].concat(IDENT_FIELDS.map(function(p){ return p[0]; })).forEach(function(id){
     var e = document.getElementById(id);
     if (e) patchValues[id] = e.value;
   });
 }
 function fillPatchInputs(){
-  ["patch-release", "boot-hash", "patch-system", "patch-boot", "patch-vendor"].concat(IDENT_FIELDS.map(function(p){ return p[0]; })).forEach(function(id){
+  ["boot-hash", "patch-boot"].concat(IDENT_FIELDS.map(function(p){ return p[0]; })).forEach(function(id){
     var e = document.getElementById(id);
     if (e && patchValues[id] !== undefined) e.value = patchValues[id];
   });
@@ -1555,11 +1482,8 @@ function propsToPatchFields(){
     if (m && PROP_KEYS.indexOf(m[1]) >= 0) rp[m[1]] = m[2].trim();
   });
   patchValues = {
-    "patch-release": rp["ro.build.version.release"] || "",
     "boot-hash": rp["ro.boot.vbmeta.digest"] || "",
-    "patch-system": rp["ro.build.version.security_patch"] || "",
-    "patch-boot": rp["ro.boot.build.security_patch"] || "",
-    "patch-vendor": rp["ro.vendor.build.security_patch"] || ""
+    "patch-boot": rp["ro.boot.build.security_patch"] || ""
   };
   IDENT_FIELDS.forEach(function(pair){ patchValues[pair[0]] = rp[pair[1]] || ""; });
   fillPatchInputs();
@@ -1721,7 +1645,7 @@ document.addEventListener("change", function(ev){ if (!(ev && ev.target && ev.ta
       runBusy("patch-sync", t("patch.syncing"), function(){ return syncPatch(); });
     };
     document.getElementById("patch-clear").onclick = function(){
-      ["patch-release", "boot-hash", "patch-system", "patch-boot", "patch-vendor"].forEach(function(id){
+      ["boot-hash", "patch-boot"].forEach(function(id){
         var e = document.getElementById(id);
         if (!e) return;
         e.value = "";
