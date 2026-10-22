@@ -1179,12 +1179,37 @@ async function openSysApp(){
 }
 
 /* --------------------------------- 动作 --------------------------------- */
+/* 「声明不支持 ID 认证」靠模块的 system/ 镜像里放 whiteout 标记，由 root 管理器开机
+   挂载时生效。标记必须在**下次开机之前**就位，而开关是运行时才打开的，所以这里保存
+   完配置顺手把标记种上/删掉 —— 否则就要重启两次（本次开机 post-fs-data 才建标记，
+   得再等一次开机才挂得上）。 */
+async function syncDeviceIdMask(enabled){
+  var rels = ["vendor/etc/permissions", "product/etc/permissions",
+              "system_ext/etc/permissions", "etc/permissions"];
+  var name = "android.software.device_id_attestation.xml";
+  var lines = [];
+  rels.forEach(function(rel){
+    var marker = MODDIR + "/system/" + rel + "/" + name;
+    var src = (rel.indexOf("etc/permissions") === 0) ? "/system/" + rel + "/" + name
+                                                      : "/" + rel + "/" + name;
+    if (enabled){
+      lines.push('if [ -f ' + src + ' ] && [ ! -e ' + marker + ' ]; then mkdir -p ' + MODDIR + '/system/' + rel +
+                 '; mknod ' + marker + ' c 0 0 2>/dev/null || printf \'<?xml version="1.0" encoding="utf-8"?>\\n<permissions/>\\n\' > ' + marker + '; fi');
+    } else {
+      lines.push('rm -f ' + marker);
+    }
+  });
+  await exec(lines.join("; ") + "; true");
+}
+
 async function saveRemote(){
-  var text = mergeKV(curConfText, collectRemote(), MANAGED, false);
+  var vals = collectRemote();
+  var text = mergeKV(curConfText, vals, MANAGED, false);
   var r = await writeFile(CONF, text, "644");
   if (r.errno !== 0){ toast(t("toast.saveFail", {msg: r.stderr || r.errno}), true); return; }
   curConfText = text;
   aDirty = false;
+  await syncDeviceIdMask(truthy(vals.hide_device_ids));
   toast(t("toast.saved"));
   setTimeout(function(){ refreshStatus().catch(function(){}); }, 2000);
 }
