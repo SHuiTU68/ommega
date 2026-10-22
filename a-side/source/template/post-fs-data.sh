@@ -290,6 +290,36 @@ mask_feature() {
       log_line "ommega: $mf_name shown again; marker removed from $mf_rel"
     fi
   done
+
+  # 挂载层的兜底：有些管理器（这台上的 KernelSU 3.3 就是）**不给 /vendor 做模块
+  # overlay**，whiteout 种下去也不生效 —— 真的 XML 还是原样，PM 照样上报这个
+  # feature。那就直接把一份空 `<permissions/>` bind mount 到那个文件上：
+  # post-fs-data 比 system_server 早，PM 读权限文件时就已经看到了。
+  # 标签要改成目标分区的（否则 system_server 读不到）。
+  if [ "$mf_enabled" = true ]; then
+    for mf_rel in $WL_RELS; do
+      case "$mf_rel" in
+        vendor/*|product/*|system_ext/*) mf_src="/$mf_rel/$mf_name" ;;
+        *) mf_src="/system/$mf_rel/$mf_name" ;;
+      esac
+      [ -f "$mf_src" ] || continue
+      # overlay 真生效时这里已经是 whiteout 设备或空声明，不用再盖
+      grep -q '<permissions/>' "$mf_src" 2>/dev/null && continue
+      grep -q " $mf_src " /proc/mounts 2>/dev/null && continue
+      mf_empty=/data/adb/ommega/empty_permissions.xml
+      if [ ! -f "$mf_empty" ]; then
+        printf '<?xml version="1.0" encoding="utf-8"?>\n<permissions/>\n' > "$mf_empty" 2>/dev/null || continue
+        chmod 0644 "$mf_empty" 2>/dev/null
+      fi
+      case "$mf_src" in
+        /vendor/*) chcon u:object_r:vendor_file:s0 "$mf_empty" 2>/dev/null ;;
+        *) chcon u:object_r:system_file:s0 "$mf_empty" 2>/dev/null ;;
+      esac
+      if mount --bind "$mf_empty" "$mf_src" 2>/dev/null; then
+        log_line "ommega: $mf_name bind-mounted over $mf_src (manager does not overlay this partition)"
+      fi
+    done
+  fi
 }
 
 mask_feature android.hardware.security.strongbox_keystore.xml hide_strongbox no_strongbox hide_strongbox_keystore
