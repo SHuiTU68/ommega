@@ -2,6 +2,10 @@
 
 [中文](CHANGELOG-B.md)
 
+## 1.7.6
+
+- The panel can now toggle "follow A-side patch level" and the skip list, no more hand-editing the config file.
+
 ## 1.7.4
 
 - Task pickup interval dropped from seconds to 80 ms: no more fixed delay where a task waited for the real device to poll.
