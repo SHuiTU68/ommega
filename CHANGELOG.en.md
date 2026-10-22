@@ -16,3 +16,4 @@
 - Apps using fingerprint auth no longer fail to sign.
 - Remote signing no longer slows down other key operations.
 - Keys keep working after the server restarts.
+- On some Qualcomm devices (the HIDL ones) the SOTER takeover only covered half the path, so the related checks failed; it is complete now and they pass.
