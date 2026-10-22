@@ -48,7 +48,7 @@ fn ce_unlocked_from_prop(value: Option<&str>) -> bool {
 
 /// 找 resetprop：KernelSU / APatch 都自带，模块目录里也可能放了一份。
 const RESETPROP_CANDIDATES: &[&str] = &[
-    "/data/adb/ommega/bin/resetprop",
+    "/data/adb/ommega-b/bin/resetprop",
     "/data/adb/ksu/bin/resetprop",
     "/data/adb/ap/bin/resetprop",
 ];

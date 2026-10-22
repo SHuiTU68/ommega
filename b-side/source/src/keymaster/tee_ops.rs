@@ -15,7 +15,7 @@
 //! signatures, decryptions and certificate chains are genuine TEE outputs.
 //!
 //! Key blobs and certificate chains are held in a process-local hot cache keyed by
-//! alias and persisted in a SQLite file (`/data/adb/ommega/sessions.db`, see
+//! alias and persisted in a SQLite file (`/data/adb/ommega-b/sessions.db`, see
 //! [`session_db`]) so aliases survive a relay restart; the cache only keeps the
 //! recently used ones and the rest are read back from the database by alias.
 
@@ -166,7 +166,7 @@ pub struct TeeSession {
 /// 会话的落盘库（SQLite）与内存热缓存。
 ///
 /// Key blob 是自包含的，重启之后照样能 begin/finish，所以每个铸出来的会话都落一份
-/// 到 `/data/adb/ommega/sessions.db`（见 [`super::session_db`]），A 端的 `isRemote`
+/// 到 `/data/adb/ommega-b/sessions.db`（见 [`super::session_db`]），A 端的 `isRemote`
 /// 钥匙跨重启仍然有效。
 ///
 /// 2026-10-03 那条教训还在：淘汰按「最后使用时间」算。之前按文件 mtime 排，可取用时
@@ -396,7 +396,7 @@ mod session_cache_tests {
     ///
     /// 在设备上跑（库指副本，旧目录指原地）：
     ///   OMMEGA_SESSIONS_DB=/data/local/tmp/drill-copy.db \
-    ///   OMMEGA_SESSIONS_DIR=/data/adb/ommega/sessions \
+    ///   OMMEGA_SESSIONS_DIR=/data/adb/ommega-b/sessions \
     ///   ./ommegaclient-b-<hash> --ignored --nocapture \
     ///     'keymaster::tee_ops::session_cache_tests::drill_recover_keys_from_a_db_copy'
     #[test]
@@ -646,7 +646,7 @@ fn mint_attest_key_with(
     // certificate chain must not be forwarded as a successful attestation:
     // sending `cert_chain: []` means the operator cannot tell which side dropped
     // the chain, and the empty session would also be persisted to
-    // /data/adb/ommega/sessions.db. Fail loudly instead: the relay server treats an
+    // /data/adb/ommega-b/sessions.db. Fail loudly instead: the relay server treats an
     // error exactly like an empty chain (next layer / StrongBox demotion), so
     // behaviour is unchanged.
     if cert_chain.is_empty() {

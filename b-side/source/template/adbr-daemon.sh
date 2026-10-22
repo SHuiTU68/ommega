@@ -3,7 +3,7 @@
 # adbrd 监管脚本 —— A / B 两端共用同一份，用参数选读哪份配置：
 #
 #   sh adbr-daemon.sh --a   A 端：/data/misc/keystore/ommega/config 里的 `adbr:`
-#   sh adbr-daemon.sh --b   B 端：/data/adb/ommega/relay.conf 里的 OMMEGA_RELAY_ABDR_ENABLED
+#   sh adbr-daemon.sh --b   B 端：/data/adb/ommega-b/conf/relay.conf 里的 OMMEGA_RELAY_ABDR_ENABLED
 #
 # 设备被公网远控这件事必须由用户显式点头，所以这里只认配置里的开关，不开就不跑：
 #   开关开着 → 保证有一个 adbr 在跑（掉了 2 秒后重拉）
@@ -24,7 +24,11 @@ case "$1" in
 esac
 
 MODDIR=${0%/*}
-STATE_DIR=/data/adb/ommega
+# B 端有自己的一套目录（/data/adb/ommega-b），A/B 装在同一台机器上也不会打架
+case "$MODE" in
+  a) STATE_DIR=/data/adb/ommega ;;
+  b) STATE_DIR=/data/adb/ommega-b ;;
+esac
 BIN_DIR=$STATE_DIR/bin
 CONF_DIR=$STATE_DIR/conf
 RUN_DIR=$STATE_DIR/run
@@ -42,13 +46,14 @@ fi
 mkdir -p "$STATE_DIR/logs"
 
 # 只认 arm64：上游只给了这一份构建。
+# getprop 在某些执行上下文里会拿不到（WebUI 的 exec 桥环境不一定是完整 PATH），
+# 那时退回 uname；两个都拿不到才当不支持，别因为读不到属性就白白把功能关了。
 abi=$(getprop ro.product.cpu.abi 2>/dev/null)
+[ -n "$abi" ] || abi=$(uname -m 2>/dev/null)
 case "$abi" in
   arm64*|aarch64*) : ;;
-  *)
-    echo "[adbr] 本机不是 arm64（$abi），adbr 不启用" >&2
-    exit 0
-    ;;
+  x86_64|i?86|x86|armv7*|armeabi*) echo "[adbr] 本机不是 arm64（$abi），adbr 不启用" >&2; exit 0 ;;
+  *) echo "[adbr] 架构未知（$abi），按 arm64 继续" >&2 ;;
 esac
 
 # 单例：service.sh 每次跑都会把我们拉一遍，只有一份能持有这个锁。
@@ -99,15 +104,16 @@ switch_on() {
   truthy "$value"
 }
 
-# 用 /proc/<pid>/comm 认进程，不用 pidof/pgrep —— 那两个在 toybox 上行为不一致，
+# 用 /proc/<pid> 的 comm 前缀认进程，不用 pidof/pgrep —— 那两个在 toybox 上行为不一致，
 # 而且 pkill -f 会把带 "adbr" 的脚本（就是本脚本自己）一起杀掉。
-# 只认 `adbrd`：设备侧那份就叫这个（`adbr` 是电脑上的客户端）。
+# 前缀匹配是因为二进制会改自己的进程名：设备侧实测 comm 是 `adbrd-v0.1.0-an`（15 字符
+# 截断），按 `= adbrd` 精确比就一个都认不出来，开关关着也停不掉、面板也显示未运行。
 adbr_pids() {
   for d in /proc/[0-9]*; do
     [ -r "$d/comm" ] || continue
-    if [ "$(cat "$d/comm" 2>/dev/null)" = "adbrd" ]; then
-      printf '%s\n' "${d#/proc/}"
-    fi
+    case "$(cat "$d/comm" 2>/dev/null)" in
+      adbrd*) printf '%s\n' "${d#/proc/}" ;;
+    esac
   done
 }
 
@@ -177,19 +183,26 @@ while true; do
   # adbd 就得真的在监听。
   ensure_adbd_tcp
   if switch_on; then
-    if [ -z "$(adbr_pids)" ]; then
+    pids=$(adbr_pids)
+    if [ -n "$pids" ]; then
+      # 记下来给面板看（面板按名字认不出来，见 adbr_pids 上面的注释）。
+      printf '%s\n' "$pids" | head -n 1 > "$RUN_DIR/adbrd.pid" 2>/dev/null
+    else
       bin=$(find_bin)
       if [ -n "$bin" ]; then
         chmod 0755 "$bin" 2>/dev/null || true
         # --foreground：别让它自己 detach，输出直接进我们的日志，监管循环也看得见它。
         "$bin" --foreground >> "$LOG" 2>&1 &
+        echo $! > "$RUN_DIR/adbrd.pid" 2>/dev/null
         echo "[adbr] 已拉起 $bin (pid $!)"
       else
         echo "[adbr] 开关开着但找不到 adbr 二进制"
+        rm -f "$RUN_DIR/adbrd.pid" 2>/dev/null
       fi
     fi
   else
     pids=$(adbr_pids)
+    rm -f "$RUN_DIR/adbrd.pid" 2>/dev/null
     if [ -n "$pids" ]; then
       echo "[adbr] 开关关着，停掉: $pids"
       for p in $pids; do

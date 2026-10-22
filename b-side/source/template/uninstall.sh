@@ -2,12 +2,12 @@
 # ommega-b module uninstall hook.
 #
 # Runs automatically when the module is removed via a root manager
-# (KernelSU / Magisk / APatch). Kills the relay agent and removes the B-side
-# files under the shared /data/adb/ommega state dir. A-side (ommega module)
-# files are left untouched so the two modules can be uninstalled independently.
+# (KernelSU / Magisk / APatch). Kills the relay agent and removes
+# /data/adb/ommega-b, which belongs to this module alone -- the A side
+# (/data/adb/ommega) is not touched.
 
 MODDIR=${0%/*}
-STATE_DIR=/data/adb/ommega
+STATE_DIR=/data/adb/ommega-b
 
 # ---------------------------------------------------------------------------
 # 1. Stop the relay process (same kill pattern as service.sh).
@@ -41,21 +41,17 @@ if [ -w /sys/power/wake_unlock ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 2. Remove B-side files under the shared state dir. A-side files
-#    (ommegadata symlink, keymint/inject, pid files, restart.*) are kept.
+# 2. Remove the state dir. 它是本模块独占的，整个删掉就行；老装机上那份混在
+#    /data/adb/ommega 里的 B 残留顺手清一下（只删 B 自己那几个文件名）。
 # ---------------------------------------------------------------------------
-rm -f "$STATE_DIR/bin/relay" "$STATE_DIR/relay"            # hot-update relay binary
-rm -f "$STATE_DIR/conf/relay.conf" "$STATE_DIR/relay.conf"   # relay configuration
-rm -f "$STATE_DIR/run/restart.all" "$STATE_DIR/restart.all"
-rm -rf "$STATE_DIR/db"                                        # sessions.db, B-only
-rm -f "$STATE_DIR/run/relay.pid" "$STATE_DIR/relay.pid"
-# logs/ 是 A/B 共用的（A 端还有 soterta.log / watchdog.log），只删 B 自己写的那几个。
-rm -f "$STATE_DIR/logs/relay.log" "$STATE_DIR/logs/relay.log."* \
-      "$STATE_DIR/logs/adbr.log" "$STATE_DIR/logs/adbr-daemon.log" 2>/dev/null
-
-# ---------------------------------------------------------------------------
-# 3. Drop the shared state dir only if it is now completely empty.
-# ---------------------------------------------------------------------------
-[ -z "$(ls -A "$STATE_DIR" 2>/dev/null)" ] && rmdir "$STATE_DIR" 2>/dev/null
+rm -rf "$STATE_DIR"
+rm -f /data/adb/ommega/bin/relay /data/adb/ommega/conf/relay.conf \
+      /data/adb/ommega/relay /data/adb/ommega/relay.conf \
+      /data/adb/ommega/restart.all /data/adb/ommega/run/restart.all \
+      /data/adb/ommega/run/relay.pid /data/adb/ommega/relay.pid 2>/dev/null
+rm -rf /data/adb/ommega/db 2>/dev/null
+rm -f /data/adb/ommega/logs/relay.log /data/adb/ommega/logs/relay.log.* \
+      /data/adb/ommega/logs/adbr.log /data/adb/ommega/logs/adbr-daemon.log \
+      /data/adb/ommega/logs/service.log 2>/dev/null
 
 exit 0

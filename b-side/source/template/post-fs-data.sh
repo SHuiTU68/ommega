@@ -1,5 +1,5 @@
 MODDIR=${0%/*}
-STATE_DIR=/data/adb/ommega
+STATE_DIR=/data/adb/ommega-b
 BIN_DIR=$STATE_DIR/bin
 CONF_DIR=$STATE_DIR/conf
 RUN_DIR=$STATE_DIR/run
@@ -11,7 +11,7 @@ rm -f "$RUN_DIR/restart.all"
 
 # First-install only: drop the relay config template so the relay daemon
 # (B-side, remote TEE attestation) actually has settings to load.  Edit
-# /data/adb/ommega/relay.conf after install to point at the real relay_server.
+# /data/adb/ommega-b/conf/relay.conf after install to point at the real relay_server.
 TARGET_RELAY_CONFIG=$CONF_DIR/relay.conf
 if [ ! -f "$TARGET_RELAY_CONFIG" ] && [ -f "$MODDIR/relay.conf" ]; then
   cp "$MODDIR/relay.conf" "$TARGET_RELAY_CONFIG"
