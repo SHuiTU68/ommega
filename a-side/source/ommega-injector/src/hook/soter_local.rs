@@ -498,7 +498,13 @@ pub(crate) fn answerable(code: u32) -> bool {
 /// 那 `finishSign` 也必须回来本地答 —— 去问远程就是 B 端不认识这个句柄，直接回 -204。
 pub(crate) fn has_session(session: i64) -> bool {
     state()
-        .and_then(|state| state.sessions.lock().ok().map(|map| map.contains_key(&session)))
+        .and_then(|state| {
+            state
+                .sessions
+                .lock()
+                .ok()
+                .map(|map| map.contains_key(&session))
+        })
         .unwrap_or(false)
 }
 

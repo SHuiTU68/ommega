@@ -368,8 +368,7 @@ impl Remotable for SoterTa {
         // 微信拿这把 ASK 去腾讯验证一定被拒（就是“系统错误”）。
         // finishSign：会话要是本进程开的（init 那笔服务端让我们本地答），这一笔也必须本地答。
         // 去问远程就是 B 端不认识这个句柄，直接 -204 —— 检测器的 T12 就是这么红的。
-        let local_session =
-            code == FINISH_SIGN && session.is_some_and(soter_local::has_session);
+        let local_session = code == FINISH_SIGN && session.is_some_and(soter_local::has_session);
         if local_session {
             log::info!("event=soterta finishSign session is local; answering without the relay");
         }
