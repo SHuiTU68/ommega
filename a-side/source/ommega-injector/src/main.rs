@@ -663,7 +663,7 @@ mod tests {
         );
 
         std::env::remove_var("OMMEGA_INJECT_TARGETS");
-        let (keystore2, soter, extras) = selected_targets();
+        let (keystore2, soter, _, extras) = selected_targets();
         assert!(keystore2 && soter);
         assert!(extras.is_empty());
     }

@@ -360,7 +360,21 @@ fn apply_clienta_overrides(base: Arc<InjectorConfig>) -> Arc<InjectorConfig> {
         merged.filter.global_scope = value;
     }
     if let Some(list) = overrides.target.as_ref() {
-        merged.scoop = list.clone();
+        // 系统 uid 的 ROM app（工程模式那类）必须**始终**留在 scoop 里：
+        // 它们的包名命中 `SYSTEM_PACKAGE_PREFIXES`（`com.oplus.` 等），只有被
+        // 显式收进去才过得了 `RejectedSystemPackage` 那关。而面板一保存应用列表
+        // 就会把 target.txt 写成唯一事实源、整个替掉默认套餐 —— 工程模式就从
+        // scoop 里消失了，它的 attestation 就只能落回系统 keystore（工模里
+        // keybox / rpmbkey 页拿不到我们的链）。这里把域→包名映射里的包补回来。
+        let mut effective = list.clone();
+        for packages in base.filter.system_sid_packages.values() {
+            for pkg in packages {
+                if !pkg.is_empty() && !effective.iter().any(|existing| existing == pkg) {
+                    effective.push(pkg.clone());
+                }
+            }
+        }
+        merged.scoop = effective;
     }
     Arc::new(merged)
 }
