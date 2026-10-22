@@ -291,32 +291,51 @@ mask_feature() {
     fi
   done
 
-  # 挂载层的兜底：有些管理器（这台上的 KernelSU 3.3 就是）**不给 /vendor 做模块
-  # overlay**，whiteout 种下去也不生效 —— 真的 XML 还是原样，PM 照样上报这个
-  # feature。那就直接把一份空 `<permissions/>` bind mount 到那个文件上：
-  # post-fs-data 比 system_server 早，PM 读权限文件时就已经看到了。
-  # 标签要改成目标分区的（否则 system_server 读不到）。
+  # 挂载层的兜底：管理器没给这个分区做 overlay（这台 KernelSU 3.3 就只覆盖 /system，
+  # `/vendor` 是独立 erofs、`/system/vendor` 只是软链）—— 那 whiteout 白种了。
+  # 不再把 /data 里的文件 bind 到 /vendor 的那个 XML 上：那条挂载在 mountinfo 里长
+  # 这样 `... /adb/ommega/empty_permissions.xml /vendor/etc/permissions/xxx.xml ...
+  # f2fs`，连源路径都写着，用户态一眼看出来。改成跟 metamodule 一样的做法：先在
+  # /mnt/vendor/ 下挂一个小 tmpfs（看起来像 OEM 自己挂的），把目录完整拷进去、
+  # 逐文件镜像 SELinux 标签，把要隐藏的那个换成空 `<permissions/>`，最后把假目录
+  # bind 到真实目录。mountinfo 里只剩 tmpfs + bind，无 /data、无 f2fs。
   if [ "$mf_enabled" = true ]; then
     for mf_rel in $WL_RELS; do
       case "$mf_rel" in
         vendor/*|product/*|system_ext/*) mf_src="/$mf_rel/$mf_name" ;;
         *) mf_src="/system/$mf_rel/$mf_name" ;;
       esac
+      mf_dir=$(dirname "$mf_src")
       [ -f "$mf_src" ] || continue
-      # overlay 真生效时这里已经是 whiteout 设备或空声明，不用再盖
       grep -q '<permissions/>' "$mf_src" 2>/dev/null && continue
-      grep -q " $mf_src " /proc/mounts 2>/dev/null && continue
-      mf_empty=/data/adb/ommega/empty_permissions.xml
-      if [ ! -f "$mf_empty" ]; then
-        printf '<?xml version="1.0" encoding="utf-8"?>\n<permissions/>\n' > "$mf_empty" 2>/dev/null || continue
-        chmod 0644 "$mf_empty" 2>/dev/null
+      grep -q " $mf_dir " /proc/mounts 2>/dev/null && continue
+      mf_fake_base=${OMMEGA_FAKE_MOUNT_BASE:-/mnt/vendor/vendor_permissions}
+      if ! grep -q " $mf_fake_base " /proc/mounts 2>/dev/null; then
+        mkdir -p "$mf_fake_base" 2>/dev/null
+        mount -t tmpfs -o mode=0755,seclabel tmpfs "$mf_fake_base" 2>/dev/null || {
+          log_line "ommega: tmpfs mount for $mf_fake_base failed; mask skipped"
+          continue
+        }
       fi
+      mf_stage="$mf_fake_base$(printf '%s' "$mf_dir" | tr '/' '_')"
+      mkdir -p "$mf_stage" 2>/dev/null || continue
+      rm -rf "$mf_stage"/* 2>/dev/null
+      cp -a "$mf_dir"/. "$mf_stage"/ 2>/dev/null
+      for mf_one in "$mf_dir"/*; do
+        [ -e "$mf_one" ] || continue
+        mf_ctx=$(ls -Zd "$mf_one" 2>/dev/null | awk '{print $1}')
+        [ -n "$mf_ctx" ] && chcon "$mf_ctx" "$mf_stage/$(basename "$mf_one")" 2>/dev/null
+      done
+      printf '<?xml version="1.0" encoding="utf-8"?>\n<permissions/>\n' > "$mf_stage/$mf_name" 2>/dev/null || continue
+      chmod 0644 "$mf_stage/$mf_name" 2>/dev/null
       case "$mf_src" in
-        /vendor/*) chcon u:object_r:vendor_file:s0 "$mf_empty" 2>/dev/null ;;
-        *) chcon u:object_r:system_file:s0 "$mf_empty" 2>/dev/null ;;
+        /vendor/*) chcon u:object_r:vendor_file:s0 "$mf_stage/$mf_name" 2>/dev/null ;;
+        *) chcon u:object_r:system_file:s0 "$mf_stage/$mf_name" 2>/dev/null ;;
       esac
-      if mount --bind "$mf_empty" "$mf_src" 2>/dev/null; then
-        log_line "ommega: $mf_name bind-mounted over $mf_src (manager does not overlay this partition)"
+      if mount --bind "$mf_stage" "$mf_dir" 2>/dev/null; then
+        log_line "ommega: $mf_name masked via staged fake mount $mf_stage over $mf_dir"
+      else
+        log_line "ommega: bind for $mf_dir failed; feature stays visible"
       fi
     done
   fi
