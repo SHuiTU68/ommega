@@ -686,6 +686,19 @@ fn refuse_strongbox_body(kind: &str, msg: &str) -> Response {
 /// A layer "succeeds" when it returns a result without an `error` field;
 /// otherwise the next layer is tried, and only when every layer fails is an
 /// error returned.
+/// `RELAY_ATTEST_KEYBOX_FIRST=1` 时 attest 回到「服务端密钥层优先」。
+///
+/// 默认（不开）= 真机优先：只要 B 在线且合格，链就是真机出的；密钥层只在真机
+/// 不可用时兜底。想专门验证服务端密钥层（serverbox）就打开这个开关。
+pub fn keybox_first() -> bool {
+    matches!(
+        std::env::var("RELAY_ATTEST_KEYBOX_FIRST")
+            .unwrap_or_default()
+            .trim(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
 async fn run_a_side_task(state: &AppState, task_type: &str, body: &Value) -> Response {
     // A 端远程模式默认不带 `device_id`（模块装好就是留空，面板也不再占位一台设备）。
     // 留空 = 「服务端挑一台」：这里在入口一次归一（控制台配的默认设备），然后整条链
@@ -782,7 +795,7 @@ async fn run_a_side_task(state: &AppState, task_type: &str, body: &Value) -> Res
     // 只在真机不可用（离线 / 没有这个 alias / StrongBox 不支）时当兜底。
     // sign/decrypt 等其它请求仍按模式层序（否则会和已铸出的 keyblob 对不上）：
     // 真机铸的 alias 在密钥层没有 session，会自然落到 B 那层。
-    let order: &[&str] = if task_type == "attest" {
+    let order: &[&str] = if task_type == "attest" && !keybox_first() {
         &["b", "keybox", "self_signed"]
     } else if serverbox {
         &["keybox", "b", "self_signed"]
