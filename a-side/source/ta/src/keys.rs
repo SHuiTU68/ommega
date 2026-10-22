@@ -415,8 +415,15 @@ impl crate::KeyMintTa {
         // `/strongbox` HAL here was tried but failed on devices where that HAL
         // is declared but not servable from the keystore context (Unknown error
         // -1000), so it is not wired in.
+        // 认证密钥（PURPOSE_ATTEST_KEY）永远本地生成：远端 B 的 TA 不收「app 自备的
+        // attestation key」（实测直接generateKey -3、用它签子证书也 -3），而 remote keyblob
+        // 的私钥在 B 那边，回到本机签子证书只能再转发，服务端不认（/api/sign/ 500）——
+        // 整笔就 -1000（TrustAttestor 的 L2 就是这样挂的）。这类 key 本地造、本地签，
+        // 走软件 keybox 链；普通业务 key 照旧走远端。
         let remote_attest = get_opt_tag_value!(params, AttestationChallenge)?.is_some()
             && attestation_key.is_none()
+            && !requests_attest_key_purpose(params)
+            && !requests_user_auth(params)
             && self.dev.remote.as_ref().is_some_and(|r| r.enabled());
         if remote_attest {
             // `Ok(None)` from the remote backend means it was unavailable; fall
@@ -497,6 +504,7 @@ impl crate::KeyMintTa {
             .remote
             .as_ref()
             .ok_or_else(|| km_err!(UnknownError, "remote backend not configured"))?;
+        let t_remote = std::time::Instant::now();
         let Some(chain) = remote.attest(
             challenge,
             app_id,
@@ -507,6 +515,11 @@ impl crate::KeyMintTa {
         else {
             return Ok(None);
         };
+        log::info!(
+            "remote attest returned {} certs in {:?}",
+            chain.len(),
+            t_remote.elapsed()
+        );
         if chain.is_empty() {
             return Ok(None);
         }
@@ -553,6 +566,7 @@ impl crate::KeyMintTa {
                 .collect(),
             key_material: remote_key,
         };
+        let t_encrypt = std::time::Instant::now();
         let kek_context = self.dev.keys.kek_context()?;
         let root_kek = self.root_kek(&kek_context)?;
         let hidden = tag::hidden(params, self.root_of_trust()?)?;
@@ -572,6 +586,12 @@ impl crate::KeyMintTa {
             keyblob::SlotPurpose::KeyGeneration,
         )?;
         let serialized_keyblob = encrypted_keyblob.into_vec()?;
+        log::info!(
+            "remote keyblob built ({}B) in {:?}, total remote path {:?}",
+            serialized_keyblob.len(),
+            t_encrypt.elapsed(),
+            t_remote.elapsed()
+        );
 
         Ok(Some(KeyCreationResult {
             key_blob: serialized_keyblob,
@@ -1321,6 +1341,33 @@ fn remote_attestation_ids(
         out.try_push((tag, value.to_vec()))?;
     }
     Ok(out)
+}
+
+/// 这次 generateKey 是不是在要一把「认证密钥」（PURPOSE_ATTEST_KEY）。
+///
+/// 这类 key 的私钥要留在本机给子证书签 TBS，不能走远端代理（远端只给一个
+/// keyblob，本机解不开、也没法拿它签），所以它必须本地生成。
+fn requests_attest_key_purpose(params: &[KeyParam]) -> bool {
+    params.iter().any(|p| {
+        matches!(
+            p,
+            KeyParam::Purpose(kmr_wire::keymint::KeyPurpose::AttestKey)
+        )
+    })
+}
+
+/// 这次 generateKey 是不是在要一把「必须用户认证才能用」的 key。
+///
+/// 这类 key 交给远端铸是两头堵：B 端真 TEE 每次 begin(SIGN) 都要 auth token，而
+/// relay 在 B 侧拿不到 token（TEE 用硬件密钥签的 HMAC，伪造不了），签名必然 -26；
+/// 反过来把 504/505 丢掉，叶子又变成「不需要认证」，跟 app 的请求对不上 ——
+/// TrustAttestor 的 `hardware.attestation.user_auth_metadata` 就是这么判红的。
+/// 认证策略本来就是本机的事（指纹/锁屏由本机 Keystore2 管），所以这类 key 统一
+/// 本地生成，链走本地 keybox，授权列表完整。
+fn requests_user_auth(params: &[KeyParam]) -> bool {
+    params
+        .iter()
+        .any(|p| matches!(p, KeyParam::UserAuthType(_) | KeyParam::AuthTimeout(_)))
 }
 
 #[cfg(test)]

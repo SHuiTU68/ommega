@@ -545,6 +545,36 @@ fn mint_attest_key_on(
     app_id_der: &[u8],
     spec: &KeySpec,
 ) -> Result<TeeSession> {
+    mint_attest_key_with(service, challenge, app_id_der, spec, None)
+}
+
+/// 用调用方提供的 attestation key（keyblob）给子 key 出证。
+///
+/// 只给自检用：确认本机 TA 到底认不认「一个不是它刚刚新生、但确实是它产的」keyblob
+/// 当 attestation key。验通了才能做 A 端 remote 侧的透传。
+pub fn mint_with_attestation_key(
+    service: &'static str,
+    challenge: &[u8],
+    app_id_der: &[u8],
+    spec: &KeySpec,
+    attest_key_blob: &[u8],
+    issuer_subject: &[u8],
+) -> Result<TeeSession> {
+    let ak = crate::android::hardware::security::keymint::AttestationKey::AttestationKey {
+        keyBlob: attest_key_blob.to_vec(),
+        attestKeyParams: vec![],
+        issuerSubjectName: issuer_subject.to_vec(),
+    };
+    mint_attest_key_with(service, challenge, app_id_der, spec, Some(&ak))
+}
+
+fn mint_attest_key_with(
+    service: &'static str,
+    challenge: &[u8],
+    app_id_der: &[u8],
+    spec: &KeySpec,
+    attest: Option<&crate::android::hardware::security::keymint::AttestationKey::AttestationKey>,
+) -> Result<TeeSession> {
     let keymint = get_system_keymint(service)
         .with_context(|| ks_err!("real keymint {service} connect failed"))?;
     // Probe the actual HAL version instead of assuming V5. A StrongBox HAL
@@ -553,7 +583,7 @@ fn mint_attest_key_on(
     let km_version = probe_keymint_version(&keymint);
     let params = build_attestation_params(app_id_der, challenge, spec, km_version)?;
 
-    let result = match keymint.generateKey(&params, None) {
+    let result = match keymint.generateKey(&params, attest) {
         Ok(result) => result,
         Err(status) => {
             if is_dead_object_status(&status) {
@@ -735,7 +765,16 @@ fn build_attestation_params(
     // App 带来的 user_auth（502/504/505...）不再下发给真 TEE：带着它们 TEE 会铸出
     // “需要认证”的 key，而 relay 签名给不出 token，begin(SIGN) 一律 -26。
     // 指纹策略仍由 A 端 keyblob / Keystore2 执行；503 已在上面统一 push。
-    let _ = &spec.user_auth;
+    //
+    // 509（UNLOCKED_DEVICE_REQUIRED）是例外：它只要求「设备处于解锁状态」，不要
+    // 认证 token，B 端整机解锁时 begin(SIGN) 照样能过。丢掉它的代价是叶子少一个
+    // 726，TrustAttestor 的 hardware.attestation.keymint_boundary 会直接判「功能
+    // 约束未被回显」。
+    for (tag, value) in &spec.user_auth {
+        if *tag == 509 {
+            params.push(user_auth_param(*tag, *value)?);
+        }
+    }
 
     // Certificate validity bounds (app-specified or default now / now+10y);
     // real TEEs require NOT_BEFORE/NOT_AFTER (else MISSING_NOT_BEFORE -80).
@@ -848,13 +887,15 @@ pub fn sign(alias: &str, data: &[u8], algorithm: &str) -> Result<Vec<u8>> {
     let session = session_get(alias)?;
     let op_params = sign_begin_params(algorithm, session.algorithm)
         .with_context(|| ks_err!("unsupported sign algorithm {algorithm}"))?;
-    run_single_input_op(
+    let (out, upgraded) = run_single_input_op(
         &session.key_blob,
         session.hal_service,
         KeyPurpose::SIGN,
         &op_params,
         data,
-    )
+    )?;
+    persist_upgraded_blob(alias, session, upgraded);
+    Ok(out)
 }
 
 /// Decrypts `data` with the TEE key for `alias`.
@@ -862,13 +903,24 @@ pub fn decrypt(alias: &str, data: &[u8], algorithm: &str) -> Result<Vec<u8>> {
     let session = session_get(alias)?;
     let op_params = decrypt_begin_params(algorithm, session.algorithm)
         .with_context(|| ks_err!("unsupported decrypt algorithm {algorithm}"))?;
-    run_single_input_op(
+    let (out, upgraded) = run_single_input_op(
         &session.key_blob,
         session.hal_service,
         KeyPurpose::DECRYPT,
         &op_params,
         data,
-    )
+    )?;
+    persist_upgraded_blob(alias, session, upgraded);
+    Ok(out)
+}
+
+/// TEE 把 blob 升过级就换掉会话里那份：下次 begin 直接用新的，不用每次都升。
+/// 证书链、算法、HAL 名都不动 —— 升级只改 blob 里的版本/补丁级别记录。
+fn persist_upgraded_blob(alias: &str, mut session: TeeSession, upgraded: Option<Vec<u8>>) {
+    let Some(blob) = upgraded else { return };
+    session.key_blob = blob;
+    session_put(alias, session);
+    log::info!("alias {alias}: key blob 已按 KEY_REQUIRES_UPGRADE 升级并写回会话");
 }
 
 /// Formats a KeyMint service-specific error code as a `[km_error=CODE]`
@@ -881,18 +933,46 @@ fn km_error_suffix(status: &rsbinder::Status) -> String {
         .unwrap_or_default()
 }
 
+/// `KEY_REQUIRES_UPGRADE`：blob 里记的 OS/VENDOR/BOOT patchlevel 跟本机当前值不一样时
+/// TEE 就是回这个。B 端建料时带的是改写过的补丁日期（为了链上的日期好看），所以这把
+/// key 天生「版本不一致」，不升级的话每一笔签名都卡在 begin。
+const KM_ERROR_KEY_REQUIRES_UPGRADE: i32 = -62;
+
+/// 返回 (操作结果, 升级后的 key blob)。第二项是 Some 时调用方要把新 blob 写回会话，
+/// 否则同一把 key 每签一次都要先升一次。
 fn run_single_input_op(
     key_blob: &[u8],
     hal_service: &'static str,
     purpose: KeyPurpose,
     op_params: &[KmKeyParameter],
     input: &[u8],
-) -> Result<Vec<u8>> {
+) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
     let keymint = get_system_keymint(hal_service)
         .with_context(|| ks_err!("real keymint {hal_service} connect failed"))?;
 
+    let mut upgraded: Option<Vec<u8>> = None;
     let begin = match keymint.begin(purpose, key_blob, op_params, None) {
         Ok(result) => result,
+        Err(status) if extract_km_error_code(&status) == Some(KM_ERROR_KEY_REQUIRES_UPGRADE) => {
+            // AIDL 的既定流程：先 upgradeKey 换一份新格式的 blob，再用它重试。
+            let fresh = keymint.upgradeKey(key_blob, &[]).map_err(|status| {
+                let km_code = km_error_suffix(&status);
+                anyhow!("real keymint {hal_service} upgradeKey failed {km_code}: {status}")
+            })?;
+            let retry = keymint
+                .begin(purpose, &fresh, op_params, None)
+                .map_err(|status| {
+                    if is_dead_object_status(&status) {
+                        clear_system_keymint(hal_service);
+                    }
+                    let km_code = km_error_suffix(&status);
+                    anyhow!(
+                        "real keymint {hal_service} begin after upgrade failed {km_code}: {status}"
+                    )
+                })?;
+            upgraded = Some(fresh);
+            retry
+        }
         Err(status) => {
             if is_dead_object_status(&status) {
                 clear_system_keymint(hal_service);
@@ -931,7 +1011,7 @@ fn run_single_input_op(
     if result.is_err() {
         let _ = operation.r#abort();
     }
-    result
+    Ok((result?, upgraded))
 }
 
 // ---------------------------------------------------------------------------

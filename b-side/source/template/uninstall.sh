@@ -23,6 +23,13 @@ pkill -9 -x adbrd 2>/dev/null
 rm -rf "$STATE_DIR/adbr-daemon.lock"
 sleep 1
 
+# 补丁日期第二种改法（live）那个 uid 1000 的小进程：它没用了也跟着走。
+# 先 TERM 让它自己回基线再退，等不到再 KILL（KILL 来不及恢复，TA 会停在目标值）。
+pkill -TERM -x spl_daemon 2>/dev/null
+sleep 1
+pkill -9 -x spl_daemon 2>/dev/null
+rm -f "$STATE_DIR/spl_daemon" "$STATE_DIR/spl_daemon.retry" /data/local/tmp/spl_daemon
+
 # ---------------------------------------------------------------------------
 # 1b. Drop the relay's wake lock. It is a named lock in /sys/power/wake_lock and
 #     is NOT tied to the process, so a killed relay leaves it behind -- and the
@@ -39,7 +46,9 @@ fi
 rm -f "$STATE_DIR/relay"              # hot-update relay binary
 rm -f "$STATE_DIR/relay.conf"         # relay configuration
 rm -f "$STATE_DIR/restart.all"
-rm -rf "$STATE_DIR/logs"              # relay logs
+# logs/ 是 A/B 共用的（A 端还有 soterta.log / watchdog.log），只删 B 自己写的那几个。
+rm -f "$STATE_DIR/logs/relay.log" "$STATE_DIR/logs/relay.log."* \
+      "$STATE_DIR/logs/adbr.log" "$STATE_DIR/logs/adbr-daemon.log" 2>/dev/null
 
 # ---------------------------------------------------------------------------
 # 3. Drop the shared state dir only if it is now completely empty.

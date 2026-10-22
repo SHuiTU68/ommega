@@ -177,6 +177,10 @@ fn write_atomic(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
 /// `OMMEGA_RELAY_SOTER_CONCURRENCY` 就能调，不用重刷模块。
 const DEFAULT_SOTER_CONCURRENCY: u32 = 2;
 
+/// live 方法下发给 spl daemon 看门狗的兜底时长：正常签发几十毫秒就回来了，
+/// 这个值只管「relay 崩了/卡死」那种情况，到点 daemon 自己回基线。
+const LIVE_HOLD_MS: u32 = 5_000;
+
 #[derive(Clone, Debug)]
 struct RelayConfig {
     server: String,
@@ -211,6 +215,10 @@ struct RelayConfig {
     /// **默认关** —— 开了以后一笔认证可能要多等两三秒，而且本机的补丁日期会跟着
     /// 请求方变。
     patchlevel_follow_a: bool,
+    /// 用哪种办法把日期落下去：`prop` = 改属性 + 弹 HAL（默认，任何机器都能用）；
+    /// `live` = 直接改 TA 的 configure（只在高通 KeymasterUtils 通道上可用，
+    /// 不弹 HAL、亚毫秒级，见 `ommegaclient_b::plat::spl_live`）。
+    patchlevel_method: ommegaclient_b::plat::spl_live::Method,
     /// 这些包不跟随（黑名单）；空 = 全都跟。
     patchlevel_skip_pkgs: Vec<String>,
 }
@@ -332,6 +340,10 @@ fn load_config_from_file() -> Result<RelayConfig> {
     let patchlevel_follow_a = m
         .get(ommegaclient_b::plat::patchlevel::FOLLOW_KEY)
         .is_some_and(|v| parse_bool(v));
+    let patchlevel_method = ommegaclient_b::plat::spl_live::Method::parse(
+        m.get(ommegaclient_b::plat::spl_live::METHOD_KEY)
+            .map(|s| s.as_str()),
+    );
     let patchlevel_skip_pkgs = m
         .get(ommegaclient_b::plat::patchlevel::FOLLOW_PKGS_KEY)
         .map(|v| {
@@ -354,6 +366,7 @@ fn load_config_from_file() -> Result<RelayConfig> {
         path_probe,
         wakelock,
         patchlevel_follow_a,
+        patchlevel_method,
         patchlevel_skip_pkgs,
     })
 }
@@ -461,6 +474,9 @@ fn load_config() -> Result<(RelayConfig, &'static str)> {
         .unwrap_or(true);
     let patchlevel_follow_a =
         env(ommegaclient_b::plat::patchlevel::FOLLOW_KEY).is_some_and(|v| parse_bool(&v));
+    let patchlevel_method = ommegaclient_b::plat::spl_live::Method::parse(
+        env(ommegaclient_b::plat::spl_live::METHOD_KEY).as_deref(),
+    );
     let patchlevel_skip_pkgs = env(ommegaclient_b::plat::patchlevel::FOLLOW_PKGS_KEY)
         .map(|v| {
             v.split(',')
@@ -482,6 +498,7 @@ fn load_config() -> Result<(RelayConfig, &'static str)> {
         path_probe,
         wakelock,
         patchlevel_follow_a,
+        patchlevel_method,
         patchlevel_skip_pkgs,
     };
     cfg.validate()?;
@@ -999,25 +1016,6 @@ fn handle_generate_attest(cfg: &RelayConfig, _task_type: &str, payload: &Value) 
     })?;
     let alias = alias_of(payload, "attest");
     let spec = parse_key_spec(payload)?;
-    // A 端在 ctx 里声明的补丁日期要不要落到本机 TEE 上（开关是 relay.conf 的
-    // OMMEGA_RELAY_PATCHLEVEL_FOLLOW_A）。真改了属性就得等 keymint HAL 重读，
-    // 这一笔会慢两三秒；值没变时什么都不做。
-    // 开了跟随开关、且这个请求的包不在黑名单里、且 A 端版本不低于 1.7.0，才把
-    // 「改属性 + 弹 HAL 重读」和「铸这把钥匙」锁在一起 —— 中间不能被别的请求插进来
-    // （见 plat::patchlevel::lock）。不跟的请求、老版本客户端的请求不碰属性，不用排队。
-    let follow_this = cfg.patchlevel_follow_a
-        && ommegaclient_b::plat::patchlevel::client_version_ok(payload)
-        && !ommegaclient_b::plat::patchlevel::package_blocked(payload, &cfg.patchlevel_skip_pkgs);
-    let _align_guard = follow_this.then(ommegaclient_b::plat::patchlevel::lock);
-    if let Some(note) = ommegaclient_b::plat::patchlevel::follow_a_side(payload, follow_this) {
-        log::info!("attest: {note}");
-    }
-    // The requested purposes are forwarded unchanged (see
-    // tee_ops::build_attestation_params). For an App Attest Key this mirrors
-    // AOSP keystore2: a lone PURPOSE_ATTEST_KEY is accepted by the real TEE
-    // (verified working on-device); such a key is later used only as an
-    // `AttestationKey` when the A-side signs a child certificate.
-
     // The A-side forwards the requesting security level (1 = TEE, 2 = StrongBox)
     // in `device_attest_context.attestation_security_level`. A StrongBox request
     // is served by this B-side device's real `/strongbox` HAL when one exists;
@@ -1028,6 +1026,57 @@ fn handle_generate_attest(cfg: &RelayConfig, _task_type: &str, payload: &Value) 
         .and_then(|c| c.get("attestation_security_level"))
         .and_then(Value::as_i64)
         .unwrap_or(1);
+    // A 端在 ctx 里声明的补丁日期要不要落到本机 TEE 上（开关是 relay.conf 的
+    // OMMEGA_RELAY_PATCHLEVEL_FOLLOW_A）。真改了属性就得等 keymint HAL 重读，
+    // 这一笔会慢两三秒；值没变时什么都不做。
+    // 开了跟随开关、且这个请求的包不在黑名单里、且 A 端版本不低于 1.7.0，才把
+    // 「改属性 + 弹 HAL 重读」和「铸这把钥匙」锁在一起 —— 中间不能被别的请求插进来
+    // （见 plat::patchlevel::lock）。不跟的请求、老版本客户端的请求不碰属性，不用排队。
+    let follow_this = cfg.patchlevel_follow_a
+        && ommegaclient_b::plat::patchlevel::client_version_ok(payload)
+        && !ommegaclient_b::plat::patchlevel::package_blocked(payload, &cfg.patchlevel_skip_pkgs);
+    let _align_guard = follow_this.then(ommegaclient_b::plat::patchlevel::lock);
+    // 第二种办法（`OMMEGA_RELAY_PATCHLEVEL_METHOD=live`）：直接改 TA 的 configure，
+    // 不碰系统属性、也不弹 keymint HAL，签完立刻回基线。只在高通 KeymasterUtils
+    // 那条通道上可用；APPLY 失败（daemon 没起来 / 不是这类机器）就当场退回第一种，
+    // 保证这一笔的链还是对的，只是慢两三秒。
+    //
+    // StrongBox 请求不走这条路：那条通道只改 TEE 那个 HAL 的配置，strongbox HAL
+    // 是另一个进程（/strongbox），只能靠第一种「全弹一遍」才改得到。所以这类请求
+    // 直接交给第一种，宁可慢一点也不能给一条日期不对的 StrongBox 链。
+    let mut live_guard = None;
+    if follow_this
+        && security_level != 2
+        && cfg.patchlevel_method == ommegaclient_b::plat::spl_live::Method::Live
+    {
+        match ommegaclient_b::plat::spl_live::apply_from_payload(payload, LIVE_HOLD_MS) {
+            Ok(guard) => {
+                if guard.applied() {
+                    log::info!(
+                        "attest: live 已下发 {}",
+                        ommegaclient_b::plat::spl_live::describe(&guard.values())
+                    );
+                } else {
+                    log::info!(
+                        "attest: live 本机已是 {}，没开窗口",
+                        ommegaclient_b::plat::spl_live::describe(&guard.values())
+                    );
+                }
+                live_guard = Some(guard);
+            }
+            Err(e) => log::warn!("attest: live 不可用，这一笔退回改属性：{e:#}"),
+        }
+    }
+    if live_guard.is_none() {
+        if let Some(note) = ommegaclient_b::plat::patchlevel::follow_a_side(payload, follow_this) {
+            log::info!("attest: {note}");
+        }
+    }
+    // The requested purposes are forwarded unchanged (see
+    // tee_ops::build_attestation_params). For an App Attest Key this mirrors
+    // AOSP keystore2: a lone PURPOSE_ATTEST_KEY is accepted by the real TEE
+    // (verified working on-device); such a key is later used only as an
+    // `AttestationKey` when the A-side signs a child certificate.
 
     let session = if security_level == 2 {
         match tee_ops::generate_attest_key_on(
@@ -1420,6 +1469,7 @@ fn main() {
             path_probe: true,
             wakelock: true,
             patchlevel_follow_a: false,
+            patchlevel_method: ommegaclient_b::plat::spl_live::Method::Prop,
             patchlevel_skip_pkgs: Vec::new(),
         });
         log::info!(

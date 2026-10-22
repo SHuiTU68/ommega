@@ -62,9 +62,47 @@ struct CachedClient {
     client: Client,
 }
 
-/// The connection pool.  Rebuilt only when `tls_insecure` or the chosen
-/// interface changes; otherwise the same client (and its pool) is reused.
-static CLIENT_CACHE: Mutex<Option<CachedClient>> = Mutex::new(None);
+/// The connection pool.  Keyed by (`tls_insecure`, bound interface) and kept for
+/// a few combinations at once: 「不绑接口」的那份和探测出来的绑定接口那份要同时
+/// 活着，否则一笔请求先走默认路由、下一笔走绑定，两份会互相把对方的连接池
+/// 踢掉，每次都重开 TCP。
+static CLIENT_CACHE: Mutex<Vec<CachedClient>> = Mutex::new(Vec::new());
+
+fn cached_client(insecure: bool, iface: Option<String>) -> Result<Client> {
+    let mut slot = CLIENT_CACHE
+        .lock()
+        .map_err(|_| anyhow!("client cache lock poisoned"))?;
+    if let Some(hit) = slot
+        .iter()
+        .find(|c| c.insecure == insecure && c.iface == iface)
+    {
+        return Ok(hit.client.clone());
+    }
+    let client = build_client(insecure, iface.as_deref());
+    if slot.len() >= 4 {
+        slot.remove(0);
+    }
+    slot.push(CachedClient {
+        insecure,
+        iface,
+        client: client.clone(),
+    });
+    Ok(client)
+}
+
+/// 不探测、不绑接口的 client：直接交给 OS 默认路由。
+///
+/// 正常网络下这就是最快的一条路，一个往返就完事；探测只在真的有 VPN 吞流量时
+/// 才有意义，不能拿它给每一笔请求都加一道前置开销（实测一次探测就是 0.3~0.5s，
+/// 打开一次 KeyAttestation 就白等半秒）。
+fn unbound_client() -> Result<Client> {
+    let insecure = config::config()
+        .read()
+        .map_err(|_| anyhow!("config lock poisoned"))?
+        .remote
+        .tls_insecure;
+    cached_client(insecure, None)
+}
 
 /// Returns a reqwest blocking client for the current `tls_insecure` setting and
 /// the interface traffic should leave from.
@@ -84,31 +122,10 @@ fn get_client() -> Result<Client> {
     };
     let iface = desired_iface(&bind_iface, &base_url);
 
-    let mut slot = CLIENT_CACHE
-        .lock()
-        .map_err(|_| anyhow!("client cache lock poisoned"))?;
-
-    if let Some(cached) = slot.as_ref() {
-        if cached.insecure == insecure && cached.iface == iface {
-            return Ok(cached.client.clone());
-        }
-    }
-
     if let Some(name) = iface.as_deref() {
         log::info!("relay traffic bound to interface {name}");
     }
-    let client = build_client(insecure, iface.as_deref());
-    *slot = Some(CachedClient {
-        insecure,
-        iface,
-        client,
-    });
-
-    Ok(slot
-        .as_ref()
-        .expect("client was just stored")
-        .client
-        .clone())
+    cached_client(insecure, iface)
 }
 
 fn build_client(insecure: bool, iface: Option<&str>) -> Client {
@@ -237,13 +254,23 @@ struct CachedPick {
 /// long; much shorter and the cache does nothing.
 const PICK_TTL: Duration = Duration::from_secs(5);
 
+/// 「结论是不绑接口」的缓存时间，比选中某个接口长得多。
+///
+/// unbound 就是把包交给 OS 默认路由：换网、Wi-Fi 掉到蜂窝、VPN 断开都能自己跟随，
+/// 没有任何需要重探的理由。而选中具体接口的那份才要短 TTL —— 那条路是真的会断。
+/// 每次探测是一个完整的 HTTP 往返（实测 0.3~0.5s，开着 VPN 时的冷启动必走），
+/// 5 秒就过期的话，打开一次 KeyAttestation 就白等半秒。
+const PICK_TTL_UNBOUND: Duration = Duration::from_secs(60);
+
 fn cached_pick(bind_iface: &str, base_url: &str) -> Option<Option<String>> {
     let guard = PICK_CACHE.lock().ok()?;
     let cached = guard.as_ref()?;
-    if cached.bind_iface == bind_iface
-        && cached.base_url == base_url
-        && cached.at.elapsed() < PICK_TTL
-    {
+    let ttl = if cached.iface.is_none() {
+        PICK_TTL_UNBOUND
+    } else {
+        PICK_TTL
+    };
+    if cached.bind_iface == bind_iface && cached.base_url == base_url && cached.at.elapsed() < ttl {
         Some(cached.iface.clone())
     } else {
         None
@@ -601,6 +628,16 @@ fn http_request(
     body: Option<&[u8]>,
 ) -> Result<(u16, Vec<u8>)> {
     let client = get_client()?;
+    http_request_with(&client, method, url, headers, body)
+}
+
+fn http_request_with(
+    client: &Client,
+    method: &str,
+    url: &str,
+    headers: &[(String, String)],
+    body: Option<&[u8]>,
+) -> Result<(u16, Vec<u8>)> {
     let method = method
         .parse::<Method>()
         .map_err(|e| anyhow!("invalid HTTP method {method}: {e}"))?;
@@ -685,10 +722,22 @@ impl RemoteRelay {
         // single dropped attempt falls back to the local software keybox and
         // briefly emits a self-signed chain. HTTP error responses are NOT
         // retried — the server answered, and its body carries the real result.
-        let (status, resp) = match http_request("POST", &url, &headers, Some(body_str.as_bytes())) {
+        //
+        // 先按「不绑接口」直发，不预先探测：正常网络下一个往返就够了。
+        // 只有这一发真的失败（默认路由被 VPN 吞了、或者指到死上游）才去探测
+        // 候选接口、绑定后重试——那时多花一次探测是值得的。
+        let (status, resp) = match http_request_with(
+            &unbound_client()?,
+            "POST",
+            &url,
+            &headers,
+            Some(body_str.as_bytes()),
+        ) {
             Ok(v) => v,
             Err(first) => {
-                log::warn!("remote {path} transport error, retrying once: {first:#}");
+                log::warn!(
+                    "remote {path} transport error on the default route, retrying bound: {first:#}"
+                );
                 http_request("POST", &url, &headers, Some(body_str.as_bytes()))
                     .map_err(|second| anyhow!("{first:#}; retry also failed: {second:#}"))?
             }
