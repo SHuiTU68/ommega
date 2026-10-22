@@ -167,24 +167,6 @@ pub struct Fulfill {
     state: Arc<crate::statedb::StateDb>,
 }
 
-/// 服务端密钥层自己声明型号（tag 717 ATTESTATION_ID_MODEL）。
-///
-/// serverbox 模式里这条链的签发密钥、root of trust 都来自服务端存下来的那份身份，
-/// 叶子再写调用方（A 端）那台机的型号就自相矛盾。所以只要调用方要求了 ID 证明，
-/// 型号就取身份自己的 `machine_id`，不再拿 A 端上报的值充当。
-fn apply_identity_model(params: &mut crate::cert::AttestationParams, identity: &DeviceIdentity) {
-    if identity.machine_id.is_empty() {
-        return;
-    }
-    if let Some(entry) = params
-        .attestation_ids
-        .iter_mut()
-        .find(|(tag, _)| *tag == 717)
-    {
-        entry.1 = identity.machine_id.as_bytes().to_vec();
-    }
-}
-
 impl Fulfill {
     /// 运行期开关在 statedb 里的键。
     const MODE_KEY: &'static str = "serverbox";
@@ -862,10 +844,7 @@ impl Fulfill {
         ctx: &Value,
         challenge: &[u8],
     ) -> anyhow::Result<(String, String)> {
-        let mut params = self.parse_ctx(ctx, challenge);
-        // 服务端密钥层把「型号」按自己的身份写：这条链的 root of trust、签发密钥
-        // 都来自存下来的这份身份，叶子再报调用方那台机的型号就自相矛盾。
-        apply_identity_model(&mut params, identity);
+        let params = self.parse_ctx(ctx, challenge);
         // 调用方带了证明密钥（App AttestKey 委派）：若那把 key 就在本服务端
         // （serverbox 模式下的 session），就用它自己签发子证书；不在本端则交给
         // 下一层（真机 B），**不**改用身份自带的签发密钥冒充。

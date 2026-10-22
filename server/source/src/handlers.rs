@@ -770,7 +770,18 @@ async fn run_a_side_task(state: &AppState, task_type: &str, body: &Value) -> Res
     //     device has none it returns an error and the next layer is attempted.
     // Only when every layer fails does the request error, letting the A-side
     // fall back to its local software keybox.
-    let order: &[&str] = if serverbox {
+    // 远程 attested 链只要真机在线就先让真机出：`attest` 的层序固定 B 端设备优先，
+    // 不管物理模式还是 serverbox 模式。
+    //
+    // 理由：serverbox 模式的密钥层用的是服务端存的身份（往往是别的机器，甚至是
+    // 管理台上传的占位身份），叶子上的 device properties 又是调用方的，两者拼在
+    // 一起就是一张四不像的链 —— 调用方想看的「真机可信证明」也没了。所以这一层
+    // 只在真机不可用（离线 / 没有这个 alias / StrongBox 不支）时当兜底。
+    // sign/decrypt 等其它请求仍按模式层序（否则会和已铸出的 keyblob 对不上）：
+    // 真机铸的 alias 在密钥层没有 session，会自然落到 B 那层。
+    let order: &[&str] = if task_type == "attest" {
+        &["b", "keybox", "self_signed"]
+    } else if serverbox {
         &["keybox", "b", "self_signed"]
     } else {
         &["b", "keybox", "self_signed"]
