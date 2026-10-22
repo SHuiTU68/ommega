@@ -689,7 +689,7 @@ async fn run_a_side_task(state: &AppState, task_type: &str, body: &Value) -> Res
     // 路——physical / serverbox 两种模式的层序、StrongBox 分流、身份查找、队列派发——
     // 看见的都是同一台具体设备，跟「A 端自己带了这个 id」一字不差。没配默认设备就
     // 保持空，由 `resolve_online_target("")` 按负载挑一台在线的 B。
-    let body = crate::default_device::fill_in_body(body);
+    let body = crate::default_device::fill_in_body(crate::default_device::Chain::Keymint, body);
     let body = &body;
     let device_id = body
         .get("device_id")
@@ -1044,7 +1044,7 @@ pub async fn soter(
 async fn run_soter_task(state: &AppState, body: &Value) -> Response {
     // 同一台 B 的 SOTER 请求排队执行（见 `soter_device_guard`）。设备 ID 在这里就归一：
     // A 端留空 + 配了默认设备 = 等同于它带了那个 id，跟 inner 一个口径。
-    let filled = crate::default_device::fill_in_body(body);
+    let filled = crate::default_device::fill_in_body(crate::default_device::Chain::Soter, body);
     let device = filled
         .get("device_id")
         .and_then(Value::as_str)
@@ -1314,7 +1314,7 @@ async fn run_soter_task_inner(state: &AppState, body: &Value) -> Response {
     // 跟 attest 一个口径，而且同样在入口归一：A 端留空 + 配了默认设备 = 等同于
     // 它带了那个 id，SOTER 的探测判据、槽位钉子、签名会话路由、写操作跨设备拦截
     // 看见的 `requested` 都是同一台具体设备。
-    let body = crate::default_device::fill_in_body(body);
+    let body = crate::default_device::fill_in_body(crate::default_device::Chain::Soter, body);
     let body = &body;
     let requested = body.get("device_id").and_then(Value::as_str).unwrap_or("");
     let op = body.get("op").and_then(Value::as_str).unwrap_or("probe");

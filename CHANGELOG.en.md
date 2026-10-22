@@ -17,3 +17,4 @@
 - Remote signing no longer slows down other key operations.
 - Keys keep working after the server restarts.
 - On some Qualcomm devices (the HIDL ones) the SOTER takeover only covered half the path, so the related checks failed; it is complete now and they pass.
+- The server's default device is now split per chain: KeyMint (attest / sign / decrypt) and SOTER each have their own, so an empty device_id lands on the right one; a request that carries a device_id still follows it.

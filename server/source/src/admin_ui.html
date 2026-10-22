@@ -498,13 +498,21 @@ h3.sec-title { font-size: 13px; color: var(--muted); text-transform: uppercase; 
   </div>
 </div>
 
-<!-- 默认设备 id（A 端留空时落到哪台 B） -->
+<!-- 默认设备 id（A 端留空时落到哪台 B，两条链路各一个） -->
 <div class="panel">
-  <h2>默认设备 ID <span class="hint">A 端远程模式留空 device_id 时用哪台 B。这里填了就固定落这台；留空则按负载挑一台在线的（A 端模块默认就是留空，不用再占位一台设备）</span></h2>
+  <h2>默认设备 ID <span class="hint">A 端远程模式留空 device_id 时用哪台 B。两条链路各自独立：KeyMint 链（认证 / 签名 / 解密）用上面那台，SOTER 链用下面那台；留空则各自按负载挑一台在线的。请求自带 device_id 时一律按请求走，不看这里</span></h2>
   <div class="body">
-    <div class="token-gen" style="display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
-      <input id="ddInput" placeholder="device-b-xxxxxxxx（留空 = 按负载挑）" autocapitalize="none"
+    <div class="token-gen" style="display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
+      <span style="flex:0 0 88px;color:var(--muted);font-size:13px;">KeyMint 链</span>
+      <input id="ddKeymint" placeholder="device-b-xxxxxxxx（留空 = 按负载挑）" autocapitalize="none"
              style="flex:1;min-width:240px;background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:9px 12px;font-size:13px;">
+    </div>
+    <div class="token-gen" style="display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
+      <span style="flex:0 0 88px;color:var(--muted);font-size:13px;">SOTER 链</span>
+      <input id="ddSoter" placeholder="device-b-xxxxxxxx（留空 = 按负载挑）" autocapitalize="none"
+             style="flex:1;min-width:240px;background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:9px 12px;font-size:13px;">
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">
       <button class="btn primary" onclick="saveDefaultDevice()">保存</button>
       <button class="btn" onclick="clearDefaultDevice()">清空</button>
     </div>
@@ -1132,30 +1140,35 @@ async function loadDefaultDevice() {
   try {
     const d = await api('/api/admin/default_device/');
     const total = d.online_total ?? 0;
-    const cur = d.device_id || '';
-    if (document.activeElement !== $('#ddInput')) $('#ddInput').value = cur;
-    if (!cur) {
-      $('#ddStatus').innerHTML = `未设置：A 端留空的请求会按负载挑一台在线 B（当前在线 ${total} 台）。`;
-    } else if (d.online) {
-      $('#ddStatus').innerHTML = `当前默认：<b>${cur}</b>（在线）。A 端留空的请求优先落这台。`;
-    } else {
-      $('#ddStatus').innerHTML = `当前默认：<b>${cur}</b>（<span style="color:var(--warn,#f5a623)">当前离线</span>）。此时 A 端留空的请求会按负载落到别的在线 B。`;
-    }
+    const k = d.keymint_device_id || '';
+    const s = d.soter_device_id || '';
+    if (document.activeElement !== $('#ddKeymint')) $('#ddKeymint').value = k;
+    if (document.activeElement !== $('#ddSoter')) $('#ddSoter').value = s;
+    const one = (name, id, online) => {
+      if (!id) return `${name}：未设置（按负载挑）`;
+      if (online) return `${name}：<b>${id}</b>（在线）`;
+      return `${name}：<b>${id}</b>（<span style="color:var(--warn,#f5a623)">当前离线</span>）`;
+    };
+    $('#ddStatus').innerHTML = `${one('KeyMint', k, d.keymint_online)}<br>${one('SOTER', s, d.soter_online)}`
+      + `<br><span style="opacity:.7">在线 B 共 ${total} 台；请求自带 device_id 时按请求走，不看这里。</span>`;
   } catch (e) { /* auth handled */ }
 }
 
 async function saveDefaultDevice() {
-  const id = $('#ddInput').value.trim();
+  const keymint = $('#ddKeymint').value.trim();
+  const soter = $('#ddSoter').value.trim();
   try {
-    const d = await api('/api/admin/default_device/', { method: 'POST', body: JSON.stringify({ device_id: id }) });
-    $('#ddInput').value = d.device_id || '';
-    toast(d.device_id ? `默认设备已保存：${d.device_id}` : '已清空：改回按负载挑');
+    const d = await api('/api/admin/default_device/', { method: 'POST', body: JSON.stringify({ keymint_device_id: keymint, soter_device_id: soter }) });
+    $('#ddKeymint').value = d.keymint_device_id || '';
+    $('#ddSoter').value = d.soter_device_id || '';
+    toast(d.keymint_device_id || d.soter_device_id ? '默认设备已保存' : '已清空：两条链都改回按负载挑');
     loadDefaultDevice();
   } catch (e) { toast('保存失败: ' + e.message, 'err'); }
 }
 
 async function clearDefaultDevice() {
-  $('#ddInput').value = '';
+  $('#ddKeymint').value = '';
+  $('#ddSoter').value = '';
   await saveDefaultDevice();
 }
 

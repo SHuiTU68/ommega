@@ -1168,11 +1168,15 @@ pub async fn admin_strongbox_toggle(
 // Default device id (A side leaves `device_id` empty).
 // ---------------------------------------------------------------------------
 
-/// GET /api/admin/default_device/ — 当前「默认设备 id」+ 在线情况。
+/// GET /api/admin/default_device/ — 当前「默认设备 id」（两条链路各一个）+ 在线情况。
 ///
 /// A 端在远程模式下把 `device_id` 留空（模块装好就是空的，面板不用占位一台设备），
-/// 请求照样上来，服务端按这里配的值落 B；没配就按负载挑一台在线的。
-/// 返回里 `online` 是「配的那台现在在不在线」（`null` = 没配）。
+/// 请求照样上来，服务端按链路分别落 B：
+/// - KeyMint 链（attest / sign / decrypt）用 `keymint_device_id`；
+/// - SOTER 链用 `soter_device_id`。
+///
+/// 没配就按负载挑一台在线的。返回里 `*_online` 是「配的那台现在在不在线」
+/// （`null` = 没配）。
 pub async fn admin_default_device_status(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1180,21 +1184,25 @@ pub async fn admin_default_device_status(
     if let Err(r) = check_auth(&state, &headers) {
         return *r;
     }
-    let configured = crate::default_device::get();
+    let (keymint, soter) = crate::default_device::get_all();
     let mut connected = state.store.get_connected_devices().await;
     connected.sort_by(|a, b| a.device_id.cmp(&b.device_id));
-    let online = if configured.is_empty() {
-        None
-    } else {
-        Some(connected.iter().any(|d| d.device_id == configured))
+    let online = |id: &str| {
+        if id.is_empty() {
+            None
+        } else {
+            Some(connected.iter().any(|d| d.device_id == id))
+        }
     };
     // 只回「配的那台在不在线」+ 在线总数。别把整张设备表倒出去：在线 B 是几百台级别，
     // 这个接口每开一次面板就被拉一次，返回体会越长越大（2026-10-18 实测 200+ 台）。
     // 需要具体 id 的地方自己走 `/api/admin/devices/` 或 `/api/status/`。
     Json(json!({
         "status": "ok",
-        "device_id": configured,
-        "online": online,
+        "keymint_device_id": keymint,
+        "soter_device_id": soter,
+        "keymint_online": online(&keymint),
+        "soter_online": online(&soter),
         "online_total": connected.len(),
     }))
     .into_response()
@@ -1202,14 +1210,21 @@ pub async fn admin_default_device_status(
 
 #[derive(serde::Deserialize)]
 pub struct DefaultDeviceBody {
-    /// 目标设备 id。空字符串 = 清掉（回到按负载挑）。
+    /// 老字段：两条链路一起设（兼容旧面板）。
     #[serde(default)]
-    pub device_id: String,
+    pub device_id: Option<String>,
+    /// KeyMint 链（attest / sign / decrypt）的默认设备。空字符串 = 清掉。
+    #[serde(default)]
+    pub keymint_device_id: Option<String>,
+    /// SOTER 链的默认设备。空字符串 = 清掉。
+    #[serde(default)]
+    pub soter_device_id: Option<String>,
 }
 
 /// POST /api/admin/default_device/ — 保存「默认设备 id」。
 ///
 /// 落盘到 `data/default_device.json`，重启后仍然生效；写空就是清掉。
+/// 两条链路互不影响：只传 `keymint_device_id` 时 SOTER 那台一个字都不动。
 pub async fn admin_default_device_set(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1218,21 +1233,45 @@ pub async fn admin_default_device_set(
     if let Err(r) = check_auth(&state, &headers) {
         return *r;
     }
-    let saved = match crate::default_device::set(&body.device_id) {
-        Ok(v) => v,
-        Err(e) => return json_err(StatusCode::BAD_REQUEST, &e),
+    // 老字段 `device_id` 一次性盖两条（旧面板的行为）；新面板走两条各自的字段。
+    let targets: Vec<(crate::default_device::Chain, String)> = if let Some(legacy) = &body.device_id
+    {
+        vec![
+            (crate::default_device::Chain::Keymint, legacy.clone()),
+            (crate::default_device::Chain::Soter, legacy.clone()),
+        ]
+    } else {
+        let mut v = Vec::new();
+        if let Some(id) = &body.keymint_device_id {
+            v.push((crate::default_device::Chain::Keymint, id.clone()));
+        }
+        if let Some(id) = &body.soter_device_id {
+            v.push((crate::default_device::Chain::Soter, id.clone()));
+        }
+        v
     };
-    if !saved.is_empty() {
-        let connected = state.store.get_connected_devices().await;
-        if !connected.iter().any(|d| d.device_id == saved) {
+    for (chain, raw) in targets {
+        if let Err(e) = crate::default_device::set(chain, &raw) {
+            return json_err(StatusCode::BAD_REQUEST, &e);
+        }
+    }
+    let (keymint, soter) = crate::default_device::get_all();
+    let connected = state.store.get_connected_devices().await;
+    for (chain, id) in [
+        (crate::default_device::Chain::Keymint, &keymint),
+        (crate::default_device::Chain::Soter, &soter),
+    ] {
+        if !id.is_empty() && !connected.iter().any(|d| d.device_id == *id) {
             tracing::warn!(
-                "default_device: 保存了 {saved}，但它当前不在线（A 端留空的请求会按负载落别的 B）"
+                "default_device: {} 链保存了 {id}，但它当前不在线（留空的请求会按负载落别的 B）",
+                chain.as_str()
             );
         }
     }
     Json(json!({
         "status": "ok",
-        "device_id": saved,
+        "keymint_device_id": keymint,
+        "soter_device_id": soter,
     }))
     .into_response()
 }
