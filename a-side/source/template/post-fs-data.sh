@@ -273,7 +273,7 @@ mask_feature() {
     case "$mf_value" in
       1|true|yes|on) mf_enabled=true ;;
       0|false|no|off) mf_enabled=false ;;
-      # 没写这个键时看调用方的默认值：device_id 那一项默认开，strongbox 默认关。
+      # 没写这个键时看调用方的默认值：device_id 那一项默认关，strongbox 默认关。
       *) [ "${OMMEGA_MASK_DEFAULT:-0}" = "1" ] && mf_enabled=true ;;
     esac
   fi
@@ -358,7 +358,7 @@ mask_feature() {
 }
 
 OMMEGA_MASK_DEFAULT=0 mask_feature android.hardware.security.strongbox_keystore.xml hide_strongbox no_strongbox hide_strongbox_keystore
-OMMEGA_MASK_DEFAULT=1 mask_feature android.software.device_id_attestation.xml hide_device_ids no_device_ids hide_device_id_attestation
+OMMEGA_MASK_DEFAULT=0 mask_feature android.software.device_id_attestation.xml hide_device_ids no_device_ids hide_device_id_attestation
 unset WL_RELS mf_name mf_enabled mf_pat mf_value mf_rel mf_marker mf_src
 
 # ── 尽早把两个守护拉起来 ─────────────────────────────────────────────────

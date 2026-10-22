@@ -699,6 +699,42 @@ pub fn keybox_first() -> bool {
     )
 }
 
+/// 带设备 ID 的认证（attestation_id_brand/device/product/serial/imei/meid/
+/// manufacturer/model）走不走服务端密钥层。
+///
+/// 开 `RELAY_ID_ATTEST_SERVER_SIDE=1` 后：这类请求**不派给真机**，直接由服务端的
+/// keybox 身份出链（真机不可用才回落）。适合「ID 认证根本不需要真机 TEE、只想让
+/// 属性跟调用方对上」的场景；不开就是原来那样，跟着模式层序走。
+pub fn id_attest_server_side() -> bool {
+    matches!(
+        std::env::var("RELAY_ID_ATTEST_SERVER_SIDE")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+/// 这个请求带没带设备 ID（看 A 端转过来的 `attestation_ids`）。
+/// A 端只在应用真要求 ID 证明时才放这个字段，所以「有」就是「这次要 ID」。
+fn request_has_attestation_ids(body: &Value) -> bool {
+    for holder in [
+        body,
+        body.get("device_attest_context").unwrap_or(&Value::Null),
+    ] {
+        if let Some(ids) = holder.get("attestation_ids") {
+            if ids.as_array().is_some_and(|a| !a.is_empty()) {
+                return true;
+            }
+            if ids.as_object().is_some_and(|o| !o.is_empty()) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 async fn run_a_side_task(state: &AppState, task_type: &str, body: &Value) -> Response {
     // A 端远程模式默认不带 `device_id`（模块装好就是留空，面板也不再占位一台设备）。
     // 留空 = 「服务端挑一台」：这里在入口一次归一（控制台配的默认设备），然后整条链
@@ -795,13 +831,17 @@ async fn run_a_side_task(state: &AppState, task_type: &str, body: &Value) -> Res
     // 只在真机不可用（离线 / 没有这个 alias / StrongBox 不支）时当兜底。
     // sign/decrypt 等其它请求仍按模式层序（否则会和已铸出的 keyblob 对不上）：
     // 真机铸的 alias 在密钥层没有 session，会自然落到 B 那层。
-    let order: &[&str] = if task_type == "attest" && !keybox_first() {
-        &["b", "keybox", "self_signed"]
-    } else if serverbox {
-        &["keybox", "b", "self_signed"]
-    } else {
-        &["b", "keybox", "self_signed"]
-    };
+    let order: &[&str] =
+        if task_type == "attest" && id_attest_server_side() && request_has_attestation_ids(body) {
+            // 带 ID 的认证按开关分流：服务端身份先上，真机只当兜底。
+            &["keybox", "b", "self_signed"]
+        } else if task_type == "attest" && !keybox_first() {
+            &["b", "keybox", "self_signed"]
+        } else if serverbox {
+            &["keybox", "b", "self_signed"]
+        } else {
+            &["b", "keybox", "self_signed"]
+        };
 
     let mut last_error: Option<String> = None;
     // 第一处「这台设备根本没有这个 alias 的私钥」的原因，原样带到最终错误里。
