@@ -276,9 +276,9 @@ load_relay_env
 # 活着就是零开销。
 keep_adbr_watchdog_alive() {
   [ -f "$MODDIR/adbr-daemon.sh" ] || return 0
-  abr_holder=$(cat "$STATE_DIR/adbr-daemon.lock/pid" 2>/dev/null)
+  abr_holder=$(cat "$RUN_DIR/adbr-daemon.lock/pid" 2>/dev/null)
   if [ -z "$abr_holder" ] || ! holder_is_us "$abr_holder" "$MODDIR/adbr-daemon.sh"; then
-    rm -rf "$STATE_DIR/adbr-daemon.lock" 2>/dev/null
+    rm -rf "$RUN_DIR/adbr-daemon.lock" 2>/dev/null
     ( sh "$MODDIR/adbr-daemon.sh" --b >> "$(log_target adbr-daemon.log)" 2>&1 & )
   fi
 }
@@ -300,8 +300,8 @@ spl_method_is_live() {
 }
 
 find_spl_bin() {
-  if [ -f "$STATE_DIR/spl_daemon" ]; then
-    echo "$STATE_DIR/spl_daemon"
+  if [ -f "$BIN_DIR/spl_daemon" ]; then
+    echo "$BIN_DIR/spl_daemon"
     return 0
   fi
   local abi
@@ -341,7 +341,7 @@ keep_spl_alive() {
 
   local now last
   now=$(date +%s 2>/dev/null || echo 0)
-  last=$(cat "$STATE_DIR/spl_daemon.retry" 2>/dev/null || echo 0)
+  last=$(cat "$RUN_DIR/spl_daemon.retry" 2>/dev/null || echo 0)
   case "$last" in ''|*[!0-9]*) last=0 ;; esac
   # 退避 15 秒：非高通机器上每次尝试都会失败，不能每 2 秒刷一遍日志；
   # 但也不能太长 —— 自己 TERM 停掉后要尽快回来（60 秒时面板会显示未运行一分钟）。
@@ -349,7 +349,7 @@ keep_spl_alive() {
      [ $((now - last)) -lt 15 ]; then
     return 0
   fi
-  [ "$now" -gt 100000 ] && echo "$now" > "$STATE_DIR/spl_daemon.retry" 2>/dev/null
+  [ "$now" -gt 100000 ] && echo "$now" > "$RUN_DIR/spl_daemon.retry" 2>/dev/null
 
   local bin su_bin staged
   if ! bin=$(find_spl_bin); then

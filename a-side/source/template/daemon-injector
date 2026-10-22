@@ -495,7 +495,7 @@ tick_sleep() {
 
 # 单实例：同 daemon 那层 —— service.sh 的看门循环可能同时存在多份，每份 fork 一个
 # 注入器；多份并存时每轮都会 pkill 掉对方正在用的 keystore2/注入进程。抢不到锁就退。
-LOCK_DIR=$STATE_DIR/injector-daemon.lock
+LOCK_DIR=$RUN_DIR/injector-daemon.lock
 
 # 同 daemon 那层：pid 复用会让锁看着「一直有人」，光 kill -0 不够，还要确认是本脚本。
 holder_is_us() {

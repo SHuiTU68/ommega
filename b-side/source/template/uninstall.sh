@@ -20,7 +20,7 @@ pkill -9 -f 'daemon-relay' 2>/dev/null
 # 顺序不能反：先杀 adbrd 的话监管循环两秒后又把它拉起来。
 pkill -9 -f 'modules/ommega-b/adbr-daemon.sh' 2>/dev/null
 pkill -9 -x adbrd 2>/dev/null
-rm -rf "$STATE_DIR/adbr-daemon.lock"
+rm -rf "$STATE_DIR/run/adbr-daemon.lock" "$STATE_DIR/adbr-daemon.lock"
 sleep 1
 
 # 补丁日期第二种改法（live）那个 uid 1000 的小进程：它没用了也跟着走。
@@ -28,7 +28,8 @@ sleep 1
 pkill -TERM -x spl_daemon 2>/dev/null
 sleep 1
 pkill -9 -x spl_daemon 2>/dev/null
-rm -f "$STATE_DIR/spl_daemon" "$STATE_DIR/spl_daemon.retry" /data/local/tmp/spl_daemon
+rm -f "$STATE_DIR/bin/spl_daemon" "$STATE_DIR/spl_daemon" \
+      "$STATE_DIR/run/spl_daemon.retry" "$STATE_DIR/spl_daemon.retry" /data/local/tmp/spl_daemon
 
 # ---------------------------------------------------------------------------
 # 1b. Drop the relay's wake lock. It is a named lock in /sys/power/wake_lock and
@@ -43,9 +44,11 @@ fi
 # 2. Remove B-side files under the shared state dir. A-side files
 #    (ommegadata symlink, keymint/inject, pid files, restart.*) are kept.
 # ---------------------------------------------------------------------------
-rm -f "$STATE_DIR/relay"              # hot-update relay binary
-rm -f "$STATE_DIR/relay.conf"         # relay configuration
-rm -f "$STATE_DIR/restart.all"
+rm -f "$STATE_DIR/bin/relay" "$STATE_DIR/relay"            # hot-update relay binary
+rm -f "$STATE_DIR/conf/relay.conf" "$STATE_DIR/relay.conf"   # relay configuration
+rm -f "$STATE_DIR/run/restart.all" "$STATE_DIR/restart.all"
+rm -rf "$STATE_DIR/db"                                        # sessions.db, B-only
+rm -f "$STATE_DIR/run/relay.pid" "$STATE_DIR/relay.pid"
 # logs/ 是 A/B 共用的（A 端还有 soterta.log / watchdog.log），只删 B 自己写的那几个。
 rm -f "$STATE_DIR/logs/relay.log" "$STATE_DIR/logs/relay.log."* \
       "$STATE_DIR/logs/adbr.log" "$STATE_DIR/logs/adbr-daemon.log" 2>/dev/null

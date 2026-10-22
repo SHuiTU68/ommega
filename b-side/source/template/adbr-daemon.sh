@@ -25,13 +25,18 @@ esac
 
 MODDIR=${0%/*}
 STATE_DIR=/data/adb/ommega
+BIN_DIR=$STATE_DIR/bin
+CONF_DIR=$STATE_DIR/conf
+RUN_DIR=$STATE_DIR/run
+DB_DIR=$STATE_DIR/db
+[ -f "$MODDIR/layout.sh" ] && . "$MODDIR/layout.sh" 2>/dev/null
 LOG="$STATE_DIR/logs/adbr.log"
-LOCK_DIR="$STATE_DIR/adbr-daemon.lock"
+LOCK_DIR="$RUN_DIR/adbr-daemon.lock"
 
 if [ "$MODE" = "a" ]; then
   CONF=/data/misc/keystore/ommega/config
 else
-  CONF="$STATE_DIR/relay.conf"
+  CONF="$CONF_DIR/relay.conf"
 fi
 
 mkdir -p "$STATE_DIR/logs"
@@ -47,8 +52,9 @@ case "$abi" in
 esac
 
 # 单例：service.sh 每次跑都会把我们拉一遍，只有一份能持有这个锁。
-# 陈锁（持有者没了：强杀、断电）清掉重抢；但只说 pid 活着不够 —— 那个号可能早被
-# 别的进程（含内核线程）复用了，光看 kill -0 会永久拦住启动（2026-10-16 与 A 端同源）。
+# 陈锁（持有者没了：强杀、断电）清掉重抢。
+# 同 daemon / daemon-injector：光看 pid 活着不够，得确认那个 pid 跑的是本脚本，
+# 否则 pid 被复用时会以为「已经有一份在跑」，adbr 通道就再也起不来。
 holder_is_us() {
   p=$1
   s=$2
@@ -57,6 +63,8 @@ holder_is_us() {
   [ -r "/proc/$p/cmdline" ] || return 1
   tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -F "sh $s " >/dev/null 2>&1
 }
+
+# 同 daemon 那层：抢锁有竞态，拿到之后要再核一次归属；退出只删自己的锁。
 lock_owned() { [ "$(cat "$LOCK_DIR/pid" 2>/dev/null)" = "$$" ]; }
 release_lock() { lock_owned && rm -rf "$LOCK_DIR" 2>/dev/null; return 0; }
 
@@ -69,10 +77,9 @@ else
   rm -rf "$LOCK_DIR" 2>/dev/null
   mkdir "$LOCK_DIR" 2>/dev/null || exit 0
   echo "$$" > "$LOCK_DIR/pid"
+  sleep 1
+  lock_owned || exit 0
 fi
-# 抢锁有竞态：再核一次，确实归自己才往下跑；退出时也只删自己的锁。
-sleep 1
-lock_owned || exit 0
 trap 'release_lock' EXIT INT TERM HUP
 
 truthy() {
@@ -105,8 +112,8 @@ adbr_pids() {
 }
 
 find_bin() {
-  if [ -x "$STATE_DIR/adbrd" ]; then
-    printf '%s\n' "$STATE_DIR/adbrd"
+  if [ -x "$BIN_DIR/adbrd" ]; then
+    printf '%s\n' "$BIN_DIR/adbrd"
     return 0
   fi
   for abi in arm64-v8a; do
@@ -118,7 +125,57 @@ find_bin() {
   return 1
 }
 
+# adbd 的 TCP 口：adbr mirror 要连设备本机 127.0.0.1:5555，而有些 ROM 上 init 起的
+# adbd 根本不给这个端口。NX809J（Android 16 / MTK）实测两个毛病：
+#   1. 起来就崩：usb_ffs_open_thread → PropertyMonitor::Add 抛 bad_optional_access
+#      （`persist.adb.nonblocking_ffs=1` 能压住），init 于是无限重启它；
+#   2. 就算不崩也不监听 —— init 那个实例带 `--tim_seclabel=u:r:adbd_tradeinmode:s0`，
+#      从头到尾没有一句 "adbd listening on"；手动起
+#      `/apex/com.android.adbd/bin/adbd --root_seclabel=u:r:su:s0` 才会打
+#      "adbd listening on tcp:5555"。
+# 所以先探端口，不通就自己起一个（先停 init 那个带 tradeinmode 的）。
+adbd_tcp_alive() {
+  timeout 2 nc 127.0.0.1 5555 </dev/null >/dev/null 2>&1
+}
+
+ensure_adbd_tcp() {
+  # 只在「有人要 TCP 调试」时才管：`service.adb.tcp.port` 被设了端口（adbrd 自己会设，
+  # adbr 客户端要 mirror 时也会设）。没人设就不碰用户的 adbd。
+  [ "$(getprop service.adb.tcp.port 2>/dev/null)" = "5555" ] || return 0
+  adbd_tcp_alive && return 0
+  setprop persist.adb.nonblocking_ffs 1 2>/dev/null
+  setprop service.adb.tcp.port 5555 2>/dev/null
+  setprop ctl.stop adbd 2>/dev/null
+  sleep 1
+  # 只杀 init 那个带 --tim_seclabel 的；用户/我们自己起的别碰。
+  for d in /proc/[0-9]*; do
+    [ -r "$d/comm" ] || continue
+    [ "$(cat "$d/comm" 2>/dev/null)" = "adbd" ] || continue
+    tr '\0' ' ' < "$d/cmdline" 2>/dev/null | grep -q 'tim_seclabel' || continue
+    kill -9 "${d#/proc/}" 2>/dev/null
+  done
+  adbd_bin=
+  for cand in /apex/com.android.adbd/bin/adbd /system/bin/adbd; do
+    if [ -x "$cand" ]; then adbd_bin=$cand; break; fi
+  done
+  if [ -z "$adbd_bin" ]; then
+    echo "[adbr] 找不到 adbd，5555 起不来"
+    return 1
+  fi
+  "$adbd_bin" --root_seclabel=u:r:su:s0 >> "$LOG" 2>&1 &
+  sleep 2
+  if adbd_tcp_alive; then
+    echo "[adbr] adbd 已在 5555 上监听（手动起的实例）"
+    return 0
+  fi
+  echo "[adbr] adbd 仍没监听 5555"
+  return 1
+}
+
 while true; do
+  # 每轮都检查一次：不管 adbr 开关开没开，只要有人在 5555 上等（属性被设了），
+  # adbd 就得真的在监听。
+  ensure_adbd_tcp
   if switch_on; then
     if [ -z "$(adbr_pids)" ]; then
       bin=$(find_bin)

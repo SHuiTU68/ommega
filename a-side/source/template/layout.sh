@@ -8,11 +8,10 @@ STATE_DIR=/data/adb/ommega
 BIN_DIR=$STATE_DIR/bin
 CONF_DIR=$STATE_DIR/conf
 RUN_DIR=$STATE_DIR/run
-DB_DIR=$STATE_DIR/db
 LOG_DIR_TOP=$STATE_DIR/logs
 
 migrate_ommega_layout() {
-  mkdir -p "$BIN_DIR" "$CONF_DIR" "$RUN_DIR" "$DB_DIR" "$LOG_DIR_TOP" 2>/dev/null
+  mkdir -p "$BIN_DIR" "$CONF_DIR" "$RUN_DIR" "$LOG_DIR_TOP" 2>/dev/null
 
   # 二进制（hot update 会往这里换，模块目录里的 libs/ 仍是出厂副本）
   for f in keymint ommega-inject soterta-ta resetprop adbrd; do
@@ -43,13 +42,7 @@ migrate_ommega_layout() {
     [ -e "$RUN_DIR/$d" ] || mv -f "$STATE_DIR/$d" "$RUN_DIR/$d" 2>/dev/null
   done
 
-  # 数据库（B 端会话）+ 老的目录式会话库
-  for f in sessions.db sessions.db-wal sessions.db-shm; do
-    [ -f "$STATE_DIR/$f" ] || continue
-    [ -e "$DB_DIR/$f" ] || mv -f "$STATE_DIR/$f" "$DB_DIR/$f" 2>/dev/null
-  done
-  [ -d "$STATE_DIR/sessions" ] && [ ! -e "$DB_DIR/sessions" ] && \
-    mv -f "$STATE_DIR/sessions" "$DB_DIR/sessions" 2>/dev/null
+  # B 端那套会话库在 A 端不存在（A 不跑 relay），所以这里没有 db/
 
   # keystore 侧：备份类收进 backups/，配置与密钥材料留在原地（TA 里路径是写死的）
   KS_DIR=/data/misc/keystore/ommega

@@ -11,7 +11,7 @@ DB_DIR=$STATE_DIR/db
 migrate_ommega_b_layout() {
   mkdir -p "$BIN_DIR" "$CONF_DIR" "$RUN_DIR" "$DB_DIR" "$STATE_DIR/logs" 2>/dev/null
 
-  for f in relay resetprop adbrd; do
+  for f in relay resetprop adbrd spl_daemon; do do
     [ -f "$STATE_DIR/$f" ] || continue
     [ -e "$BIN_DIR/$f" ] || mv -f "$STATE_DIR/$f" "$BIN_DIR/$f" 2>/dev/null
   done
@@ -21,12 +21,14 @@ migrate_ommega_b_layout() {
     [ -e "$CONF_DIR/$f" ] || mv -f "$STATE_DIR/$f" "$CONF_DIR/$f" 2>/dev/null
   done
 
-  for f in relay.pid restart.all restart.keymint restart.injector; do
+  for f in relay.pid restart.all restart.keymint restart.injector spl_daemon.retry; do do
     [ -f "$STATE_DIR/$f" ] || continue
     [ -e "$RUN_DIR/$f" ] || mv -f "$STATE_DIR/$f" "$RUN_DIR/$f" 2>/dev/null
   done
-  [ -d "$STATE_DIR/relay-service.lock" ] && [ ! -e "$RUN_DIR/relay-service.lock" ] && \
-    mv -f "$STATE_DIR/relay-service.lock" "$RUN_DIR/relay-service.lock" 2>/dev/null
+  for d in relay-service.lock adbr-daemon.lock; do
+    [ -d "$STATE_DIR/$d" ] || continue
+    [ -e "$RUN_DIR/$d" ] || mv -f "$STATE_DIR/$d" "$RUN_DIR/$d" 2>/dev/null
+  done
 
   for f in sessions.db sessions.db-wal sessions.db-shm; do
     [ -f "$STATE_DIR/$f" ] || continue
