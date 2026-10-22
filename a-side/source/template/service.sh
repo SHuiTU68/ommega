@@ -2,7 +2,33 @@ MODDIR=${0%/*}
 STATE_DIR=/data/adb/ommega
 PROP_FILE="$MODDIR/module.prop"
 
-mkdir -p "$STATE_DIR" "$STATE_DIR/logs"
+mkdir -p "$STATE_DIR"
+
+# 「启用调试日志」关着时不要建 logs 目录、也不要往里面开任何 .log：
+# 以前这里的 `>> $STATE_DIR/logs/xxx.log` 会先把文件建出来（内容是空的），
+# 用户看到的就是「没开日志却多了一堆空 log」。关着时一概重定向到 /dev/null。
+debug_logging_enabled() {
+  val=$(grep -iE '^[[:space:]]*(debug_logging|debug|verbose)[[:space:]]*:' /data/misc/keystore/ommega/config 2>/dev/null | head -n1 | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r' | tr 'A-Z' 'a-z')
+  case "$val" in
+    1|true|yes|on) return 0 ;;
+  esac
+  return 1
+}
+
+if debug_logging_enabled; then
+  mkdir -p "$STATE_DIR/logs"
+  LOG_DIR="$STATE_DIR/logs"
+else
+  LOG_DIR=/dev/null
+fi
+# 单个脚本的日志目标：开日志才给真路径，否则全部丢 /dev/null。
+log_target() {
+  if [ "$LOG_DIR" = /dev/null ]; then
+    printf '/dev/null'
+  else
+    printf '%s/%s' "$LOG_DIR" "$1"
+  fi
+}
 
 # Update the module.prop description so the module card reflects runtime state.
 # Mirrors the legacy A-side (client-a) behaviour.
@@ -89,7 +115,7 @@ fi
 # 用自己的服务顶同一个 binder 名字（细节见 soterta.sh）。先跑一次，之后由下面的
 # keep-alive 循环每轮 converge。
 if [ -f "$MODDIR/soterta.sh" ]; then
-  ( sh "$MODDIR/soterta.sh" >> "$STATE_DIR/logs/soterta.log" 2>&1 & )
+  ( sh "$MODDIR/soterta.sh" >> "$(log_target soterta.log)" 2>&1 & )
 fi
 
 if [ -f "$MODDIR/kmod-loader.sh" ]; then
@@ -105,7 +131,7 @@ fi
 # adbr 公网调试通道（默认关，WebUI 里点头才跑）：单独一个监管循环，跟 keymint/
 # injector 那两根线互不影响；它自己拿锁，service.sh 被拉多次也不会长出第二份。
 if [ -f "$MODDIR/adbr-daemon.sh" ]; then
-  ( sh "$MODDIR/adbr-daemon.sh" --a >> "$STATE_DIR/logs/adbr-daemon.log" 2>&1 & )
+  ( sh "$MODDIR/adbr-daemon.sh" --a >> "$(log_target adbr-daemon.log)" 2>&1 & )
 fi
 
 # 上面两个守护脚本各自会看住自己的子进程，但**它们自己被系统清掉**（低内存 / 清理类 App）
@@ -132,12 +158,12 @@ keep_daemons_alive() {
     holder=$(cat "$STATE_DIR/adbr-daemon.lock/pid" 2>/dev/null)
     if [ -z "$holder" ] || ! pid_matches_script "$holder" "$MODDIR/adbr-daemon.sh"; then
       rm -rf "$STATE_DIR/adbr-daemon.lock" 2>/dev/null
-      ( sh "$MODDIR/adbr-daemon.sh" --a >> "$STATE_DIR/logs/adbr-daemon.log" 2>&1 & )
+      ( sh "$MODDIR/adbr-daemon.sh" --a >> "$(log_target adbr-daemon.log)" 2>&1 & )
       fixed=1
     fi
   fi
   if [ -f "$MODDIR/soterta.sh" ]; then
-    ( sh "$MODDIR/soterta.sh" >> "$STATE_DIR/logs/soterta.log" 2>&1 & )
+    ( sh "$MODDIR/soterta.sh" >> "$(log_target soterta.log)" 2>&1 & )
   fi
   [ "$fixed" = 1 ] && update_status "Ommega ✅ 运行中"
   return 0
@@ -148,4 +174,4 @@ keep_daemons_alive() {
     keep_daemons_alive
     sleep 5
   done
-) >> "$STATE_DIR/logs/watchdog.log" 2>&1 &
+) >> "$(log_target watchdog.log)" 2>&1 &

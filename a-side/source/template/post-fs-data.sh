@@ -73,16 +73,8 @@ fi
 mkdir -p "$TARGET_DIR"
 chmod 0770 "$TARGET_DIR"
 chown 1017:1017 "$TARGET_DIR"
-mkdir -p "$LOG_DIR"
-chmod 0770 "$LOG_DIR"
-chown 1017:1017 "$LOG_DIR"
-mkdir -p "$APP_LOG_DIR"
-chmod 0770 "$APP_LOG_DIR"
-chown 0:1000 "$APP_LOG_DIR"
-mkdir -p "$STATE_DIR"
-rm -f "$STATE_DIR/keymint-daemon.pid" "$STATE_DIR/injector-daemon.pid"
-
-# 「启用调试日志」关着时本脚本一条都不打：post-fs-data 的输出也会进管理器的日志。
+# 「启用调试日志」关着时不要建任何日志目录：以前无条件 mkdir，用户关着日志也会
+# 多出两个空空的 logs 目录。真正的写日志在 `log_line` 里还要再判一次。
 debug_logging_enabled() {
   [ -f "$TARGET_CONF" ] || return 1
   val=$(sed -n 's/^[[:space:]]*\(debug_logging\|debug\|verbose\)[[:space:]]*:[[:space:]]*\(.*\)$/\2/p' "$TARGET_CONF" 2>/dev/null | head -n1 | tr -d ' \r' | tr 'A-Z' 'a-z')
@@ -91,6 +83,16 @@ debug_logging_enabled() {
   esac
   return 1
 }
+if debug_logging_enabled; then
+  mkdir -p "$LOG_DIR"
+  chmod 0770 "$LOG_DIR"
+  chown 1017:1017 "$LOG_DIR"
+  mkdir -p "$APP_LOG_DIR"
+  chmod 0770 "$APP_LOG_DIR"
+  chown 0:1000 "$APP_LOG_DIR"
+fi
+mkdir -p "$STATE_DIR"
+rm -f "$STATE_DIR/keymint-daemon.pid" "$STATE_DIR/injector-daemon.pid"
 
 # 只落文件，不再往 stdout 打（那会进管理器的日志，也是系统日志）。
 log_line() {

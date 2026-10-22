@@ -10,7 +10,6 @@ STATE_DIR=/data/adb/ommega
 CONF_FILE=$STATE_DIR/relay.conf
 LOCK_DIR=$STATE_DIR/relay-service.lock
 RELAY_PID_FILE=$STATE_DIR/relay.pid
-LOG_FILE=$STATE_DIR/logs/service.log
 
 # Android 17's system liblog.so references __hash_memory from the system
 # libc++.so.  Some vendor images still ship an older libc++.so; keeping
@@ -18,7 +17,32 @@ LOG_FILE=$STATE_DIR/logs/service.log
 # Put the platform runtime first and retain vendor libraries as a fallback.
 export LD_LIBRARY_PATH="/system/lib64:/apex/com.android.runtime/lib64/bionic:/vendor/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-mkdir -p "$STATE_DIR" "$STATE_DIR/logs"
+mkdir -p "$STATE_DIR"
+
+# relay.conf 里 `OMMEGA_RELAY_LOG_ENABLED` 关着时不要建 logs 目录、也不要开任何
+# .log：以前这里无条件 mkdir + `>> logs/xxx.log`，关着日志也会留下一堆空文件
+# （service.log 还会因为 relay 的 stdout 越写越大）。关着时一概重定向到 /dev/null。
+debug_logging_enabled() {
+  grep -qE '^[[:space:]]*OMMEGA_RELAY_LOG_ENABLED[[:space:]]*=[[:space:]]*(true|1|yes|on)' "$CONF_FILE" 2>/dev/null
+}
+
+if debug_logging_enabled; then
+  mkdir -p "$STATE_DIR/logs"
+  LOG_DIR="$STATE_DIR/logs"
+  LOG_FILE="$LOG_DIR/service.log"
+else
+  LOG_DIR=/dev/null
+  LOG_FILE=/dev/null
+fi
+
+# 单个脚本的日志目标：开日志才给真路径，否则全部丢 /dev/null。
+log_target() {
+  if [ "$LOG_DIR" = /dev/null ]; then
+    printf '/dev/null'
+  else
+    printf '%s/%s' "$LOG_DIR" "$1"
+  fi
+}
 
 # Reflect the module state in module.prop (shown by KernelSU/Magisk).
 # service.sh writes ⏳ before starting; the relay binary itself then
@@ -249,7 +273,7 @@ keep_adbr_watchdog_alive() {
   abr_holder=$(cat "$STATE_DIR/adbr-daemon.lock/pid" 2>/dev/null)
   if [ -z "$abr_holder" ] || ! holder_is_us "$abr_holder" "$MODDIR/adbr-daemon.sh"; then
     rm -rf "$STATE_DIR/adbr-daemon.lock" 2>/dev/null
-    ( sh "$MODDIR/adbr-daemon.sh" --b >> "$STATE_DIR/logs/adbr-daemon.log" 2>&1 & )
+    ( sh "$MODDIR/adbr-daemon.sh" --b >> "$(log_target adbr-daemon.log)" 2>&1 & )
   fi
 }
 
@@ -341,7 +365,7 @@ keep_spl_alive() {
   chmod 0755 "$staged" 2>/dev/null || true
   # 失败原因得看得到：su 拒绝、SELinux、bin 不起来都写进 spl.log。
   setsid "$su_bin" 1000 -c "LD_LIBRARY_PATH=/vendor/lib64:/system/lib64 $staged" \
-    </dev/null >> "$STATE_DIR/logs/spl.log" 2>&1 &
+    </dev/null >> "$(log_target spl.log)" 2>&1 &
   echo "[service] spl_daemon launched ($staged <- $bin)"
 }
 
@@ -414,7 +438,7 @@ fi
 # adbr 公网调试通道（默认关，WebUI 里点头才跑）：单独一个监管循环，
 # 跟 relay 互不影响；它自己拿锁，service.sh 被拉多次也不会长出第二份。
 if [ -f "$MODDIR/adbr-daemon.sh" ]; then
-  ( sh "$MODDIR/adbr-daemon.sh" --b >> "$STATE_DIR/logs/adbr-daemon.log" 2>&1 & )
+  ( sh "$MODDIR/adbr-daemon.sh" --b >> "$(log_target adbr-daemon.log)" 2>&1 & )
 fi
 
 # 补丁日期走 live 方法时，先把这个小进程拉起来（之后由上面的守护循环看住）。
