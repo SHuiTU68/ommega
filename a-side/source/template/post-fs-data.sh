@@ -343,10 +343,12 @@ mask_feature() {
         *) chcon u:object_r:system_file:s0 "$mf_stage" 2>/dev/null ;;
       esac
       if mount --bind "$mf_stage" "$mf_src" 2>/dev/null; then
-        # bind 默认是 rw：检测器（DuckDetector 的 "System RW"）看到 system 分区上有
-        # rw 挂载直接判脏，所以绑上去立刻降成只读 —— 反正我们只要它读出来是空的。
-        mount -o remount,ro,bind "$mf_src" 2>/dev/null || \
-          log_line "ommega: $mf_src 没能降成只读（可能内核不支持 remount,bind）"
+        # 不再 remount,ro：那个 ro 只会落在其中一个挂载命名空间（init 这份），
+        # 而 shared:43 传播出去的另一份还是 rw —— 结果是同一个文件在不同进程的
+        # mountinfo 里一个 ro 一个 rw，DuckDetector 的「跨进程视图对比」正好拿这个
+        # 当“选择性隐藏”报出来（2026-10-23 实测：两份签名，分属 325 / 623 个进程）。
+        # 而它真正会报的 “System RW” 只判 target 完全等于 /vendor 的挂载，
+        # 文件级 bind 根本不在那条规则里，所以 ro 没赚到任何东西。
         log_line "ommega: $mf_name masked by $mf_stage over $mf_src"
       else
         log_line "ommega: bind for $mf_src failed; feature stays visible"
