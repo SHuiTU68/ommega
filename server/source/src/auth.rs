@@ -15,6 +15,34 @@ use std::time::{Duration, Instant};
 
 use crate::db::Db;
 
+/// Token 身份（配对 / 公开 / 老卡密），见 [`AuthState::token_meta`]。
+#[derive(Debug, Clone, Default)]
+pub struct TokenMeta {
+    pub role: String,
+    pub pair_id: String,
+    pub kind: String,
+}
+
+impl TokenMeta {
+    /// 能不能跟另一端的 token 配对互通。
+    ///
+    /// 规则（跟控制台上的说法一致）：
+    /// - 任一方是 `public`（公开/测试卡）→ 通
+    /// - 任一方的 kind 为空（老卡密 / 静态 token）→ 通（历史行为不变）
+    /// - 都是 `pair` → 只有 `pair_id` 相同才通。
+    /// - 配对卡遇到「对方根本没登记 token」（离线/老客户端）也放行，`who` 为 None 时由调用方决定。
+    pub fn allows(&self, other: &TokenMeta) -> bool {
+        let legacy = |m: &TokenMeta| m.kind.is_empty();
+        if legacy(self) || legacy(other) {
+            return true;
+        }
+        if self.kind == "public" || other.kind == "public" {
+            return true;
+        }
+        !self.pair_id.is_empty() && self.pair_id == other.pair_id
+    }
+}
+
 #[derive(Clone)]
 pub struct AuthState {
     pub relay_token: String,
@@ -240,6 +268,29 @@ impl AuthState {
             Some(v) => Self::ct_eq_secret(v, &self.relay_token),
             None => false,
         }
+    }
+
+    /// Token 身份：配对组 + 类型，供「A/B 必须配对才能走通」的判断用。
+    ///
+    /// - `kind = "pair"`：专用配对卡密，只有同一 `pair_id` 的 A 与 B 才能互通。
+    /// - `kind = "public"`：公开/测试卡密，能访问任意另一端（不管对方是不是配对卡）。
+    /// - 其它（空）：老卡密或静态 env token，按历史行为任意互通。
+    pub fn token_meta(&self, header: Option<&str>) -> Option<TokenMeta> {
+        let token = header.unwrap_or("");
+        if token.is_empty() || self.check_static_token(Some(token)) {
+            // 静态 env token / 没有 token：不参与配对，按老行为放行。
+            return None;
+        }
+        let db = self.db.as_ref()?;
+        let row = db.get_api_token(token).ok().flatten()?;
+        if !row.enabled {
+            return None;
+        }
+        Some(TokenMeta {
+            role: row.role,
+            pair_id: row.pair_id,
+            kind: row.kind,
+        })
     }
 
     /// Full auth check for an endpoint with an optional required role.

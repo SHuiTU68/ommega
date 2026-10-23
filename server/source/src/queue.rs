@@ -135,6 +135,10 @@ pub struct DeviceEntry {
     /// A 端「伪装参数 → 从服务器同步」拿它去 resetprop，把本机属性对齐到这台 B，
     /// 否则链是真机出的、属性却是调用方那台，检测器一对就报不一致。
     pub identity: DeviceIdentityReport,
+    /// 这台 B 上线时用的 token 身份（配对组 + 类型）。`None` = 老卡密 / 静态 token /
+    /// 还没收到 poll：按历史行为「任意 A 都能用」。
+    pub token_pair_id: String,
+    pub token_kind: String,
 }
 
 /// B 端报上来的设备身份（键值都来自它自己的 `ro.product.*` / `ro.serialno`）。
@@ -329,6 +333,10 @@ struct Inner {
     /// device_id -> 这台心跳里报上来的「不跟随补丁日期」包名名单（relay.conf 的
     /// OMMEGA_RELAY_PATCHLEVEL_SKIP_PKGS）。命中名单的认证请求不再派给它。
     skip_pkgs: HashMap<String, Vec<String>>,
+    /// device_id -> 这台 B 上线时用的 token 身份 `(pair_id, kind)`。
+    /// 用来做「A/B 必须配对才能互通」：`kind = "pair"` 的 A 只能派给同 `pair_id` 的 B。
+    /// 不在表里（老客户端 / 老卡密）= 不参与配对，按历史行为放行。
+    device_token_meta: HashMap<String, (String, String)>,
     /// device_id -> (machine_id, last_seen_ms) that most recently served it (for concurrency check).
     active_machine: HashMap<String, (String, u64)>,
     /// per-device recent activity for load estimation: (timestamp_ms, weight).
@@ -680,6 +688,10 @@ impl TaskStore {
                             version: known_version,
                             from_module: known_from_module,
                             identity: known_identity,
+                            // token 身份由 poll 处的 set_device_token_meta 单独维护，
+                            // upsert 不碰它。
+                            token_pair_id: String::new(),
+                            token_kind: String::new(),
                         },
                     );
                     self.mark_online_sync(device_id, hb_now);
@@ -1484,6 +1496,24 @@ impl TaskStore {
 
     /// 记下这台设备心跳里上报的模块版本号（见 `DeviceEntry::version`）。
     /// 设备还没进表时什么都不做：同一轮 poll 马上会把它建出来，下一次心跳就带上了。
+    /// 记下这台 B 上线时用的 token 身份（配对组 + 类型）。
+    ///
+    /// 只是给「A/B 必须配对」的判断用；没登记过的设备（老客户端 / 老卡密 / 静态 token）
+    /// 一律按历史行为「任意 A 都能用」。
+    pub async fn set_device_token_meta(&self, device_id: &str, pair_id: &str, kind: &str) {
+        let mut inner = self.inner.lock().await;
+        inner.device_token_meta.insert(
+            device_id.to_string(),
+            (pair_id.to_string(), kind.to_string()),
+        );
+    }
+
+    /// 这台 B 的 token 身份；没登记过返回 `None`。
+    pub async fn device_token_meta(&self, device_id: &str) -> Option<(String, String)> {
+        let inner = self.inner.lock().await;
+        inner.device_token_meta.get(device_id).cloned()
+    }
+
     pub async fn set_device_version(&self, device_id: &str, version: Option<&str>) {
         let Some(version) = version else { return };
         let mut inner = self.inner.lock().await;

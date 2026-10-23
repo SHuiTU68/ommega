@@ -400,6 +400,12 @@ h3.sec-title { font-size: 13px; color: var(--muted); text-transform: uppercase; 
         <option value="a">A 端</option>
         <option value="b">B 端</option>
       </select>
+      <select id="tokKind" style="background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:8px 12px;font-size:13px;">
+        <option value="">老卡密（任意互通）</option>
+        <option value="pair">私卡（需配对）</option>
+        <option value="public">公开测试卡</option>
+      </select>
+      <input type="text" id="tokPair" placeholder="配对组（私卡可留空，事后可编辑）" autocapitalize="none" style="min-width:200px;background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:8px 12px;font-size:13px;">
       <select id="tokDuration" style="background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:8px 12px;font-size:13px;">
         <option value="3600">1 小时</option>
         <option value="21600">6 小时</option>
@@ -796,16 +802,23 @@ function fmtDuration(sec) {
 
 async function generateToken() {
   const role = $('#tokRole').value;
+  const kind = $('#tokKind').value;
+  const pairId = $('#tokPair').value.trim();
   const duration = parseInt($('#tokDuration').value, 10);
   const note = $('#tokNote').value.trim();
   try {
     const d = await api('/api/admin/tokens/', {
       method: 'POST',
-      body: JSON.stringify({ role, duration_seconds: duration, note })
+      body: JSON.stringify({ role, duration_seconds: duration, note, kind, pair_id: pairId })
     });
     const r = $('#genResult');
     r.style.display = 'block';
-    r.innerHTML = `已生成 ${d.role === 'a' ? 'A 端' : 'B 端'} Token（有效期 ${fmtDuration(d.duration_seconds)}）：<br><b class="mono">${esc(d.token)}</b>`;
+    const kindLabel = kind === 'pair' ? '私卡' : (kind === 'public' ? '公开测试卡' : (d.role === 'a' ? 'A 端' : 'B 端'));
+    const pairNote = kind === 'pair'
+      ? `<br>配对组：<b class="mono">${d.pair_id ? esc(d.pair_id) : '（空，可在列表里补）'}</b>`
+      : '';
+    r.innerHTML = `已生成 ${kindLabel} Token（有效期 ${fmtDuration(d.duration_seconds)}）：`
+      + `<br><b class="mono">${esc(d.token)}</b>` + pairNote;
     $('#tokNote').value = '';
     toast('Token 生成成功');
     loadTokens();

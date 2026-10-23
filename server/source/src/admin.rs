@@ -542,6 +542,13 @@ pub struct TokenGenBody {
     pub role: String, // "a" | "b"
     pub duration_seconds: i64,
     pub note: Option<String>,
+    /// 卡类型：`pair`（私卡，要和另一端的同 pair_id 配对）/ `public`（公开测试卡，
+    /// 能访问任意另一端）/ 空（老卡密，任意互通）。
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// 私卡的配对组；**可以留空**，之后再在列表里编辑补上。
+    #[serde(default)]
+    pub pair_id: Option<String>,
 }
 
 /// GET /api/admin/tokens/ — list all API tokens.
@@ -602,13 +609,38 @@ pub async fn admin_generate_token(
     if body.duration_seconds <= 0 {
         return json_err(StatusCode::BAD_REQUEST, "duration_seconds must be positive");
     }
+    let kind = body.kind.clone().unwrap_or_default().to_ascii_lowercase();
+    if kind != "" && kind != "pair" && kind != "public" {
+        return json_err(
+            StatusCode::BAD_REQUEST,
+            "kind must be '', 'pair' or 'public'",
+        );
+    }
+    let pair_id = body.pair_id.clone().unwrap_or_default();
+    if kind == "pair" && pair_id.len() > 64 {
+        return json_err(StatusCode::BAD_REQUEST, "pair_id too long (<= 64)");
+    }
+
+    // 单条：role 必填。
+    if body.role != "a" && body.role != "b" {
+        return json_err(StatusCode::BAD_REQUEST, "role must be 'a' or 'b'");
+    }
     let token = crate::util::generate_token_string();
     let token_clone = token.clone();
     let note = body.note.clone().unwrap_or_default();
     let role = body.role.clone();
     let duration = body.duration_seconds;
+    let kind_owned = kind.clone();
+    let pair_owned = pair_id.clone();
     let result = tokio::task::spawn_blocking(move || {
-        db.insert_api_token(&token_clone, &role, duration, &note)
+        db.insert_api_token_full(
+            &token_clone,
+            &role,
+            duration,
+            &note,
+            &pair_owned,
+            &kind_owned,
+        )
     })
     .await;
     match result {
@@ -616,6 +648,8 @@ pub async fn admin_generate_token(
             "status": "ok",
             "token": token,
             "role": body.role,
+            "kind": body.kind.clone().unwrap_or_default(),
+            "pair_id": body.pair_id.clone().unwrap_or_default(),
             "duration_seconds": body.duration_seconds,
         }))
         .into_response(),
@@ -629,7 +663,12 @@ pub async fn admin_generate_token(
 
 #[derive(serde::Deserialize)]
 pub struct TokenToggleBody {
-    pub enabled: bool,
+    /// 不传 = 不改开关（只改 pair_id 时用）。
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// 不传 = 不改；传空字符串 = 取消配对。
+    #[serde(default)]
+    pub pair_id: Option<String>,
 }
 
 /// POST /api/admin/tokens/:id/ — enable/disable a token.
@@ -646,11 +685,25 @@ pub async fn admin_toggle_token(
         return json_err(StatusCode::NOT_FOUND, "no db");
     };
     let enabled = body.enabled;
-    let result = tokio::task::spawn_blocking(move || db.set_token_enabled(id, enabled)).await;
-    match result {
-        Ok(Ok(())) => {
-            Json(json!({ "status": "ok", "id": id, "enabled": body.enabled })).into_response()
+    let pair_id = body.pair_id.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        if let Some(e) = enabled {
+            db.set_token_enabled(id, e)?;
         }
+        if let Some(p) = pair_id.as_deref() {
+            db.set_token_pair_id(id, p)?;
+        }
+        Ok::<(), anyhow::Error>(())
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => Json(json!({
+            "status": "ok",
+            "id": id,
+            "enabled": body.enabled,
+            "pair_id": body.pair_id,
+        }))
+        .into_response(),
         Ok(Err(e)) => json_err(StatusCode::INTERNAL_SERVER_ERROR, &format!("db error: {e}")),
         Err(e) => json_err(
             StatusCode::INTERNAL_SERVER_ERROR,

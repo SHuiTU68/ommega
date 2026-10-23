@@ -252,11 +252,38 @@ async fn try_b_device_layer(
     body: &Value,
     device_id: &str,
     any_b_online: bool,
+    a_meta: Option<&crate::auth::TokenMeta>,
 ) -> Option<Value> {
     if !any_b_online {
         return Some(json!({ "error": "no B-side device online" }));
     }
     let target = state.store.resolve_online_target(device_id).await;
+    // 配对校验：`pair` 卡密的 A 只能派给同 `pair_id` 的 B；`public` 卡任意；
+    // 两边有一方是老卡密 / 静态 token / 未登记就按历史行为放行。
+    if let Some(a) = a_meta {
+        let b_meta = state
+            .store
+            .device_token_meta(&target)
+            .await
+            .map(|(pair_id, kind)| crate::auth::TokenMeta {
+                role: "b".to_string(),
+                pair_id,
+                kind,
+            });
+        if let Some(b_meta) = b_meta {
+            if a.kind == "pair" && !a.allows(&b_meta) {
+                tracing::info!(
+                    "b_layer: pair mismatch for {target}: A pair={} B pair={}",
+                    a.pair_id,
+                    b_meta.pair_id
+                );
+                return Some(json!({
+                    "error": "pair mismatch: this A token is not paired with that B token",
+                    "relay_error_kind": "pair_mismatch",
+                }));
+            }
+        }
+    }
     // B 心跳里报上来的 `skip_pkgs` 原本是「补丁日期不跟随」的名单（relay.conf 的
     // OMMEGA_RELAY_PATCHLEVEL_SKIP_PKGS），不是「这些包不服务」。以前拿它当派发黑名单，
     // 结果检测器/微信/QQ 这些包永远到不了真机，一律掉到服务端密钥层 —— 看起来就像
@@ -511,6 +538,7 @@ async fn run_smart_strongbox_attest(
     device_id: &str,
     body: &Value,
     any_b_online: bool,
+    a_meta: Option<&crate::auth::TokenMeta>,
 ) -> Response {
     let serverbox = state.fulfill.is_enabled();
     let task_type = "attest";
@@ -527,7 +555,7 @@ async fn run_smart_strongbox_attest(
     }
 
     if any_b_online {
-        if let Some(v) = try_b_device_layer(state, task_type, body, device_id, true).await {
+        if let Some(v) = try_b_device_layer(state, task_type, body, device_id, true, a_meta).await {
             if v.get("error").is_none() && !attest_chain_empty(task_type, &v) {
                 // Only a chain that is itself StrongBox-tagged counts as the B
                 // device fulfilling the StrongBox request.  The b-app relay goes
@@ -614,11 +642,14 @@ async fn run_refuse_strongbox_attest(
     device_id: &str,
     body: &Value,
     any_b_online: bool,
+    a_meta: Option<&crate::auth::TokenMeta>,
 ) -> Response {
     let task_type = "attest";
 
     // Only the B device's own StrongBox can answer in this mode.
-    if let Some(v) = try_b_device_layer(state, task_type, body, device_id, any_b_online).await {
+    if let Some(v) =
+        try_b_device_layer(state, task_type, body, device_id, any_b_online, a_meta).await
+    {
         if v.get("error").is_none() && !attest_chain_empty(task_type, &v) {
             let level = chain_attestation_security_level(&v);
             if level == Some(2) {
@@ -742,7 +773,12 @@ fn attest_layer_order(task_type: &str, body: &Value, serverbox: bool) -> &'stati
     }
 }
 
-async fn run_a_side_task(state: &AppState, task_type: &str, body: &Value) -> Response {
+async fn run_a_side_task(
+    state: &AppState,
+    task_type: &str,
+    body: &Value,
+    a_meta: Option<crate::auth::TokenMeta>,
+) -> Response {
     // A 端远程模式默认不带 `device_id`（模块装好就是留空，面板也不再占位一台设备）。
     // 留空 = 「服务端挑一台」：这里在入口一次归一（控制台配的默认设备），然后整条链
     // 路——physical / serverbox 两种模式的层序、StrongBox 分流、身份查找、队列派发——
@@ -806,7 +842,8 @@ async fn run_a_side_task(state: &AppState, task_type: &str, body: &Value) -> Res
         && crate::strongbox::mode() == crate::strongbox::StrongboxMode::Smart
         && is_strongbox_request(body)
     {
-        return run_smart_strongbox_attest(state, &device_id, body, any_b_online).await;
+        return run_smart_strongbox_attest(state, &device_id, body, any_b_online, a_meta.as_ref())
+            .await;
     }
 
     // Refuse mode: a StrongBox request gets the serving device's real StrongBox
@@ -816,7 +853,8 @@ async fn run_a_side_task(state: &AppState, task_type: &str, body: &Value) -> Res
         && crate::strongbox::mode() == crate::strongbox::StrongboxMode::Refuse
         && is_strongbox_request(body)
     {
-        return run_refuse_strongbox_attest(state, &device_id, body, any_b_online).await;
+        return run_refuse_strongbox_attest(state, &device_id, body, any_b_online, a_meta.as_ref())
+            .await;
     }
 
     let serverbox = state.fulfill.is_enabled();
@@ -853,7 +891,17 @@ async fn run_a_side_task(state: &AppState, task_type: &str, body: &Value) -> Res
     let mut blacklist_hit = false;
     for &layer in order {
         let result = match layer {
-            "b" => try_b_device_layer(state, task_type, body, &device_id, any_b_online).await,
+            "b" => {
+                try_b_device_layer(
+                    state,
+                    task_type,
+                    body,
+                    &device_id,
+                    any_b_online,
+                    a_meta.as_ref(),
+                )
+                .await
+            }
             "keybox" => run_layer_keybox(state, task_type, body, &device_id, blacklist_hit).await,
             "self_signed" => run_layer_self_signed(state, task_type, body, &device_id).await,
             _ => None,
@@ -899,9 +947,15 @@ async fn run_a_side_task(state: &AppState, task_type: &str, body: &Value) -> Res
                     && is_strongbox_request(body)
                 {
                     let demoted = demote_to_tee(body);
-                    if let Some(dv) =
-                        try_b_device_layer(state, task_type, &demoted, &device_id, any_b_online)
-                            .await
+                    if let Some(dv) = try_b_device_layer(
+                        state,
+                        task_type,
+                        &demoted,
+                        &device_id,
+                        any_b_online,
+                        a_meta.as_ref(),
+                    )
+                    .await
                     {
                         if dv.get("error").is_none() && !attest_chain_empty(task_type, &dv) {
                             tracing::info!(
@@ -1077,7 +1131,13 @@ pub async fn attest(
     if let Err(r) = check_auth(&state, &headers, Some("a")).await {
         return *r;
     }
-    run_a_side_task(&state, "attest", &body).await
+    run_a_side_task(
+        &state,
+        "attest",
+        &body,
+        state.auth.token_meta(token_from_headers(&headers)),
+    )
+    .await
 }
 
 pub async fn sign(
@@ -1088,7 +1148,13 @@ pub async fn sign(
     if let Err(r) = check_auth(&state, &headers, Some("a")).await {
         return *r;
     }
-    run_a_side_task(&state, "sign", &body).await
+    run_a_side_task(
+        &state,
+        "sign",
+        &body,
+        state.auth.token_meta(token_from_headers(&headers)),
+    )
+    .await
 }
 
 pub async fn decrypt(
@@ -1099,7 +1165,13 @@ pub async fn decrypt(
     if let Err(r) = check_auth(&state, &headers, Some("a")).await {
         return *r;
     }
-    run_a_side_task(&state, "decrypt", &body).await
+    run_a_side_task(
+        &state,
+        "decrypt",
+        &body,
+        state.auth.token_meta(token_from_headers(&headers)),
+    )
+    .await
 }
 
 /// POST /api/soter/ — SOTER 转发的入口，鉴权后交给 `run_soter_task`。
@@ -2551,6 +2623,13 @@ pub async fn b_poll(
     }
     if q.device_id.is_empty() {
         return json_err(StatusCode::BAD_REQUEST, "device_id required");
+    }
+    // 记下这台用的是哪种 token（配对 / 公开 / 老卡密），给 A 侧的配对校验用。
+    if let Some(meta) = state.auth.token_meta(token_from_headers(&headers)) {
+        state
+            .store
+            .set_device_token_meta(&q.device_id, &meta.pair_id, &meta.kind)
+            .await;
     }
     let machine_id = q.machine_id.unwrap_or_default();
 
