@@ -210,7 +210,9 @@ pub const DEFAULT_REAL_APP_PACKAGES: &str = concat!(
     // 其余一律在服务端就地作答、不落真机 —— 真机那个 cpu_id 不给探测类或非支付类应用。
     // 要改就用环境变量 `RELAY_SOTER_REAL_APP_PACKAGES`（逗号分隔，写了就不看这份缺省）。
     "com.tencent.mm,com.tencent.mm:tools,",
-    "com.eg.android.AlipayGphone,com.eg.android.AlipayGphone:push",
+    "com.eg.android.AlipayGphone,com.eg.android.AlipayGphone:push,",
+    // 检测器：它要拿真机的 cpu_id 跟自己的 getDeviceId 对一遍，落本地作答就对不上。
+    "com.andrealyz.soterchecker",
 );
 
 /// 这笔要不要就地作答（用内置料）；要的话给出理由（拿去打日志）。
