@@ -1,12 +1,7 @@
 use super::*;
 
 fn base_config() -> FilterConfig {
-    // 默认值现在是「全局作用域开」，而这个文件里绝大多数用例测的是**列表模式**，
-    // 所以基线配置里显式关掉；要测全局模式的用例自己置 true。
-    FilterConfig {
-        global_scope: false,
-        ..FilterConfig::default()
-    }
+    FilterConfig::default()
 }
 
 fn base_scope() -> Vec<String> {

@@ -158,9 +158,7 @@ impl Default for FilterConfig {
             deny_packages: Vec::new(),
             block_android_package: true,
             allow_unknown_package: false,
-            // 默认开：全局作用域（只接管 app uid 和显式绑定的系统 app 域，系统进程
-            // 始终留系统后端）。要恢复“只看 scoop / target.txt”就在面板里关掉。
-            global_scope: true,
+            global_scope: false,
             allow_system_sids: vec!["engineermode".to_string()],
             system_sid_packages: BTreeMap::from([(
                 "engineermode".to_string(),

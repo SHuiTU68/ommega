@@ -756,10 +756,7 @@ function renderRemote(conf){
   REMOTE_FIELDS.forEach(function(f){
     var target = (f.group === "patch") ? patchHost : host;
     var raw = (f.key in conf) ? conf[f.key] : (DEFAULTS[f.key] || "");
-    /* global_scope 没写在配置里时实际是开的（toml 默认 true），面板也得勾上，
-       否则会出现「面板没勾、行为却在接管」的错位。 */
-    var on = truthy(raw) || (!(f.key in conf) && f.key === "global_scope");
-    if (f.type === "bool") buildBoolRow(f, on, target);
+    if (f.type === "bool") buildBoolRow(f, truthy(raw), target);
     else buildTextRow(f, raw, target);
   });
   /* 「声明不支持 ID 认证」一变就跟着隐藏/显示型号那几项。 */
