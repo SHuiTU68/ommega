@@ -401,9 +401,8 @@ h3.sec-title { font-size: 13px; color: var(--muted); text-transform: uppercase; 
         <option value="b">B 端</option>
       </select>
       <select id="tokKind" style="background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:8px 12px;font-size:13px;">
-        <option value="">老卡密（任意互通）</option>
+        <option value="">普通卡（任意互通）</option>
         <option value="pair">私卡（需配对）</option>
-        <option value="public">公开测试卡</option>
       </select>
       <input type="text" id="tokPair" placeholder="配对组（私卡可留空，事后可编辑）" autocapitalize="none" style="min-width:200px;background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:8px 12px;font-size:13px;">
       <select id="tokDuration" style="background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:8px 12px;font-size:13px;">
@@ -813,7 +812,7 @@ async function generateToken() {
     });
     const r = $('#genResult');
     r.style.display = 'block';
-    const kindLabel = kind === 'pair' ? '私卡' : (kind === 'public' ? '公开测试卡' : (d.role === 'a' ? 'A 端' : 'B 端'));
+    const kindLabel = kind === 'pair' ? '私卡' : (d.role === 'a' ? '普通 A 端' : '普通 B 端');
     const pairNote = kind === 'pair'
       ? `<br>配对组：<b class="mono">${d.pair_id ? esc(d.pair_id) : '（空，可在列表里补）'}</b>`
       : '';
@@ -971,8 +970,7 @@ function filterTokens() {
 
 function kindTag(kind) {
   if (kind === 'pair') return '<span class="tag" style="background:rgba(79,124,255,.18);color:#9db8ff;">私卡</span>';
-  if (kind === 'public') return '<span class="tag" style="background:rgba(63,185,80,.15);color:#9ae6b4;">公开卡</span>';
-  return '<span class="muted">老卡密</span>';
+  return '<span class="muted">普通卡</span>';
 }
 
 async function editPair(id, current) {
