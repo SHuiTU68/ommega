@@ -1155,7 +1155,13 @@ fn handle_generate_attest(cfg: &RelayConfig, _task_type: &str, payload: &Value) 
             Err(e) => log::warn!("attest: live 不可用，这一笔退回改属性：{e:#}"),
         }
     }
-    if live_guard.is_none() {
+    // StrongBox 请求连属性都不动：NXP 的 strongbox HAL 会把 OS_VERSION /
+    // OS_PATCH / VENDOR_PATCH 写进 SE 里的 TA（`javacard.keymint.device.strongbox-impl`），
+    // 而 TA 只认首次绑定的那组值 —— 后面再写会回 APDU 状态 6985
+    //（"Error in sending system properties"），紧接着 generateKey 就报 -74
+    //（attestation keys not provisioned）。实测：A 端要的补丁日期一伪造，
+    // strongbox 必挂；不动属性就正常出链。
+    if live_guard.is_none() && security_level != 2 {
         if let Some(note) = ommegaclient_b::plat::patchlevel::follow_a_side(payload, follow_this) {
             log::info!("attest: {note}");
         }
