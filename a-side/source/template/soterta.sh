@@ -35,6 +35,15 @@ LOG=$STATE_DIR/logs/soterta.log
 # 所以：结果没变就不打；hidl/status 这种纯查询连缓存都不碰（QUIET=1）。
 RESOLVED_CACHE=$STATE_DIR/conf/soter_hal.cache
 QUIET=0
+# 单实例：service.sh 的 keep-alive 和 daemon-injector 都会调这个脚本，并发跑两次就会
+# 同时起两个 `--soterta-serve`（实测 6212/6213 并存一个多小时）。会话号存在进程内存里，
+# initSign 落在 A 进程、finishSign 落到 B 进程就回 -1000 —— 检测器的 T12 每轮必挂，
+# App 那边表现为要反复验指纹。抢不到锁的直接退出，让拿到锁的那一轮去 converge。
+LOCKFILE=$RUN_DIR/soterta.lock
+exec 9>"$LOCKFILE" 2>/dev/null || true
+if command -v flock >/dev/null 2>&1; then
+  flock -n 9 || exit 0
+fi
 # 服务名和 init 服务名都不写死：各厂商的 SOTER HAL 叫什么的都有（高通
 # `vendor.qti.hardware.soter`、小米 `vendor.xiaomi.hardware.soterservice`、联发科
 # `vendor.trustonic.soter`……），写死一个就得每台机器改一次。运行时解析，见 resolve_hal。
