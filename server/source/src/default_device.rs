@@ -26,13 +26,14 @@
 //! 优先级：环境变量（文件里没有值时当初始值）→ `data/default_device.json`。
 //! 文件里还留着老格式 `{"device_id":"..."}` 时，两条链路都用它，升级不改行为。
 
-use std::path::Path;
 use std::sync::RwLock;
 
 use serde_json::Value;
 
 /// 落盘位置。跟其它状态文件一样按进程工作目录算（systemd 的 WorkingDirectory=/opt/relay）。
 /// `OMMEGA_DEFAULT_DEVICE_FILE` 可覆盖。
+/// 只给单测留的路径（运行时不读文件）。
+#[cfg(test)]
 pub const DEFAULT_PATH: &str = "data/default_device.json";
 
 /// 老的通用环境变量：两条链路都拿它当初始值（兼容既有部署）。
@@ -64,6 +65,8 @@ impl Chain {
         }
     }
 
+    /// 只给单测的旧文件解析用。
+    #[cfg(test)]
     fn file_key(self) -> &'static str {
         match self {
             Chain::Keymint => "keymint_device_id",
@@ -83,7 +86,8 @@ static IDS: RwLock<Ids> = RwLock::new(Ids {
     soter: String::new(),
 });
 
-/// 路径：`OMMEGA_DEFAULT_DEVICE_FILE` 优先。
+/// 只给单测留的路径解析（运行时不读文件）。
+#[cfg(test)]
 fn path() -> String {
     std::env::var("OMMEGA_DEFAULT_DEVICE_FILE")
         .ok()
@@ -128,8 +132,10 @@ fn normalize(raw: &str) -> Result<String, String> {
     Ok(id.to_string())
 }
 
-/// 设置某条链路的默认设备 id。空字符串 = 清掉（回到按负载挑）。
-/// 另一条链路保持不动。
+/// 改某条链路的默认值。**只作用于当前进程**：持久化请改 `.env`
+/// （`RELAY_DEFAULT_KEYMINT_DEVICE_ID` / `RELAY_DEFAULT_SOTER_DEVICE_ID`）然后重启。
+///
+/// 不落盘是故意的：默认设备只该有一个写入口，否则又会回到「重启之后到底算哪个」的老问题。
 pub fn set(chain: Chain, raw: &str) -> Result<String, String> {
     let id = normalize(raw)?;
     let current = get_all();
@@ -137,54 +143,48 @@ pub fn set(chain: Chain, raw: &str) -> Result<String, String> {
         Chain::Keymint => (id.clone(), current.1),
         Chain::Soter => (current.0, id.clone()),
     };
-    persist(&keymint, &soter)?;
     if let Ok(mut w) = IDS.write() {
         w.keymint = keymint;
         w.soter = soter;
     }
+    tracing::warn!(
+        "default_device: {} 只改了内存，重启后会回到 .env 里的值",
+        chain.as_str()
+    );
     Ok(id)
 }
 
 /// 启动时装载一次。环境变量只在文件里没有值时当初始值（环境变量写错了不该
 /// 每次重启都把控制台保存的值盖掉）。
+/// 装载：**唯一来源是环境变量**。
+///
+/// 以前这里还会读 `data/default_device.json`，而且「文件里有值就压过环境变量」，
+/// 同一份设置两个写入口，排查时分不清到底用的是哪个。8443 那个实例就是因为
+/// 没有那份文件，归一回落到代码默认，把 SOTER 请求派到了一台没有 SOTER 能力的 B。
+/// 现在文件那套（含 `OMMEGA_DEFAULT_DEVICE_FILE`）完全不用了。
 pub fn init() {
-    let file_path = path();
-    let from_file = read_file(&file_path);
-    let file_has_value = !from_file.keymint.is_empty() || !from_file.soter.is_empty();
-    let mut ids = from_file;
+    let mut ids = Ids::default();
     for chain in [Chain::Keymint, Chain::Soter] {
-        let current = match chain {
-            Chain::Keymint => &ids.keymint,
-            Chain::Soter => &ids.soter,
-        };
-        if !current.is_empty() {
-            continue;
-        }
         let from_env = std::env::var(chain.env_key())
             .ok()
             .filter(|v| !v.trim().is_empty())
             .or_else(|| std::env::var(ENV_KEY).ok())
             .and_then(|v| normalize(&v).ok())
             .unwrap_or_default();
-        if from_env.is_empty() {
-            continue;
-        }
         match chain {
             Chain::Keymint => ids.keymint = from_env,
             Chain::Soter => ids.soter = from_env,
         }
     }
-    // 只要有任何一条是刚从环境变量播下去的，就写回文件，之后以文件为准。
-    if !file_has_value && (!ids.keymint.is_empty() || !ids.soter.is_empty()) {
-        if let Err(e) = persist(&ids.keymint, &ids.soter) {
-            tracing::warn!("default_device: 播种 {file_path} 失败: {e}");
-        }
-    }
     if ids.keymint.is_empty() && ids.soter.is_empty() {
-        tracing::info!("default_device: 两条链路都未指定，A 端留空时按负载挑在线 B");
+        tracing::info!(
+            "default_device: 两条链路都未指定\
+             （RELAY_DEFAULT_KEYMINT_DEVICE_ID / RELAY_DEFAULT_SOTER_DEVICE_ID 都没设），\
+             A 端留空时按负载挑在线 B"
+        );
     } else {
         tracing::info!(
-            "default_device: keymint={:?} soter={:?}（A 端留空时优先落这两台）",
+            "default_device: keymint={:?} soter={:?}（来自 .env）",
             ids.keymint,
             ids.soter
         );
@@ -194,6 +194,8 @@ pub fn init() {
     }
 }
 
+/// 只给单测用：验证旧文件的解析不回归（运行时不读文件了）。
+#[cfg(test)]
 fn read_file(file_path: &str) -> Ids {
     let Ok(text) = std::fs::read_to_string(file_path) else {
         return Ids::default();
@@ -230,23 +232,6 @@ fn read_file(file_path: &str) -> Ids {
             }
         },
     }
-}
-
-fn persist(keymint: &str, soter: &str) -> Result<(), String> {
-    let file_path = path();
-    if let Some(parent) = Path::new(&file_path).parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {parent:?}: {e}"))?;
-    }
-    let body = serde_json::json!({
-        "keymint_device_id": keymint,
-        "soter_device_id": soter,
-    })
-    .to_string();
-    // tmp + rename：写一半崩掉不至于把上一份好配置换成半截 JSON。
-    let tmp = format!("{file_path}.tmp");
-    std::fs::write(&tmp, body.as_bytes()).map_err(|e| format!("write {tmp}: {e}"))?;
-    std::fs::rename(&tmp, &file_path).map_err(|e| format!("rename {tmp} -> {file_path}: {e}"))?;
-    Ok(())
 }
 
 /// 把一个 A 端请求的 `device_id` 按链路补齐成「实际要用的那台」。
