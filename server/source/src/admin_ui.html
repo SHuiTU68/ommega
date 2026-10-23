@@ -424,8 +424,8 @@ h3.sec-title { font-size: 13px; color: var(--muted); text-transform: uppercase; 
     </div>
     <div class="table-wrap">
     <table>
-      <thead><tr><th>Token</th><th>角色</th><th>有效期</th><th>状态</th><th>激活时间</th><th>最后使用 IP</th><th>最后使用时间</th><th>备注</th><th>操作</th></tr></thead>
-      <tbody id="tokenBody"><tr><td colspan="9" class="empty">加载中…</td></tr></tbody>
+      <thead><tr><th>Token</th><th>角色</th><th>类型</th><th>配对组</th><th>有效期</th><th>状态</th><th>激活时间</th><th>最后使用 IP</th><th>最后使用时间</th><th>备注</th><th>操作</th></tr></thead>
+      <tbody id="tokenBody"><tr><td colspan="11" class="empty">加载中…</td></tr></tbody>
     </table>
     </div>
     <div class="collapse-bar" id="tokenCollapse" style="display:none" onclick="toggleCollapse('token')">显示全部</div>
@@ -969,6 +969,22 @@ function filterTokens() {
   renderTokens();
 }
 
+function kindTag(kind) {
+  if (kind === 'pair') return '<span class="tag" style="background:rgba(79,124,255,.18);color:#9db8ff;">私卡</span>';
+  if (kind === 'public') return '<span class="tag" style="background:rgba(63,185,80,.15);color:#9ae6b4;">公开卡</span>';
+  return '<span class="muted">老卡密</span>';
+}
+
+async function editPair(id, current) {
+  const v = prompt('配对组（留空 = 不配对；两端相同的配对组才能互通）', current || '');
+  if (v === null) return;
+  try {
+    await api(`/api/admin/tokens/${id}/`, { method: 'POST', body: JSON.stringify({ pair_id: v.trim() }) });
+    toast('配对组已保存');
+    loadTokens();
+  } catch (e) { toast('保存失败: ' + e.message, 'err'); }
+}
+
 function renderTokens() {
   const q = (document.getElementById('tokenSearch').value || '').trim().toLowerCase();
   const filtered = !q ? _tokenData : _tokenData.filter(t =>
@@ -981,7 +997,7 @@ function renderTokens() {
     ? `${filtered.length} / ${_tokenData.length} 条`
     : `${_tokenData.length} 条`;
   if (!filtered.length) {
-    document.getElementById('tokenBody').innerHTML = '<tr><td colspan="9" class="empty">' + (q ? '无匹配 Token' : '暂无 API Token') + '</td></tr>';
+    document.getElementById('tokenBody').innerHTML = '<tr><td colspan="11" class="empty">' + (q ? '无匹配 Token' : '暂无 API Token') + '</td></tr>';
     document.getElementById('tokenCollapse').style.display = 'none';
     return;
   }
@@ -989,6 +1005,11 @@ function renderTokens() {
     <tr>
       <td class="mono">${esc(t.token)}</td>
       <td><span class="tag ${t.role === 'a' ? 'ec' : 'rsa'}">${t.role === 'a' ? 'A 端' : 'B 端'}</span></td>
+      <td>${kindTag(t.kind)}</td>
+      <td class="mono">${t.kind === 'pair'
+        ? (t.pair_id ? esc(t.pair_id) : '<span class="muted">（未设）</span>')
+          + ` <button class="btn small" onclick="editPair(${t.id}, '${esc(t.pair_id || '')}')">改配对组</button>`
+        : '—'}</td>
       <td>${fmtDuration(t.duration_seconds)}</td>
       <td>${t.enabled ? '<span class="tag on">启用</span>' : '<span class="tag off">禁用</span>'}</td>
       <td class="mono">${t.activated_at ? fmtTimeStr(t.activated_at) : '未激活'}</td>

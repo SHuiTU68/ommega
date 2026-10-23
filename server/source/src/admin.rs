@@ -575,6 +575,8 @@ pub async fn admin_tokens(State(state): State<AppState>, headers: HeaderMap) -> 
                     "created_at": t.created_at,
                     "last_ip": t.last_ip,
                     "last_used_at": t.last_used_at,
+                    "kind": t.kind,
+                    "pair_id": t.pair_id,
                 })
             })
             .collect(),
