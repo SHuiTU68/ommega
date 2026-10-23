@@ -206,26 +206,11 @@ pub const CALLER_PKG_SRC_FIELD: &str = "caller_pkg_src";
 /// （放进来就是把真机那个 cpu_id 递出去）。要加硬就改环境变量
 /// `RELAY_SOTER_REAL_APP_PACKAGES`（逗号分隔，写了就不看这份缺省）。
 pub const DEFAULT_REAL_APP_PACKAGES: &str = concat!(
-    // 腾讯自家那套 SOTER SDK（微信/QQ 全系）。
-    "com.tencent.mm,com.tencent.mm:tools,com.tencent.mobileqq,com.tencent.mobileqqi,",
-    "com.tencent.tim,com.tencent.wework,com.tencent.qqlite,",
-    // 支付/金融：支付宝、云闪付、主要银行、京东金融、微众。
-    "com.eg.android.AlipayGphone,com.unionpay,com.unionpay.mobilepay,",
-    "com.icbc,com.chinamworld.main,com.android.bankabc,com.chinamworld.bocmbci,",
-    "cmb.pb,com.bankcomm.Bankcomm,com.yitong.mbank.psbc,com.ecitic.bank.mobile,",
-    "com.spdbccc.app,com.cib.cibmb,com.cebbank.mobile.cemb,com.pingan.paces.ccms,",
-    "com.pingan.papay,com.webank.wemoney,com.cmbc.cc.mbank,com.cgbchina.xpt,",
-    "cn.com.hsbc.hsbcchina,com.jd.jrapp,",
-    // 头部电商/生活/内容类，和三家运营商。
-    "com.taobao.taobao,com.taobao.idlefish,com.tmall.wireless,com.xunmeng.pinduoduo,",
-    "com.sankuai.meituan,com.sankuai.meituan.takeoutnew,com.dianping.v1,",
-    "com.sdu.didi.psnger,com.jingdong.app.mall,com.sinovatech.unicom.ui,",
-    "com.greenpoint.android.mc10086.activity,com.ct.client,",
-    "com.smile.gifmaker,",
-    "tv.danmaku.bili,com.baidu.tieba,com.baidu.netdisk,com.netease.cloudmusic,",
-    "ctrip.android.view,com.achievo.vipshop,",
-    // GMS/Play。
-    "com.google.android.gms,com.android.vending",
+    // 只认真的会走腾讯 SOTER 的应用：微信（含工具进程）与支付宝（含 push 进程）。
+    // 其余一律在服务端就地作答、不落真机 —— 真机那个 cpu_id 不给探测类或非支付类应用。
+    // 要改就用环境变量 `RELAY_SOTER_REAL_APP_PACKAGES`（逗号分隔，写了就不看这份缺省）。
+    "com.tencent.mm,com.tencent.mm:tools,",
+    "com.eg.android.AlipayGphone,com.eg.android.AlipayGphone:push",
 );
 
 /// 这笔要不要就地作答（用内置料）；要的话给出理由（拿去打日志）。
