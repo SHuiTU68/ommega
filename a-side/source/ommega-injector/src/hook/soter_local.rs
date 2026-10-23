@@ -53,8 +53,6 @@ const OK: i32 = 0;
 const NOT_FOUND: i32 = -5;
 /// AuthKey 还没建。真机 TA 这里答 -6（AUTH_KEY_NOT_READY），答 -5 会被当成 ASK 没就绪。
 const AUTH_KEY_NOT_READY: i32 = -6;
-/// finishSign 拿到不存在的 session。真机 TA 用 -1000。
-const SESSION_UNKNOWN: i32 = -1000;
 /// ASK 里写死的盐长，也正好是 SHA-256 的摘要长度。
 const SALT_LEN: i32 = 32;
 /// 编译进来的那把私钥（PKCS#8 PEM）—— 候选文件都没有时才用它。
@@ -606,11 +604,10 @@ fn answer_inner(call: &soter::SoterCall) -> Option<Answer> {
                         data: Some(envelope(&document, &signature)),
                     })
                 }
-                // 会话丢了就是丢了，真机 TA 这里回 -1000（不是 -5）；别透给真 HAL（那条腿本来就是废的）
-                None => Some(Answer::Buffer {
-                    code: SESSION_UNKNOWN,
-                    data: None,
-                }),
+                // 本地没这个会话：说明 initSign 是托管端落的号，这边的会话表里压根没有。
+                // 回 -1000 会让「远端建会话、本地收尾」那条路永远签不成（检测器的
+                // T12 就是这么挂的），得退回去让上层转给托管端。
+                None => None,
             }
         }
         // generateAskKeyPair(uid) —— 真机上这是建 ASK，我们这把一开始就在，
@@ -1067,10 +1064,12 @@ mod tests {
     }
 
     #[test]
-    fn finish_sign_with_an_unknown_session_reports_not_found() {
+    fn finish_sign_with_an_unknown_session_falls_through() {
+        // 不认识的会话号不能本地硬回 -1000：那可能正是托管端落的号，
+        // 得放行出去让它接着答。
         let mut c = call(4, None, None);
         c.session = Some(1);
-        assert_eq!(as_buffer_code(answer(&c)), SESSION_UNKNOWN);
+        assert!(answer(&c).is_none());
     }
 
     /// 拆信封：`[i32 le JSON 长度][JSON][签名]`。
