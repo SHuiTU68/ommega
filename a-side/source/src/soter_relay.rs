@@ -403,13 +403,23 @@ fn with_caller_pkg(mut value: Value) -> Value {
     if has_caller_pkg(&value) {
         return value;
     }
+    let app_uid = value.get("uid").and_then(Value::as_i64);
     let pkg = value
         .get(CALLER_UID_FIELD)
         .and_then(Value::as_i64)
         .and_then(caller_package_for_uid)
         .or_else(|| {
-            // 没有 `caller_uid`（宿主那套 App 面向接口我们认不出来），或者有 uid 但翻不出包名：
-            // 用 root 侧写的“当前前台应用”兜底。
+            // `caller_uid` 是内核给的，只有「注在宿主进程里」那条路才有意义。
+            // `soterta-ta` 是独立 HAL，调它的是 soterserver（uid 1000），内核那格拿到
+            // 的不是 App —— 它甚至会把一堆共享 uid 的系统包一起翻出来（实测 SoterChecker
+            // 被判成 com.android.dynsystem,com.zte.*，整轮退回本地）。
+            //
+            // SOTER 接口本来就把 App uid 当参数传（原厂 TA 也只认这个），而且宿主就是
+            // 拿它转发进来的，所以退一级用它翻。
+            app_uid.and_then(caller_package_for_uid)
+        })
+        .or_else(|| {
+            // 两个都没有：用 root 侧写的“当前前台应用”兜底。
             //
             // 这一步为什么必须放在这里：以前它接在 `caller_package_for_uid` 的失败分支里，
             // 而“没有 caller_uid”是**更早**的 `return`（实测小米那台就是这样）—— 文件压根
