@@ -1555,6 +1555,8 @@ async fn run_soter_task_inner(state: &AppState, body: &Value) -> Response {
     } else {
         false
     };
+    let session_present =
+        op == "finish_sign" && body.get("session").and_then(Value::as_i64).is_some();
     if let Some(why) = crate::soter_probe::reason_with_caller(
         &state.cfg,
         requested,
@@ -1567,21 +1569,30 @@ async fn run_soter_task_inner(state: &AppState, body: &Value) -> Response {
     )
     .or_else(|| forced_local.then(|| "这轮会话是内置料上开的".to_string()))
     {
-        // 白名单外（检测器一类）：**不造料**，直接告诉 A 端「这笔你自己本地答」。
-        // 造料要现签名，几十台检测器一起刷就把 CPU 占满，真应用的请求只能排队；
-        // 退回 A 端本地后，工作负载分散到各台手机上，服务端只负责转发真应用。
-        // 旧 A 端不认识 `local_only`，会当成「答复形状不认识」放给真 HAL，
-        // 也就是本地能答就答 —— 方向一致，不会把人卡住。
-        tracing::info!(
-            "soter: op={op} uid={probe_uid} alias={probe_alias} 探测机（{why}）\
+        // 能改设备的身份类 op、以及带着会话号的 finishSign，不吃这套。
+        //
+        // `get_device_id` 本身没有 uid 参数，`finish_sign` 只带 session —— 它们翻不出
+        // 调用方包名，只能拿「当前前台应用」凑，前台不是它自己就变成探测机。而它们的
+        // 料在 B 上（ASK 是 B 签的、session 是 B 建的），退回本地只会拿到另一份：
+        // getDeviceId 回 A 的 cpu_id（C5b 对不上）、finishSign 本地没这张会话（T12 报错）。
+        // 所以这两个直接接下去走正常的设备路由。
+        if !soter_identity_op(op) && !session_present {
+            // 白名单外（检测器一类）：**不造料**，直接告诉 A 端「这笔你自己本地答」。
+            // 造料要现签名，几十台检测器一起刷就把 CPU 占满，真应用的请求只能排队；
+            // 退回 A 端本地后，工作负载分散到各台手机上，服务端只负责转发真应用。
+            // 旧 A 端不认识 `local_only`，会当成「答复形状不认识」放给真 HAL，
+            // 也就是本地能答就答 —— 方向一致，不会把人卡住。
+            tracing::info!(
+                "soter: op={op} uid={probe_uid} alias={probe_alias} 探测机（{why}）\
              直接退回 A 端本地作答，不造料、不落 B"
-        );
-        return Json(json!({
-            "op": op,
-            "local_only": true,
-            "error_code": -1001,
-        }))
-        .into_response();
+            );
+            return Json(json!({
+                "op": op,
+                "local_only": true,
+                "error_code": -1001,
+            }))
+            .into_response();
+        }
     }
 
     let gate_uid = body.get("uid").and_then(Value::as_i64).map(|v| v as i32);
@@ -1624,8 +1635,6 @@ async fn run_soter_task_inner(state: &AppState, body: &Value) -> Response {
     } else {
         None
     };
-    let session_present =
-        op == "finish_sign" && body.get("session").and_then(Value::as_i64).is_some();
     // A recorded (requested device, integer session) route is authoritative.
     // Do not let a newly-online requested device override it: the same numeric
     // handle can refer to a different TA session on another B device.
