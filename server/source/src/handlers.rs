@@ -686,34 +686,24 @@ fn refuse_strongbox_body(kind: &str, msg: &str) -> Response {
 /// A layer "succeeds" when it returns a result without an `error` field;
 /// otherwise the next layer is tried, and only when every layer fails is an
 /// error returned.
-/// `RELAY_ATTEST_KEYBOX_FIRST=1` 时 attest 回到「服务端密钥层优先」。
+/// `RELAY_ATTEST_KEYBOX_FIRST=1`（或控制台开关）时 attest 回到「服务端密钥层优先」。
 ///
 /// 默认（不开）= 真机优先：只要 B 在线且合格，链就是真机出的；密钥层只在真机
 /// 不可用时兜底。想专门验证服务端密钥层（serverbox）就打开这个开关。
+///
+/// 值本身在 [`crate::attest_policy`] 里（运行时可变 + 落盘），这里只是个转发。
 pub fn keybox_first() -> bool {
-    matches!(
-        std::env::var("RELAY_ATTEST_KEYBOX_FIRST")
-            .unwrap_or_default()
-            .trim(),
-        "1" | "true" | "yes" | "on"
-    )
+    crate::attest_policy::keybox_first()
 }
 
 /// 带设备 ID 的认证（attestation_id_brand/device/product/serial/imei/meid/
 /// manufacturer/model）走不走服务端密钥层。
 ///
-/// 开 `RELAY_ID_ATTEST_SERVER_SIDE=1` 后：这类请求**不派给真机**，直接由服务端的
-/// keybox 身份出链（真机不可用才回落）。适合「ID 认证根本不需要真机 TEE、只想让
-/// 属性跟调用方对上」的场景；不开就是原来那样，跟着模式层序走。
+/// 打开（`RELAY_ID_ATTEST_SERVER_SIDE=1` 或控制台开关）后：这类请求**不派给真机**，
+/// 直接由服务端的 keybox 身份出链（真机不可用才回落）。适合「ID 认证根本不需要
+/// 真机 TEE、只想让属性跟调用方对上」的场景；不开就是原来那样，跟着模式层序走。
 pub fn id_attest_server_side() -> bool {
-    matches!(
-        std::env::var("RELAY_ID_ATTEST_SERVER_SIDE")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true" | "yes" | "on"
-    )
+    crate::attest_policy::id_attest_server_side()
 }
 
 /// 这个请求带没带设备 ID（看 A 端转过来的 `attestation_ids`）。
@@ -835,7 +825,12 @@ async fn run_a_side_task(state: &AppState, task_type: &str, body: &Value) -> Res
         if task_type == "attest" && id_attest_server_side() && request_has_attestation_ids(body) {
             // 带 ID 的认证按开关分流：服务端身份先上，真机只当兜底。
             &["keybox", "b", "self_signed"]
-        } else if task_type == "attest" && !keybox_first() {
+        } else if task_type == "attest" && keybox_first() {
+            // keybox_first 以前只在 serverbox 模式下走得到（下一个分支），物理模式
+            // 会被最后那个 else 盖掉 —— 也就是「物理模式 + 打开 keybox 优先」实际是
+            // 个空开关。这里让它跟模式无关地生效。
+            &["keybox", "b", "self_signed"]
+        } else if task_type == "attest" {
             &["b", "keybox", "self_signed"]
         } else if serverbox {
             &["keybox", "b", "self_signed"]

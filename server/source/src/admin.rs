@@ -1176,6 +1176,75 @@ pub async fn admin_strongbox_toggle(
 }
 
 // ---------------------------------------------------------------------------
+// Attest layer-order switches (keybox first / device-ID attest server side).
+//
+// These used to be env-only (RELAY_ATTEST_KEYBOX_FIRST /
+// RELAY_ID_ATTEST_SERVER_SIDE): invisible on the console and requiring a
+// restart. The values now live in `crate::attest_policy` (runtime + persisted
+// to data/attest_policy.json), so saving the panel takes effect immediately.
+// ---------------------------------------------------------------------------
+
+/// GET /api/admin/attest_policy/ - current layer-order switches.
+pub async fn admin_attest_policy_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(r) = check_auth(&state, &headers) {
+        return *r;
+    }
+    let (keybox_first, id_attest_server_side) = crate::attest_policy::snapshot();
+    let persisted = std::path::Path::new(crate::attest_policy::PATH).is_file();
+    Json(json!({
+        "status": "ok",
+        "keybox_first": keybox_first,
+        "id_attest_server_side": id_attest_server_side,
+        "persisted": persisted,
+        "path": crate::attest_policy::PATH,
+    }))
+    .into_response()
+}
+
+#[derive(serde::Deserialize)]
+pub struct AttestPolicyBody {
+    /// true = every attest goes to the server keybox first; false = B first.
+    #[serde(default)]
+    pub keybox_first: Option<bool>,
+    /// true = device-ID attest also goes to the server keybox first.
+    #[serde(default)]
+    pub id_attest_server_side: Option<bool>,
+}
+
+/// POST /api/admin/attest_policy/ - change the layer-order switches.
+pub async fn admin_attest_policy_set(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<AttestPolicyBody>,
+) -> Response {
+    if let Err(r) = check_auth(&state, &headers) {
+        return *r;
+    }
+    if body.keybox_first.is_none() && body.id_attest_server_side.is_none() {
+        return json_err(
+            StatusCode::BAD_REQUEST,
+            "nothing to change: pass keybox_first and/or id_attest_server_side",
+        );
+    }
+    if let Err(e) = crate::attest_policy::set(body.keybox_first, body.id_attest_server_side) {
+        return json_err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("failed to persist attest policy: {e}"),
+        );
+    }
+    let (keybox_first, id_attest_server_side) = crate::attest_policy::snapshot();
+    Json(json!({
+        "status": "ok",
+        "keybox_first": keybox_first,
+        "id_attest_server_side": id_attest_server_side,
+    }))
+    .into_response()
+}
+
+// ---------------------------------------------------------------------------
 // Default device id (A side leaves `device_id` empty).
 // ---------------------------------------------------------------------------
 

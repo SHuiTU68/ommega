@@ -246,6 +246,10 @@ fn build_router(cfg: &Arc<Config>) -> Router {
         )
         .route("/api/admin/strongbox/", get(admin::admin_strongbox_status))
         .route("/api/admin/strongbox/", post(admin::admin_strongbox_toggle))
+        .route(
+            "/api/admin/attest_policy/",
+            get(admin::admin_attest_policy_status).post(admin::admin_attest_policy_set),
+        )
         .route("/api/admin/tokens/:token/ips/", get(admin::admin_token_ips))
         .route("/api/admin/tokens/:id/", post(admin::admin_toggle_token))
         .route(
@@ -280,6 +284,10 @@ async fn main() -> anyhow::Result<()> {
     relay_rs::statedb::open_checked()?;
     // 「默认设备 id」：A 端留空时用哪台 B。文件/环境变量读一次，之后控制台可改。
     relay_rs::default_device::init();
+    // Attest layer-order switches: env vars seed the defaults, the persisted
+    // file (data/attest_policy.json) wins afterwards. The console can flip them
+    // at runtime without a restart.
+    relay_rs::attest_policy::init();
     tracing::info!(
         "relay_rs starting: version={} mode={} bind={} http={} https={} tls={}",
         relay_rs::config::VERSION,
