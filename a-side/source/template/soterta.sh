@@ -29,6 +29,12 @@ KICKED_FILE=$RUN_DIR/soterta.host.kicked
 # 最后一次踢宿主时对应的 TA 实例（pid）。换实例就要重踢，见 kick_host。
 TAKEOVER_PID=$RUN_DIR/soterta.takeover.pid
 LOG=$STATE_DIR/logs/soterta.log
+# 解析结果缓存 + 静默开关。service.sh 的 keep-alive 和 daemon-injector 的
+# `soterta.sh hidl` 都是 5 秒一轮、每轮新起一个进程，resolve_hal 无条件 log 会把
+# 这个文件刷满「resolved hal=...」（实测每 2~5 秒一条），真正有用的事件全被埋掉。
+# 所以：结果没变就不打；hidl/status 这种纯查询连缓存都不碰（QUIET=1）。
+RESOLVED_CACHE=$STATE_DIR/conf/soter_hal.cache
+QUIET=0
 # 服务名和 init 服务名都不写死：各厂商的 SOTER HAL 叫什么的都有（高通
 # `vendor.qti.hardware.soter`、小米 `vendor.xiaomi.hardware.soterservice`、联发科
 # `vendor.trustonic.soter`……），写死一个就得每台机器改一次。运行时解析，见 resolve_hal。
@@ -165,7 +171,12 @@ resolve_hal() {
     fi
     [ -n "$HAL" ] || HAL=vendor.soter
   fi
-  log "resolved hal=$HAL service=$SERVICE"
+  resolved="$HAL $SERVICE"
+  if [ "$QUIET" != "1" ] && [ "$(cat "$RESOLVED_CACHE" 2>/dev/null)" != "$resolved" ]; then
+    mkdir -p "${RESOLVED_CACHE%/*}" 2>/dev/null
+    printf '%s\n' "$resolved" > "$RESOLVED_CACHE" 2>/dev/null
+    log "resolved hal=$HAL service=$SERVICE"
+  fi
   return 0
 }
 
@@ -371,11 +382,14 @@ case "$1" in
   hidl)
     # 给 daemon-injector 问的：这台机器的 SOTER 是不是 HIDL 平台。
     # 是就打印 1、不是打印 0（它据此决定注不注 SOTER 宿主）。
+    # 纯查询：不写日志（这条每 5 秒被问一次）。
+    QUIET=1
     resolve_hal
     if hidl_platform; then echo 1; else echo 0; fi
     exit 0
     ;;
   status)
+    QUIET=1
     if [ -n "$(daemon_pid)" ]; then
       echo "soterta=us hal=$(hal_state) service=$(service_present && echo yes || echo no)"
     else
