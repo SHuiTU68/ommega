@@ -526,7 +526,10 @@ function dropKeys(text, keys){
   }).join("\n");
 }
 async function writeFile(path, text, mode){
-  var cmd = "printf '%s' '" + b64(text) + "' | base64 -d > " + path;
+  // 目录先建：写配置要经过 ommegadata 软链（或 bin/conf 新布局），软链/目录缺一个
+  // 就是一句「No such file or directory」，面板只能把错误原样弹给用户。
+  var dir = path.replace(/\/[^\/]*$/, "");
+  var cmd = "mkdir -p " + dir + " 2>/dev/null; printf '%s' '" + b64(text) + "' | base64 -d > " + path;
   if (mode) cmd += " && chmod " + mode + " " + path;
   return exec(cmd);
 }

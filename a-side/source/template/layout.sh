@@ -56,3 +56,38 @@ migrate_ommega_layout() {
 }
 
 migrate_ommega_layout
+
+# 安装期才做的两件事，也在这里幂等补上：ommegadata 软链与 bin/resetprop 都是
+# customize.sh 建的，而手动解压、热更新、或直接把新文件盖进老模块目录这几条路
+# 都不会跑 customize.sh。缺了软链，面板「保存并生效」写 config 就直接
+# No such file or directory（ommegadata 就是写配置的入口）；缺了 resetprop，
+# 伪装参数那条会静默失效。开机（post-fs-data / service）与安装各跑一次，有就不动。
+KS_DATA=/data/misc/keystore/ommega
+MOD_DIR=${0%/*}
+[ -d "$MOD_DIR/libs" ] || MOD_DIR=/data/adb/modules/ommega
+
+ensure_state_links() {
+  if [ ! -e "$STATE_DIR/ommegadata" ] && [ ! -L "$STATE_DIR/ommegadata" ]; then
+    mkdir -p "$KS_DATA" 2>/dev/null
+    ln -s "$KS_DATA" "$STATE_DIR/ommegadata" 2>/dev/null
+  fi
+
+  if [ ! -x "$BIN_DIR/resetprop" ]; then
+    abi=$(getprop ro.product.cpu.abi 2>/dev/null)
+    case "$abi" in
+      arm64*) abi=arm64-v8a ;;
+      armeabi*) abi=armeabi-v7a ;;
+      x86_64*) abi=x86_64 ;;
+      i?86|x86) abi=x86 ;;
+      *) abi= ;;
+    esac
+    for src in "$STATE_DIR/resetprop" "$MOD_DIR/libs/$abi/resetprop" "$MOD_DIR/resetprop"; do
+      [ -f "$src" ] || continue
+      cp -f "$src" "$BIN_DIR/resetprop" 2>/dev/null || continue
+      chmod 0755 "$BIN_DIR/resetprop" 2>/dev/null
+      break
+    done
+  fi
+}
+
+ensure_state_links
