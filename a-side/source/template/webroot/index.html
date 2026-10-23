@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <title>Ommega</title>
 <style>
   /* 自包含单文件：样式与脚本都内联，不依赖外部资源。管理器把 webroot/ 当静态目录
@@ -60,6 +60,12 @@
   .row .name small{display:block;color:var(--dim);font-size:12px;line-height:1.45}
   .row input[type=text],.row select{flex:0 0 46%;min-width:0;padding:7px 9px;border:1px solid var(--line);
       border-radius:8px;background:var(--bg);color:var(--fg);font-size:13px;font-family:inherit}
+  /* 令牌 / 服务器地址这类长值：标签占一行、输入框占满下一行。
+     原来 46%（约 144px）装不下 32 位 token，需要横向滚动 120px，聚焦全选时
+     内容会整个跳到末尾，看着像「框变了」。 */
+  .row.stacked{flex-wrap:wrap}
+  .row.stacked .name{flex:0 0 100%}
+  .row.stacked input[type=text]{flex:0 0 100%;margin-top:6px}
   .sw{position:relative;flex:0 0 46px;height:26px;border-radius:13px;background:#c9ccd2;
       cursor:pointer;transition:background .15s;border:0;padding:0}
   .sw::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;
@@ -657,8 +663,19 @@ function wireTabs(){
      不用非拖到一半。纵向优先时不拦触摸，页面内上下滚动照常。 */
   var x0 = null, y0 = null, dx = 0, raw = 0, axis = 0;   /* axis: 0 未定 / 1 横向 / 2 纵向 */
   var samples = [];                                      /* 最近几百毫秒的位移采样，用来算松手速度 */
+  /* 兜底：touchend 被系统手势吞掉时（快速滑动常见），endDrag 不执行，
+     layoutPages 留下的 translateX 就一直挂着 —— 表现就是「高亮在作用域，内容却
+     整体偏左、只露出卡片右边」。这里定个时，700ms 没新位移就复位。 */
+  var idleTimer = null;
+  function settleDrag(){
+    if (idleTimer){ clearTimeout(idleTimer); idleTimer = null; }
+    x0 = null; dx = 0; raw = 0; axis = 0; samples = [];
+    pages.classList.remove("dragging");
+    applyPage(activeTab, true);
+  }
   pages.addEventListener("touchstart", function(e){
     if (e.touches.length !== 1) return;
+    if (idleTimer){ clearTimeout(idleTimer); idleTimer = null; }
     x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; dx = 0; raw = 0; axis = 0;
     samples = [{t: Date.now(), x: 0}];
     pages.classList.add("dragging");
@@ -681,9 +698,12 @@ function wireTabs(){
     if ((activeTab === 0 && dx > 0) || (activeTab === pageCount() - 1 && dx < 0)) dx = dx / 3;
     layoutPages(dx, true);
     pillFollow(dx / (pages.clientWidth || 1));
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(function(){ idleTimer = null; if (x0 !== null) settleDrag(); }, 700);
     if (e.cancelable) e.preventDefault();
   }, {passive: false});
   function endDrag(e){
+    if (idleTimer){ clearTimeout(idleTimer); idleTimer = null; }
     if (x0 === null) return;
     /* 松手那一瞬的位置也算进来，不然最后一下的位移和速度会漏掉 */
     if (e && e.changedTouches && e.changedTouches.length){
@@ -736,6 +756,7 @@ function buildBoolRow(f, value, host){
 }
 function buildTextRow(f, value, host){
   var row = el("div", "row");
+  if (f.key === "token" || f.key === "url") row.classList.add("stacked");
   var name = el("div", "name");
   name.appendChild(el("b", null, t("f." + f.key)));
   name.appendChild(el("small", null, t("f." + f.key + ".hint")));
@@ -745,6 +766,14 @@ function buildTextRow(f, value, host){
   inp.value = String(value);
   inp.autocapitalize = "none";
   inp.dataset.key = f.key;
+  /* Android WebView 聚焦 input 时默认会把内容全选（不是我们加的代码）。
+     这里把光标塔到末尾，点一下不再全选。 */
+  if (f.key === "token" || f.key === "url"){
+    inp.addEventListener("focus", function(){
+      var n = inp.value.length;
+      try { inp.setSelectionRange(n, n); } catch (e) {}
+    });
+  }
   row.appendChild(inp);
   (host || document.getElementById("grp-remote")).appendChild(row);
 }
@@ -756,7 +785,10 @@ function renderRemote(conf){
   REMOTE_FIELDS.forEach(function(f){
     var target = (f.group === "patch") ? patchHost : host;
     var raw = (f.key in conf) ? conf[f.key] : (DEFAULTS[f.key] || "");
-    if (f.type === "bool") buildBoolRow(f, truthy(raw), target);
+    /* global_scope 没写在配置里时实际是开的（toml 默认 true），面板也得勾上，
+       否则会出现「面板没勾、行为却在接管」的错位。 */
+    var on = truthy(raw) || (!(f.key in conf) && f.key === "global_scope");
+    if (f.type === "bool") buildBoolRow(f, on, target);
     else buildTextRow(f, raw, target);
   });
   /* 「声明不支持 ID 认证」一变就跟着隐藏/显示型号那几项。 */
