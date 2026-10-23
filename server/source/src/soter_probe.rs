@@ -236,6 +236,29 @@ pub fn reason(cfg: &Config, device: &str, uid: Option<i32>, alias: Option<&str>)
 /// `caller_pkg_src` 只用来记日志/统计：实测系统自带的 `SoterService` 调 HAL 时一律
 /// 用 `Binder.getCallingUid()`（内核填的真实 App uid），而不是 App 传进来的参数，
 /// 所以 A 端拿这个 uid 翻出来的包名是真的，探测机伪造不了。
+/// 这个调用方包名在不在真应用名单里。
+///
+/// 给入口闸门用：闸门只在探测机上省 CPU，真应用一轮流程里 ASK / generate / export
+/// 的间隔经常不到 100ms，被闸下来就变成「这一笔本地答、下一笔走 B」——两边的
+/// cpu_id 和钥匙对不上，检测器的 C5b / T10 就是这么红的。
+///
+/// 跟 [`reason_with_caller`] 用同一份名单，但**不写任何状态**（不带 observe/served），
+/// 因为它要在真正路由之前跑。
+pub fn is_listed_real_app(cfg: &Config, caller_pkg: Option<&str>) -> bool {
+    let Some(pkg) = caller_pkg.map(str::trim).filter(|p| !p.is_empty()) else {
+        return false;
+    };
+    let packages = if cfg.soter_real_app_packages.trim().is_empty() {
+        DEFAULT_REAL_APP_PACKAGES.to_string()
+    } else {
+        cfg.soter_real_app_packages.clone()
+    };
+    let known = split_list(&packages);
+    split_list(pkg)
+        .iter()
+        .any(|caller| known.iter().any(|name| name == caller))
+}
+
 pub fn reason_with_caller(
     cfg: &Config,
     device: &str,

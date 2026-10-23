@@ -1466,31 +1466,43 @@ async fn run_soter_task_inner(state: &AppState, body: &Value) -> Response {
     // 它们要的结论是固定的（local_only），100ms 内复用没有副作用；真应用（微信 /
     // 支付宝）正常流程不会在同一 uid 上 100ms 内发第二笔，不受影响。
     if let Some(uid) = body.get("uid").and_then(Value::as_i64) {
-        use std::sync::{LazyLock, Mutex};
-        const GATE_MS: u64 = 100;
-        static LAST_BY_UID: LazyLock<Mutex<std::collections::HashMap<i64, u64>>> =
-            LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        if let Ok(mut gate) = LAST_BY_UID.lock() {
-            let too_soon = gate
-                .get(&uid)
-                .is_some_and(|prev| now.saturating_sub(*prev) < GATE_MS);
-            if too_soon {
-                let op = body.get("op").and_then(Value::as_str).unwrap_or("probe");
-                return Json(json!({
-                    "op": op,
-                    "local_only": true,
-                    "error_code": -1001,
-                }))
-                .into_response();
+        // 真应用不过这道闸门。
+        //
+        // 闸门是为了探测机（春秋 / 鸭子，每秒几十笔）省 CPU 的；可它们要的结论是
+        // 固定的 local_only。真应用一轮流程里 ASK / generateAuthKey / export 的
+        // 间隔经常不到 100ms，被闸下来就变成「这一笔本地答、下一笔走 B」——两边的
+        // cpu_id 和钥匙对不上，检测器 C5b（两次 cpuid 不一致）和 T10（建了导不出）
+        // 就是这么红的。所以先看名单，真应用直接放过去走正常路由。
+        let caller_pkg = body
+            .get(crate::soter_probe::CALLER_PKG_FIELD)
+            .and_then(Value::as_str);
+        if !crate::soter_probe::is_listed_real_app(&state.cfg, caller_pkg) {
+            use std::sync::{LazyLock, Mutex};
+            const GATE_MS: u64 = 100;
+            static LAST_BY_UID: LazyLock<Mutex<std::collections::HashMap<i64, u64>>> =
+                LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            if let Ok(mut gate) = LAST_BY_UID.lock() {
+                let too_soon = gate
+                    .get(&uid)
+                    .is_some_and(|prev| now.saturating_sub(*prev) < GATE_MS);
+                if too_soon {
+                    let op = body.get("op").and_then(Value::as_str).unwrap_or("probe");
+                    return Json(json!({
+                        "op": op,
+                        "local_only": true,
+                        "error_code": -1001,
+                    }))
+                    .into_response();
+                }
+                if gate.len() > 4096 {
+                    gate.clear();
+                }
+                gate.insert(uid, now);
             }
-            if gate.len() > 4096 {
-                gate.clear();
-            }
-            gate.insert(uid, now);
         }
     }
     // 跟 attest 一个口径，而且同样在入口归一：A 端留空 + 配了默认设备 = 等同于
