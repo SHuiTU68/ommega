@@ -203,6 +203,17 @@ if [ -f "$DECLARED_CONF" ]; then
   d_vendor=$(cfg_val vendor_patchlevel); [ "$d_vendor" = auto ] && d_vendor=$d_patch
   # boot 不继承：设备原本没这个属性，凭空造一个反而多一处马脚，只认显式声明
   d_boot=$(cfg_val boot_patchlevel)
+  # auto 时按 boot 镜像的编译日期补一个：检测器拿这个属性跟链上的 boot 补丁
+  # 一个月一个月地比，auto 着不去造这个属性的机型能差出好几个月。
+  case "$d_boot" in
+    ''|auto)
+      bts=$(getprop ro.bootimage.build.date.utc 2>/dev/null)
+      case "$bts" in
+        ''|*[!0-9]*) ;;
+        *) d_boot=$(date -u -d "@$bts" +%Y%m%d 2>/dev/null) ;;
+      esac
+      ;;
+  esac
   for pair in "$d_os|ro.build.version.security_patch" "$d_vendor|ro.vendor.build.security_patch" "$d_boot|ro.vendor.boot_security_patch"; do
     value=${pair%%|*}
     prop=${pair##*|}
