@@ -1,21 +1,28 @@
-use der::asn1::OctetString;
+use der::asn1::{OctetString, SetOfVec};
 
-/// AOSP `AttestationApplicationId`：
+/// 调用方实际发来的形状：两个字段都是 `SET OF`（tag 0x31）。
 ///
-/// ```text
+/// 我们自己的 A 端（TA 里的 tag 709 编码）走的是这一种，所以这里必须是它，
+/// 否则所有 attest 请求都会在 B 层被拒，请求直接掉到服务端 keybox。
+#[derive(der::Sequence, Debug)]
+pub struct AttestationApplicationId {
+    pub package_info_records: SetOfVec<PackageInfoRecord>,
+    pub signature_digests: SetOfVec<OctetString>,
+}
+
+/// AOSP 规范写的形状：两个字段是 `SEQUENCE OF`（tag 0x30）。
+///
+/// ```
 /// AttestationApplicationId ::= SEQUENCE {
 ///     packageInfos SEQUENCE OF AttestationPackageInfo,
 ///     signatureDigests SEQUENCE OF OCTET STRING
 /// }
 /// ```
 ///
-/// 两个字段都是 SEQUENCE OF（tag 0x30）。以前这里写的是 `SetOfVec`（tag 0x31 SET），
-/// 于是 AOSP 标准格式的 app_id 一律被拒：
-/// `TagUnexpected { expected: Some(Tag(0x11: SET)), actual: Tag(0x10: SEQUENCE) }`。
-/// 后果是 B 层的每一笔 attest 都在校验这关失败，请求被服务端摘到 keybox 层用 TEE
-/// 身份铸链 —— 看起来就是「strongbox / 真机链路没生效」。
+/// 系统 keystore2 生成的是这一种。两种都要认：只认 SET 会把标准格式的请求
+/// 判死，只认 SEQUENCE 会把我们 A 端的请求判死（实测两边都踩过）。
 #[derive(der::Sequence, Debug)]
-pub struct AttestationApplicationId {
+pub struct AttestationApplicationIdSeq {
     pub package_info_records: Vec<PackageInfoRecord>,
     pub signature_digests: Vec<OctetString>,
 }
