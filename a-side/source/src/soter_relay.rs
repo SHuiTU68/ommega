@@ -627,7 +627,34 @@ fn encode_reply(op: &str, reply: &Value) -> Option<Outcome> {
         }
         _ => None,
     };
+    // `get_device_id`：真机 / SDK 给的是 **32 字符 hex 文本**（有的还跟一个 NUL），而检测器
+    // 要的是 16 字节原始值（转 hex 后跟 `cpu_id` 比）。本地兜底那条路已经转了
+    // （`soter_local::hex_bytes`），转发这条路以前没转，检测器就看到 `30393030…` ——
+    // ASCII 的 "0900"，C5b 直接对不上。已经是 16 字节的原样放过，幂等。
+    let data = if op == "get_device_id" {
+        match data.as_deref().and_then(hex_text_32) {
+            Some(raw) => Some(raw),
+            None => data,
+        }
+    } else {
+        data
+    };
     Some(Outcome::Buffer { code, data })
+}
+
+/// 32 字符 hex 文本 → 16 字节；容一个尾随 NUL（部分厂商 TA 会带）。其余一律 `None`。
+fn hex_text_32(bytes: &[u8]) -> Option<Vec<u8>> {
+    let text = core::str::from_utf8(bytes).ok()?.trim_end_matches('\0');
+    if text.len() != 32 || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(16);
+    let mut i = 0;
+    while i < 32 {
+        out.push(u8::from_str_radix(&text[i..i + 2], 16).ok()?);
+        i += 2;
+    }
+    Some(out)
 }
 
 #[cfg(test)]
