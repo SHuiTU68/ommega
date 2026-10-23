@@ -360,7 +360,18 @@ impl Remotable for SoterTa {
             challenge: challenge.clone(),
             session,
             key: None,
-            caller_uid: None,
+            // 内核给的调用方 uid（Binder.getCallingUid 那一份）。不填的话 daemon 翻不出包名，
+            // 只能退到「当前前台应用」——实测前台上层是 KernelSU 管理器时，SoterChecker 的几笔
+            // 就被当成 me.weishu.kernelsu，不在白名单、整轮被判探测机退回本地（C5b 就是
+            // 这么红的：getDeviceId 走 A 端的 07dc，而别的 op 走 B）。
+            caller_uid: {
+                let uid = rsbinder::get_calling_uid();
+                if uid > 0 {
+                    Some(uid as i32)
+                } else {
+                    None
+                }
+            },
             data_size: 0,
         };
         // 先问 daemon（它按配置决定是转 B 端真 TEE、走服务端还是本地兜底）；
