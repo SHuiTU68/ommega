@@ -74,6 +74,30 @@ start_daemon() {
   return 0
 }
 
+# sepolicy 自愈：设备重启之后 ksud 的规则会丢，payload 进到 keystore2 里就会
+# 一路吃 EACCES（errno 13），KeyMint 那边直接出不了链 —— 症状是面板看着一切正常，
+# 但认证一直失败，得人工补一刀 `ksud sepolicy apply` 才好。
+#
+# 这里在拉起 injector 之前补一次规则；规则是全局的，apply 完对已在跑的进程也立即生效。
+# 用时间戳节流，5 分钟内不重复 apply（keep-alive 每 5 秒跑一轮，不节流会刷爆）。
+SEPOLICY_STAMP=$RUN_DIR/sepolicy.applied
+ensure_sepolicy() {
+  [ -f "$MODDIR/sepolicy.rule" ] || return 0
+  command -v ksud >/dev/null 2>&1 || return 0
+  now=$(date +%s 2>/dev/null || echo 0)
+  last=$(cat "$SEPOLICY_STAMP" 2>/dev/null || echo 0)
+  case "$now" in ''|*[!0-9]*) now=0 ;; esac
+  case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  if [ "$now" -gt 0 ] && [ "$last" -gt 0 ] && [ $((now - last)) -lt 300 ]; then
+    return 0
+  fi
+  if ksud sepolicy apply "$MODDIR/sepolicy.rule" >/dev/null 2>&1; then
+    mkdir -p "${SEPOLICY_STAMP%/*}" 2>/dev/null
+    printf '%s\n' "$now" > "$SEPOLICY_STAMP" 2>/dev/null
+  fi
+  return 0
+}
+
 # WebUI is served by the KernelSU/APatch manager, which auto-detects the
 # module's webroot/ folder and injects the window.ksu bridge. No separate
 # web server is needed.
@@ -109,6 +133,7 @@ else
   kill_all
   update_status "Ommega ⏳ 启动中"
   start_daemon "$MODDIR/daemon" "$RUN_DIR/keymint-daemon.pid"
+  ensure_sepolicy
   start_daemon "$MODDIR/daemon-injector" "$RUN_DIR/injector-daemon.pid"
 fi
 
@@ -156,6 +181,9 @@ keep_daemons_alive() {
     sp=${spec%%:*}
     pf=${spec#*:}
     if ! daemon_one_alive "$sp" "$pf"; then
+      case "$sp" in
+        *daemon-injector) ensure_sepolicy ;;
+      esac
       start_daemon "$sp" "$pf" && fixed=1
     fi
   done
