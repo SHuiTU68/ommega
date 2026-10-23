@@ -79,7 +79,7 @@ label { color: var(--muted); font-size: 13px; display: block; margin-bottom: 6px
 <body>
 <div class="wrap">
   <h1>卡密购买</h1>
-  <div class="sub">购买年卡获取 A/B 端接入令牌 · 支持支付宝 / 微信扫码支付</div>
+  <div class="sub">A / B 端年卡都是 20 元 · 扫码赞赏后 <b>进群 1093994527 找群主</b>，发付款截图领取对应卡密</div>
 
   <div class="panel">
     <h2>选择卡密</h2>
@@ -87,12 +87,12 @@ label { color: var(--muted); font-size: 13px; display: block; margin-bottom: 6px
       <div class="cards">
         <div class="card sel" id="cardA" onclick="select('a')">
           <div class="name">A 端年卡</div>
-          <div class="price">¥5</div>
+          <div class="price">¥20 / 年</div>
           <div class="desc">A 端设备接入 · 有效期 1 年</div>
         </div>
         <div class="card" id="cardB" onclick="select('b')">
           <div class="name">B 端年卡</div>
-          <div class="price">¥5</div>
+          <div class="price">¥20 / 年</div>
           <div class="desc">B 端设备接入 · 有效期 1 年</div>
         </div>
       </div>
@@ -102,7 +102,8 @@ label { color: var(--muted); font-size: 13px; display: block; margin-bottom: 6px
       </div>
       <div>
         <label style="margin-top:14px;">支付方式</label>
-        <div class="pays">
+        <div class="tip-pay" style="margin-top:14px;padding:12px 14px;border-radius:8px;background:rgba(63,185,80,.08);border:1px solid rgba(63,185,80,.3);color:#9ae6b4;font-size:13px;line-height:1.7;">微信赞赏码在下面，扫完直接进群 <b>1093994527</b> 找群主，发截图领卡（不用在这里点支付）。</div>
+<div class="pays"
           <div class="pay-opt sel" id="payAlipay" onclick="selectPay('alipay')">
             <span class="logo alipay">支</span> 支付宝
           </div>
