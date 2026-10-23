@@ -192,6 +192,16 @@ fi
 # 运行期那条路（daemon 启动时写）保留，管的是我们自己铸链用的 ctx。
 # 只有显式写了值才动；auto 一律保持设备原值。
 DECLARED_CONF=$TARGET_DIR/config.toml
+# 只在设备本来就有这个属性时才改。
+#
+# 凭空造一个新属性比不改更糟：检测器一看「这型号怎么会有这个键」就露了，
+# 而且 resetprop 造出来的值也不会被所有读取方认。所以凡是「改」都先确认真有；
+# 没有就跳过，让链上那份自己去算。
+setprop_if_present() {
+  [ -n "$(getprop "$1" 2>/dev/null)" ] || return 0
+  resetprop "$1" "$2"
+}
+
 if [ -f "$DECLARED_CONF" ]; then
   # cfg_val <key>：取 config.toml 里 "key = \"value\"" 的 value（[trust] 下的键）
   cfg_val() {
@@ -201,30 +211,22 @@ if [ -f "$DECLARED_CONF" ]; then
   # 没单写就跟着 security_patch 走，跟 Rust 侧 resolve_patch_levels 的继承顺序一致
   d_os=$(cfg_val os_patchlevel); [ "$d_os" = auto ] && d_os=$d_patch
   d_vendor=$(cfg_val vendor_patchlevel); [ "$d_vendor" = auto ] && d_vendor=$d_patch
-  # boot 不继承：设备原本没这个属性，凭空造一个反而多一处马脚，只认显式声明
+  # boot 不继承，也不推导：设备原本没这个属性就不造（凭空造一个反而多一处马脚）。
+  # 链上的 boot 补丁级别由 keymint 运行时按 boot 镜像日期算，不靠这个属性。
   d_boot=$(cfg_val boot_patchlevel)
-  # auto 时按 boot 镜像的编译日期补一个：检测器拿这个属性跟链上的 boot 补丁
-  # 一个月一个月地比，auto 着不去造这个属性的机型能差出好几个月。
-  case "$d_boot" in
-    ''|auto)
-      bts=$(getprop ro.bootimage.build.date.utc 2>/dev/null)
-      case "$bts" in
-        ''|*[!0-9]*) ;;
-        *) d_boot=$(date -u -d "@$bts" +%Y%m%d 2>/dev/null) ;;
-      esac
-      ;;
-  esac
   for pair in "$d_os|ro.build.version.security_patch" "$d_vendor|ro.vendor.build.security_patch" "$d_boot|ro.vendor.boot_security_patch"; do
     value=${pair%%|*}
     prop=${pair##*|}
     case "$value" in ""|auto) continue ;; esac
-    resetprop "$prop" "$value"
+    setprop_if_present "$prop" "$value"
     log_line "ommega: declared $prop=$value (boot stage)"
   done
+  # 引导器锁定状态：不少检测器会看。只有真的存在这个键的机型才改。
+  setprop_if_present ro.secureboot.lockstate locked
   d_vbkey=$(cfg_val vb_key)
-  case "$d_vbkey" in ""|auto|random) ;; *) resetprop ro.boot.vbmeta.public_key_digest "$d_vbkey"; log_line "ommega: declared vbmeta key (boot stage)" ;; esac
+  case "$d_vbkey" in ""|auto|random) ;; *) setprop_if_present ro.boot.vbmeta.public_key_digest "$d_vbkey"; log_line "ommega: declared vbmeta key (boot stage)" ;; esac
   d_vbhash=$(cfg_val vb_hash)
-  case "$d_vbhash" in ""|auto|random) ;; *) resetprop ro.boot.vbmeta.digest "$d_vbhash"; log_line "ommega: declared vbmeta hash (boot stage)" ;; esac
+  case "$d_vbhash" in ""|auto|random) ;; *) setprop_if_present ro.boot.vbmeta.digest "$d_vbhash"; log_line "ommega: declared vbmeta hash (boot stage)" ;; esac
   unset d_patch d_os d_vendor d_boot d_vbkey d_vbhash
 fi
 
@@ -252,7 +254,7 @@ if [ -r "$PROP_OVERRIDES" ]; then
       *) continue ;;
     esac
     [ -n "$p_val" ] || continue
-    resetprop "$p_key" "$p_val"
+    setprop_if_present "$p_key" "$p_val"
     log_line "ommega: override $p_key=$p_val (boot stage)"
   done < "$PROP_OVERRIDES"
 fi
