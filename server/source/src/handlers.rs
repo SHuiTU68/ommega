@@ -1458,6 +1458,41 @@ async fn run_soter_task_inner(state: &AppState, body: &Value) -> Response {
     if !body.is_object() {
         return json_err(StatusCode::BAD_REQUEST, "json object body required");
     }
+    // 入口闸门：同一个 uid 在 100ms 内重复来的 SOTER 请求直接回「本地作答」，
+    // 不再走后面的默认设备归一、会话路由和 DB。
+    //
+    // 为什么：探测机（春秋 / 鸭子）一刻不停地刷 SOTER，实测量级每秒几十笔，
+    // 每一笔都要过一遍路由 + 会话库，服务端 CPU 和 MySQL 被它吃掉，买卡页跟着变慢。
+    // 它们要的结论是固定的（local_only），100ms 内复用没有副作用；真应用（微信 /
+    // 支付宝）正常流程不会在同一 uid 上 100ms 内发第二笔，不受影响。
+    if let Some(uid) = body.get("uid").and_then(Value::as_i64) {
+        use std::sync::{LazyLock, Mutex};
+        const GATE_MS: u64 = 100;
+        static LAST_BY_UID: LazyLock<Mutex<std::collections::HashMap<i64, u64>>> =
+            LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        if let Ok(mut gate) = LAST_BY_UID.lock() {
+            let too_soon = gate
+                .get(&uid)
+                .is_some_and(|prev| now.saturating_sub(*prev) < GATE_MS);
+            if too_soon {
+                let op = body.get("op").and_then(Value::as_str).unwrap_or("probe");
+                return Json(json!({
+                    "op": op,
+                    "local_only": true,
+                    "error_code": -1001,
+                }))
+                .into_response();
+            }
+            if gate.len() > 4096 {
+                gate.clear();
+            }
+            gate.insert(uid, now);
+        }
+    }
     // 跟 attest 一个口径，而且同样在入口归一：A 端留空 + 配了默认设备 = 等同于
     // 它带了那个 id，SOTER 的探测判据、槽位钉子、签名会话路由、写操作跨设备拦截
     // 看见的 `requested` 都是同一台具体设备。

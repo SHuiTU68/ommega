@@ -43,6 +43,33 @@ impl TokenMeta {
     }
 }
 
+/// Token 使用登记的节流：同一 token 60 秒内只写一次库。
+///
+/// B 端几百台设备共用一把 token、70ms 一轮 poll，每笔都 `UPDATE api_token SET last_ip…`
+/// 会撞在同一行上，把 MySQL 的行锁打满（实测 mysqld 200%+、8 个 session 同时等更新）。
+/// 节流只降低「最后使用 IP / 时间」的精度（最多晚 60 秒），鉴权与过期判断不受影响。
+fn should_record_token_use(token: &str) -> bool {
+    use std::sync::{LazyLock, Mutex};
+    use std::time::{Duration, Instant};
+    const THROTTLE: Duration = Duration::from_secs(60);
+    static LAST: LazyLock<Mutex<std::collections::HashMap<String, Instant>>> =
+        LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+    let Ok(mut map) = LAST.lock() else {
+        return true;
+    };
+    let now = Instant::now();
+    match map.get(token) {
+        Some(last) if now.duration_since(*last) < THROTTLE => false,
+        _ => {
+            if map.len() > 4096 {
+                map.clear();
+            }
+            map.insert(token.to_string(), now);
+            true
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct AuthState {
     pub relay_token: String,
@@ -326,12 +353,20 @@ impl AuthState {
                         let _ = db.activate_token_if_needed(token);
                     }
                     // record usage (IP + last-used)
-                    if let Err(e) = db.record_token_use(token, ip) {
-                        tracing::warn!(
-                            "check_token: record_token_use failed token={} ip={} err={e}",
-                            token,
-                            ip
-                        );
+                    //
+                    // 节流：同一个 token 60 秒内只落一次库。B 端几百台设备共用一把
+                    // token、70ms 一轮 poll，每笔都 `UPDATE api_token SET last_ip…`
+                    // 会全打在同一行上（实测 MySQL 看着 8 个 session 在等价的行锁，
+                    // mysqld 吃到 200%+，整机 load 10 以上，买卡页跟着变慢）。
+                    // 节流只影响「最后使用 IP / 时间」的精度，鉴权与过期判断不变。
+                    if should_record_token_use(token) {
+                        if let Err(e) = db.record_token_use(token, ip) {
+                            tracing::warn!(
+                                "check_token: record_token_use failed token={} ip={} err={e}",
+                                token,
+                                ip
+                            );
+                        }
                     }
                     // check expiry against activation time
                     return token_is_valid(db, token, row.duration_seconds);
