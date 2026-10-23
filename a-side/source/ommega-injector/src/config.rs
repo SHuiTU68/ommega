@@ -439,6 +439,10 @@ pub fn clienta_debug_logging() -> Option<bool> {
 /// Reads one boolean key out of a flat `key: value` config file.  `None` when
 /// the file is unreadable or the key is missing; a present key always wins, so
 /// `false` has to be spelled out to turn something off.
+///
+/// 跟 keymint 侧 `src/config.rs` 的 `parse_flat_config` 是同一套格式，但这里是独立
+/// crate（payload），而且要多照顾一条「uid 1000 读不到真配置、用启动器写下的副本」
+/// 的路，所以没共享实现。**改 `key: value` 的格式时两边都要动。**
 fn clienta_config_bool(path: &Path, keys: &[&str]) -> Option<bool> {
     let contents = fs::read_to_string(path).ok()?;
     for line in contents.lines() {
