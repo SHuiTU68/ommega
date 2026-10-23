@@ -234,18 +234,12 @@ pub(crate) fn device_id() -> String {
     cpu_id()
 }
 
-/// 这个值多久重新看一眼文件。真机 cpu_id 一辈子不换，这个时限只是为了「daemon 刚
-/// 学到新的、payload 不用重启就跟着改」，跟 `log_flag` 一样 30 秒。
-const CPU_ID_TTL: std::time::Duration = std::time::Duration::from_secs(30);
-
-/// 当前该报的 cpu_id 加上它是什么时候看来的（来路只在换值那行日志里出现，不留）。
-struct CpuIdCache {
-    value: String,
-    read_at: std::time::Instant,
-}
-
-static CPU_ID: Mutex<Option<CpuIdCache>> = Mutex::new(None);
-
+/// 当前该报的 cpu_id。
+///
+/// 不缓存：
+/// `line!` 之前这里是「30 秒看一次文件」的缓存，后来改成每次都现读（daemon 学到新值就
+/// 立即跟上，少一份状态少一个错），但常量和结构体没清，编译会报三个 dead_code。
+/// 真机 cpu_id 一辈子不换，这里读文件的开销可以忽略。
 /// 本地兜底这条路上该报的 cpu_id：**只按本机真实序列号派生**。
 ///
 /// 不能读 `/data/misc/ommega/soter_cpu_id` 那份：那是转发给服务端用的 **B 端真机号**
