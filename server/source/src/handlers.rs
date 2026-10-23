@@ -686,26 +686,12 @@ fn refuse_strongbox_body(kind: &str, msg: &str) -> Response {
 /// A layer "succeeds" when it returns a result without an `error` field;
 /// otherwise the next layer is tried, and only when every layer fails is an
 /// error returned.
-/// `RELAY_ATTEST_KEYBOX_FIRST=1`（或控制台开关）时 attest 回到「服务端密钥层优先」。
+/// `RELAY_ATTEST_KEYBOX_FIRST=1`（或控制台策略开关）时 attest 回到「服务端密钥层优先」。
 ///
-/// 默认（不开）= 真机优先：只要 B 在线且合格，链就是真机出的；密钥层只在真机
-/// 不可用时兜底。想专门验证服务端密钥层（serverbox）就打开这个开关。
+/// 默认（不开）= 跟随模式：本地出证模式 → 服务端 keybox 先；物理模式 → 真机先。
+/// 策略值在 [`crate::attest_policy`] 里（三态：auto / b_first / keybox_first，
+/// 运行时可变 + 落盘），层序选择见 [`attest_layer_order`]。
 ///
-/// 值本身在 [`crate::attest_policy`] 里（运行时可变 + 落盘），这里只是个转发。
-pub fn keybox_first() -> bool {
-    crate::attest_policy::keybox_first()
-}
-
-/// 带设备 ID 的认证（attestation_id_brand/device/product/serial/imei/meid/
-/// manufacturer/model）走不走服务端密钥层。
-///
-/// 打开（`RELAY_ID_ATTEST_SERVER_SIDE=1` 或控制台开关）后：这类请求**不派给真机**，
-/// 直接由服务端的 keybox 身份出链（真机不可用才回落）。适合「ID 认证根本不需要
-/// 真机 TEE、只想让属性跟调用方对上」的场景；不开就是原来那样，跟着模式层序走。
-pub fn id_attest_server_side() -> bool {
-    crate::attest_policy::id_attest_server_side()
-}
-
 /// 这个请求带没带设备 ID（看 A 端转过来的 `attestation_ids`）。
 /// A 端只在应用真要求 ID 证明时才放这个字段，所以「有」就是「这次要 ID」。
 fn request_has_attestation_ids(body: &Value) -> bool {
@@ -723,6 +709,37 @@ fn request_has_attestation_ids(body: &Value) -> bool {
         }
     }
     false
+}
+
+/// 选这次请求的层序。
+///
+/// 默认（`auto`）**只看模式**：
+/// - 本地出证（`RELAY_ATTEST_SOURCE=server_keybox`）→ `keybox → b → self_signed`
+/// - 物理模式（`physical`）                  → `b → keybox → self_signed`
+///
+/// 两个策略（普通 / 带设备 ID）都是三态，`auto` 时完全不介入；只有排障时才会被
+/// 强制成 `b_first` 或 `keybox_first`。
+fn attest_layer_order(task_type: &str, body: &Value, serverbox: bool) -> &'static [&'static str] {
+    const B_CHAIN: &[&str] = &["b", "keybox", "self_signed"];
+    const KB_CHAIN: &[&str] = &["keybox", "b", "self_signed"];
+    // 强制模式是「只用这一层」：出不来就把错误抛回去，不回退。能回退的话就跟
+    // 模式自动分层没区别了，调试时也看不出到底是哪一层出的链。
+    const ONLY_B: &[&str] = &["b"];
+    const ONLY_KB: &[&str] = &["keybox"];
+    let by_mode = if serverbox { KB_CHAIN } else { B_CHAIN };
+    if task_type != "attest" {
+        return by_mode;
+    }
+    let policy = if request_has_attestation_ids(body) {
+        crate::attest_policy::id_attest_order()
+    } else {
+        crate::attest_policy::attest_order()
+    };
+    match policy {
+        crate::attest_policy::Order::Auto => by_mode,
+        crate::attest_policy::Order::BFirst => ONLY_B,
+        crate::attest_policy::Order::KeyboxFirst => ONLY_KB,
+    }
 }
 
 async fn run_a_side_task(state: &AppState, task_type: &str, body: &Value) -> Response {
@@ -821,22 +838,9 @@ async fn run_a_side_task(state: &AppState, task_type: &str, body: &Value) -> Res
     // 只在真机不可用（离线 / 没有这个 alias / StrongBox 不支）时当兜底。
     // sign/decrypt 等其它请求仍按模式层序（否则会和已铸出的 keyblob 对不上）：
     // 真机铸的 alias 在密钥层没有 session，会自然落到 B 那层。
-    let order: &[&str] =
-        if task_type == "attest" && id_attest_server_side() && request_has_attestation_ids(body) {
-            // 带 ID 的认证按开关分流：服务端身份先上，真机只当兜底。
-            &["keybox", "b", "self_signed"]
-        } else if task_type == "attest" && keybox_first() {
-            // keybox_first 以前只在 serverbox 模式下走得到（下一个分支），物理模式
-            // 会被最后那个 else 盖掉 —— 也就是「物理模式 + 打开 keybox 优先」实际是
-            // 个空开关。这里让它跟模式无关地生效。
-            &["keybox", "b", "self_signed"]
-        } else if task_type == "attest" {
-            &["b", "keybox", "self_signed"]
-        } else if serverbox {
-            &["keybox", "b", "self_signed"]
-        } else {
-            &["b", "keybox", "self_signed"]
-        };
+    // 层序：默认跟随模式（本地出证 → keybox 先；物理 → 真机先），两个策略开关只在
+    // 排障时强制换一下。`auto` 时没有任何特判。
+    let order: &[&str] = attest_layer_order(task_type, body, serverbox);
 
     let mut last_error: Option<String> = None;
     // 第一处「这台设备根本没有这个 alias 的私钥」的原因，原样带到最终错误里。

@@ -1184,7 +1184,11 @@ pub async fn admin_strongbox_toggle(
 // to data/attest_policy.json), so saving the panel takes effect immediately.
 // ---------------------------------------------------------------------------
 
-/// GET /api/admin/attest_policy/ - current layer-order switches.
+/// GET /api/admin/attest_policy/ - current layer-order policy.
+///
+/// `auto` (the default) simply means "follow the mode" (local minting -> server
+/// keybox first, physical -> real device first). `b_first` / `keybox_first` are
+/// troubleshooting overrides only.
 pub async fn admin_attest_policy_status(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1192,12 +1196,14 @@ pub async fn admin_attest_policy_status(
     if let Err(r) = check_auth(&state, &headers) {
         return *r;
     }
-    let (keybox_first, id_attest_server_side) = crate::attest_policy::snapshot();
+    let (attest, id_attest) = crate::attest_policy::snapshot();
     let persisted = std::path::Path::new(crate::attest_policy::PATH).is_file();
+    let serverbox = crate::config::Config::load().server_keybox_enabled();
     Json(json!({
         "status": "ok",
-        "keybox_first": keybox_first,
-        "id_attest_server_side": id_attest_server_side,
+        "attest_order": attest.as_str(),
+        "id_attest_order": id_attest.as_str(),
+        "mode": if serverbox { "server_keybox" } else { "physical" },
         "persisted": persisted,
         "path": crate::attest_policy::PATH,
     }))
@@ -1206,15 +1212,21 @@ pub async fn admin_attest_policy_status(
 
 #[derive(serde::Deserialize)]
 pub struct AttestPolicyBody {
-    /// true = every attest goes to the server keybox first; false = B first.
+    /// `auto` | `b_first` | `keybox_first` for ordinary attest.
+    #[serde(default)]
+    pub attest_order: Option<String>,
+    /// Same tokens, for attestations that carry device IDs.
+    #[serde(default)]
+    pub id_attest_order: Option<String>,
+    /// Legacy boolean: true -> keybox_first, false -> auto.
     #[serde(default)]
     pub keybox_first: Option<bool>,
-    /// true = device-ID attest also goes to the server keybox first.
+    /// Legacy boolean: true -> keybox_first, false -> auto.
     #[serde(default)]
     pub id_attest_server_side: Option<bool>,
 }
 
-/// POST /api/admin/attest_policy/ - change the layer-order switches.
+/// POST /api/admin/attest_policy/ - change the layer-order policy.
 pub async fn admin_attest_policy_set(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1223,23 +1235,64 @@ pub async fn admin_attest_policy_set(
     if let Err(r) = check_auth(&state, &headers) {
         return *r;
     }
-    if body.keybox_first.is_none() && body.id_attest_server_side.is_none() {
+    fn parse(
+        name: &str,
+        token: Option<&String>,
+        legacy: Option<bool>,
+    ) -> Result<Option<crate::attest_policy::Order>, Response> {
+        if let Some(tok) = token {
+            return match tok.parse::<crate::attest_policy::Order>() {
+                Ok(o) => Ok(Some(o)),
+                Err(_) => Err(json_err(
+                    StatusCode::BAD_REQUEST,
+                    &format!(
+                        "invalid {name} {tok:?}: expected \"auto\" | \"b_first\" | \"keybox_first\""
+                    ),
+                )),
+            };
+        }
+        Ok(legacy.map(|b| {
+            if b {
+                crate::attest_policy::Order::KeyboxFirst
+            } else {
+                crate::attest_policy::Order::Auto
+            }
+        }))
+    }
+
+    let attest = match parse(
+        "attest_order",
+        body.attest_order.as_ref(),
+        body.keybox_first,
+    ) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let id_attest = match parse(
+        "id_attest_order",
+        body.id_attest_order.as_ref(),
+        body.id_attest_server_side,
+    ) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    if attest.is_none() && id_attest.is_none() {
         return json_err(
             StatusCode::BAD_REQUEST,
-            "nothing to change: pass keybox_first and/or id_attest_server_side",
+            "nothing to change: pass attest_order and/or id_attest_order",
         );
     }
-    if let Err(e) = crate::attest_policy::set(body.keybox_first, body.id_attest_server_side) {
+    if let Err(e) = crate::attest_policy::set(attest, id_attest) {
         return json_err(
             StatusCode::INTERNAL_SERVER_ERROR,
             &format!("failed to persist attest policy: {e}"),
         );
     }
-    let (keybox_first, id_attest_server_side) = crate::attest_policy::snapshot();
+    let (attest, id_attest) = crate::attest_policy::snapshot();
     Json(json!({
         "status": "ok",
-        "keybox_first": keybox_first,
-        "id_attest_server_side": id_attest_server_side,
+        "attest_order": attest.as_str(),
+        "id_attest_order": id_attest.as_str(),
     }))
     .into_response()
 }

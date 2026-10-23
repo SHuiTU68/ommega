@@ -498,25 +498,27 @@ h3.sec-title { font-size: 13px; color: var(--muted); text-transform: uppercase; 
   </div>
 </div>
 
-<!-- 认证层序（attest 先问真机还是先走服务端 keybox） -->
+<!-- 认证层序（排障用：默认「自动」跟随上面那个模式） -->
 <div class="panel">
-  <h2>认证层序 <span class="hint">attest 请求先问真机还是先走服务端 keybox。两项都关 = 真机优先（默认）</span></h2>
+  <h2>认证层序 <span class="hint">默认「自动」= 跟随模式：本地出证 → 服务端 keybox 先；A/B 转发 → 真机先。下面两项只有排障时才需要动</span></h2>
   <div class="body">
-    <label style="display:flex;gap:10px;align-items:flex-start;margin-bottom:14px;cursor:pointer;">
-      <input type="checkbox" id="apKeyboxFirst" style="margin-top:3px;">
-      <span>
-        <b style="color:var(--text);">普通认证先走服务端密钥</b><br>
-        <span class="hint">打开后所有 attest 都由服务端 keybox 出证（快，但链用的是服务端身份）；关闭则先问 B 真机，真机不可用才兜底</span>
-      </span>
-    </label>
-    <label style="display:flex;gap:10px;align-items:flex-start;margin-bottom:14px;cursor:pointer;">
-      <input type="checkbox" id="apIdServerSide" style="margin-top:3px;">
-      <span>
-        <b style="color:var(--text);">设备 ID 认证先走服务端密钥</b><br>
-        <span class="hint">打开后带设备 ID（品牌 / 型号 / 序列号等）的 attest 不派给真机，直接由服务端 keybox 身份出链</span>
-      </span>
-    </label>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+    <div class="token-gen" style="display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin-bottom:12px;">
+      <span style="flex:0 0 104px;color:var(--muted);font-size:13px;">普通认证</span>
+      <select id="apAttestOrder" style="flex:1;min-width:220px;background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:9px 12px;font-size:13px;">
+        <option value="auto">自动（跟随模式）</option>
+        <option value="b_first">真机优先</option>
+        <option value="keybox_first">服务端优先</option>
+      </select>
+    </div>
+    <div class="token-gen" style="display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
+      <span style="flex:0 0 104px;color:var(--muted);font-size:13px;">设备 ID 认证</span>
+      <select id="apIdAttestOrder" style="flex:1;min-width:220px;background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:9px 12px;font-size:13px;">
+        <option value="auto">自动（跟随模式）</option>
+        <option value="b_first">真机优先</option>
+        <option value="keybox_first">服务端优先</option>
+      </select>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">
       <button class="btn primary" onclick="saveAttestPolicy()">保存</button>
     </div>
     <p class="hint" id="apStatus" style="margin:12px 0 0;line-height:1.7;">加载中…</p>
@@ -1161,17 +1163,15 @@ async function setStrongboxMode(mode) {
   } catch (e) { toast(e.message, 'err'); loadStrongbox(); }
 }
 
+const ORDER_LABEL = { auto: '自动（跟随模式）', b_first: '真机优先', keybox_first: '服务端优先' };
+
 async function loadAttestPolicy() {
   try {
     const d = await api('/api/admin/attest_policy/');
-    $('#apKeyboxFirst').checked = !!d.keybox_first;
-    $('#apIdServerSide').checked = !!d.id_attest_server_side;
-    const on = [];
-    if (d.keybox_first) on.push('普通认证走服务端');
-    if (d.id_attest_server_side) on.push('设备 ID 认证走服务端');
-    $('#apStatus').textContent = on.length
-      ? '当前：' + on.join(' · ')
-      : '当前：全部真机优先（B 不可用才兜底服务端 keybox）';
+    $('#apAttestOrder').value = d.attest_order || 'auto';
+    $('#apIdAttestOrder').value = d.id_attest_order || 'auto';
+    const mode = d.mode === 'server_keybox' ? '本地出证（keybox 先）' : 'A/B 转发（真机先）';
+    $('#apStatus').textContent = `当前模式：${mode} · 普通=${ORDER_LABEL[d.attest_order] || d.attest_order} · 设备 ID=${ORDER_LABEL[d.id_attest_order] || d.id_attest_order}`;
   } catch (e) { $('#apStatus').textContent = '读取失败: ' + e.message; }
 }
 
@@ -1180,8 +1180,8 @@ async function saveAttestPolicy() {
     await api('/api/admin/attest_policy/', {
       method: 'POST',
       body: JSON.stringify({
-        keybox_first: $('#apKeyboxFirst').checked,
-        id_attest_server_side: $('#apIdServerSide').checked,
+        attest_order: $('#apAttestOrder').value,
+        id_attest_order: $('#apIdAttestOrder').value,
       }),
     });
     toast('认证层序已保存（立即生效）');
