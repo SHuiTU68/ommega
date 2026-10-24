@@ -400,6 +400,17 @@ fn caller_package_for_uid(uid: i64) -> Option<String> {
 /// 请求里已经有 `caller_pkg`（或压根没带 `caller_uid`）就原样不动 —— 后者是旧 payload
 /// 或者没有 App 侧事务的调用，服务端会自动退回别名/槽位那套。
 fn with_caller_pkg(mut value: Value) -> Value {
+    // 一行诊断：daemon 到底收到了什么。三件事一眼能分开：
+    //   payload 是不是还自己塞了 caller_pkg；请求里有没有 uid；内核 uid 那格有没有。
+    // 以前没这行，只能在「包名翻了、翻错了、根本没翻」之间猜。
+    log::info!(
+        "event=soter caller in op={} uid={:?} caller_uid={:?} caller_pkg={:?} src={:?}",
+        value.get("op").and_then(Value::as_str).unwrap_or("-"),
+        value.get("uid"),
+        value.get(CALLER_UID_FIELD),
+        value.get(CALLER_PKG_FIELD),
+        value.get("caller_pkg_src"),
+    );
     if has_caller_pkg(&value) {
         return value;
     }
