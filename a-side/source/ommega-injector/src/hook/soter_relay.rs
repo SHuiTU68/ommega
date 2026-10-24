@@ -228,7 +228,13 @@ const FOREGROUND_FALLBACK: &str = "/data/misc/ommega/foreground";
 /// 表只在装/卸应用时变，缓存一分钟；前台那份短一点，别拿刚才那个应用去顶现在这笔。
 const UID_TABLE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// `uid` → 包名（共享 uid 会好几个，逗号连起来）。表里没有就退回前台应用。
+/// `uid` → 包名（共享 uid 会好几个，逗号连起来）。表里没有就返回 `None`。
+///
+/// **不拿前台应用兜底**。以前翻不到就套一个当前前台应用的名字带上去，而 daemon 那边
+/// 看到「已经有 caller_pkg」就不自己翻了——于是前台恰好是别的 App 时，真应用被判成
+/// 探测机（实测 SoterChecker 被当成 bin.mt.plus / com.tencent.mobileqq）。这里老实
+/// 返回 None，让 daemon 用请求里的 `uid` 翻（它跑在 keystore uid，有 AAID 和
+/// packages.list 两条路，比宿主域靠谱）。
 fn caller_package_for_uid(uid: u32) -> Option<String> {
     use std::sync::{Mutex, OnceLock};
     static CACHE: OnceLock<Mutex<Option<(std::time::Instant, String)>>> = OnceLock::new();
@@ -236,16 +242,13 @@ fn caller_package_for_uid(uid: u32) -> Option<String> {
     let mut guard = cache.lock().ok()?;
     if let Some((at, table)) = guard.as_ref() {
         if at.elapsed() < UID_TABLE_TTL {
-            if let Some(pkg) = lookup_in_table(table, uid) {
-                return Some(pkg);
-            }
-            return foreground_package();
+            return lookup_in_table(table, uid);
         }
     }
     let table = std::fs::read_to_string(UID_TABLE_FALLBACK).ok()?;
     let hit = lookup_in_table(&table, uid);
     *guard = Some((std::time::Instant::now(), table));
-    hit.or_else(foreground_package)
+    hit
 }
 
 /// 在表里找这个 uid：行形如 `10339 com.tencent.mm`，可能有多个包，逗号连起来。
