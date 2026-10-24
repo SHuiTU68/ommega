@@ -274,7 +274,20 @@ pub fn is_listed_real_app(cfg: &Config, caller_pkg: Option<&str>) -> bool {
     let known = split_list(&packages);
     split_list(pkg)
         .iter()
-        .any(|caller| known.iter().any(|name| name == caller))
+        .any(|caller| known.iter().any(|name| same_app(name, caller)))
+}
+
+/// 两个包名算不算同一个 App 的进程。
+///
+/// `com.tencent.mm:tools` 和 `com.tencent.mm` 是同一个应用的进程，名单里写一条主包
+/// 就该把它所有进程都算进来——不然得把每个 `:push` / `:tools` / `:remote` 都枚举一遍，
+/// 漏一个那条进程就拿不到真机。
+fn same_app(listed: &str, caller: &str) -> bool {
+    fn base(name: &str) -> &str {
+        name.split(':').next().unwrap_or(name).trim()
+    }
+    let (a, b) = (base(listed), base(caller));
+    !a.is_empty() && a == b
 }
 
 pub fn reason_with_caller(
@@ -298,7 +311,7 @@ pub fn reason_with_caller(
         let callers = split_list(pkg);
         let is_real = callers
             .iter()
-            .any(|caller| known.iter().any(|name| name == caller));
+            .any(|caller| known.iter().any(|name| same_app(name, caller)));
         if is_real {
             // 真应用：交给真机，顺便把它的槽位标上（下一笔不带包名时不至于判错）。
             let now = chrono::Utc::now().timestamp_millis();
