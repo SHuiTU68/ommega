@@ -744,12 +744,20 @@ fn load_clienta_remote_override() -> Option<RemoteConfig> {
         Some("1" | "true" | "yes" | "on")
     );
 
-    let hide_strongbox = matches!(
-        get(&["hide_strongbox", "no_strongbox", "hide_strongbox_keystore"])
-            .map(|v| v.to_lowercase())
-            .as_deref(),
-        Some("1" | "true" | "yes" | "on")
-    );
+    let hide_strongbox = match get(&["hide_strongbox", "no_strongbox", "hide_strongbox_keystore"])
+        .map(|v| v.to_lowercase())
+        .as_deref()
+    {
+        // 显式写了就听写的。
+        Some("1" | "true" | "yes" | "on") => true,
+        Some("0" | "false" | "no" | "off") => false,
+        // 没写：**有 StrongBox 的机型默认藏**。
+        //
+        // 不藏的话，应用和检测器会去试 StrongBox 那条路：那条路上面的材质、能力和
+        // 时间戳都会跟 TEE 那条不一样，两边对不齐就露。藏了之后全机只报 TEE，参数一致。
+        // 没有 StrongBox 的机型本来就拿不到这个能力，藏不藏无所谓，保持 false。
+        _ => crate::plat::resetprop::device_has_strongbox(),
+    };
 
     // WebUI "mask SOTER" switch, off by default (an absent key means off).
     // `kmod-loader.sh` is the only consumer and reads the flat key itself;

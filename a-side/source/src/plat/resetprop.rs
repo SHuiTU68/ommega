@@ -17,6 +17,8 @@ const PHONE_SERVICE: &str = "phone";
 const PHONE_SUB_INFO_DESCRIPTOR: &str = "com.android.internal.telephony.IPhoneSubInfo";
 const PHONE_SUB_INFO_SERVICE: &str = "iphonesubinfo";
 const TELEPHONY_FEATURE: &str = "android.hardware.telephony";
+/// 有硬件安全元件的机型才报这个 feature。
+const STRONGBOX_STRONGBOX_FEATURE: &str = "android.hardware.strongbox_keystore";
 const TELEPHONY_GSM_FEATURE: &str = "android.hardware.telephony.gsm";
 const TELEPHONY_CDMA_FEATURE: &str = "android.hardware.telephony.cdma";
 const GET_DEVICE_ID_FOR_PHONE_TRANSACTION: rsbinder::TransactionCode =
@@ -168,6 +170,14 @@ pub fn runtime_telephony_features() -> Result<TelephonyFeatures> {
             cdma: helper.has_system_feature(TELEPHONY_CDMA_FEATURE)?,
         })
     })
+}
+
+/// 这台设备到底有没有 StrongBox。
+///
+/// 查不到一律当「没有」：调用方（`hide_strongbox` 的缺省值）拿它决定要不要默认
+/// 把 StrongBox 藏起来；把真有的认成没有，最多少藏一次，比反过来安全。
+pub fn device_has_strongbox() -> bool {
+    with_helper(|helper| helper.has_system_feature(STRONGBOX_STRONGBOX_FEATURE)).unwrap_or(false)
 }
 
 pub(crate) fn is_binder_service_unavailable(error: &anyhow::Error) -> bool {
@@ -510,7 +520,10 @@ fn parse_feature_request(line: &str) -> Option<&str> {
     let feature = line.strip_prefix("HAS_FEATURE\t")?;
     matches!(
         feature,
-        TELEPHONY_FEATURE | TELEPHONY_GSM_FEATURE | TELEPHONY_CDMA_FEATURE
+        TELEPHONY_FEATURE
+            | TELEPHONY_GSM_FEATURE
+            | TELEPHONY_CDMA_FEATURE
+            | STRONGBOX_STRONGBOX_FEATURE
     )
     .then_some(feature)
 }
