@@ -209,8 +209,11 @@ pub const DEFAULT_REAL_APP_PACKAGES: &str = concat!(
     // 只认真的会走腾讯 SOTER 的应用：微信（含工具进程）与支付宝（含 push 进程）。
     // 其余一律在服务端就地作答、不落真机 —— 真机那个 cpu_id 不给探测类或非支付类应用。
     // 要改就用环境变量 `RELAY_SOTER_REAL_APP_PACKAGES`（逗号分隔，写了就不看这份缺省）。
-    "com.tencent.mm,com.tencent.mm:tools,",
-    "com.eg.android.AlipayGphone,com.eg.android.AlipayGphone:push,",
+    // 只写主包名。`caller_pkg` 来自 packages.list / AAID，天生只是包名、不带冒号；
+    // 即使哪天带了 `:tools` / `:push`，`same_app` 也会剥掉后缀再比，一个 App 一条就
+    // 覆盖它所有进程。
+    "com.tencent.mm,",
+    "com.eg.android.AlipayGphone,",
     // 电商 / 生活服务 / 出行：这几家的支付和实名环节都会走指纹。
     "com.jingdong.app.mall,",
     "com.jd.jrapp,",
