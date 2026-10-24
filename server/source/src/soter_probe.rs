@@ -211,6 +211,24 @@ pub const DEFAULT_REAL_APP_PACKAGES: &str = concat!(
     // 要改就用环境变量 `RELAY_SOTER_REAL_APP_PACKAGES`（逗号分隔，写了就不看这份缺省）。
     "com.tencent.mm,com.tencent.mm:tools,",
     "com.eg.android.AlipayGphone,com.eg.android.AlipayGphone:push,",
+    // 电商 / 生活服务 / 出行：这几家的支付和实名环节都会走指纹。
+    "com.jingdong.app.mall,",
+    "com.jd.jrapp,",
+    "com.unionpay,",
+    "com.sankuai.meituan,",
+    "me.ele,",
+    "com.sdu.didi.psnger,",
+    "ctrip.android.view,",
+    "com.dianping.v1,",
+    "com.MobileTicket,",
+    // 银行 App：转账、登录、大额确认都靠本地指纹授权。
+    "cmb.pb,",
+    "com.ccb.longjiLife,",
+    "com.chinamworld.bocmbci,",
+    "com.icbc,",
+    "com.android.bankabc,",
+    "com.bankcomm.Bankcomm,",
+    "com.yitong.mbank.psbc,",
     // 检测器：它要拿真机的 cpu_id 跟自己的 getDeviceId 对一遍，落本地作答就对不上。
     "com.andrealyz.soterchecker",
 );
