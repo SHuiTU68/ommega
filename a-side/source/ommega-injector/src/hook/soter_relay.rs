@@ -223,18 +223,17 @@ fn request_with_table(call: &SoterCall, table: Option<&str>) -> Option<String> {
 ///
 /// 为什么不用那个 0770 的 keystore 目录：宿主域（指纹进程/应用）打不开它。
 const UID_TABLE_FALLBACK: &str = "/data/misc/ommega/uid_packages";
-/// 同一份内容的前台应用副本：一行 `<epoch 秒> <包名>`，翻不到 uid 时用它兜底。
-const FOREGROUND_FALLBACK: &str = "/data/misc/ommega/foreground";
 /// 表只在装/卸应用时变，缓存一分钟；前台那份短一点，别拿刚才那个应用去顶现在这笔。
 const UID_TABLE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// `uid` → 包名（共享 uid 会好几个，逗号连起来）。表里没有就返回 `None`。
 ///
-/// **不拿前台应用兜底**。以前翻不到就套一个当前前台应用的名字带上去，而 daemon 那边
+/// 不在这一层套前台应用：以前翻不到就套一个当前前台应用的名字带上去，而 daemon 那边
 /// 看到「已经有 caller_pkg」就不自己翻了——于是前台恰好是别的 App 时，真应用被判成
-/// 探测机（实测 SoterChecker 被当成 bin.mt.plus / com.tencent.mobileqq）。这里老实
-/// 返回 None，让 daemon 用请求里的 `uid` 翻（它跑在 keystore uid，有 AAID 和
-/// packages.list 两条路，比宿主域靠谱）。
+/// 探测机（实测 SoterChecker 被当成 bin.mt.plus / com.tencent.mobileqq）。
+///
+/// 前台应用作为兜底保留，但只放在 daemon 那条链的最后一级（它那边能看到更多：AAID
+/// 服务、packages.list、多用户/分身号），本层拿不到就不带，让 daemon 继续试。
 fn caller_package_for_uid(uid: u32) -> Option<String> {
     use std::sync::{Mutex, OnceLock};
     static CACHE: OnceLock<Mutex<Option<(std::time::Instant, String)>>> = OnceLock::new();
@@ -269,21 +268,12 @@ fn lookup_in_table(table: &str, uid: u32) -> Option<String> {
     }
 }
 
-/// 前台应用兜底。文件超过 20 秒就算陈旧（写侧每 ~10 秒刷一次）。
-fn foreground_package() -> Option<String> {
-    let text = std::fs::read_to_string(FOREGROUND_FALLBACK).ok()?;
-    let mut fields = text.split_whitespace();
-    let at = fields.next()?.parse::<u64>().ok()?;
-    let pkg = fields.next()?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_secs();
-    if now.saturating_sub(at) > 20 || pkg == "-" {
-        return None;
-    }
-    Some(pkg.to_string())
-}
+/// 前台应用兜底只在 daemon 那边做（`src/soter_relay.rs` 的第三级）。这一层不再走：
+/// 以前它翻不到 uid 就拿前台应用的名字当 caller_pkg 发出去，而 daemon 看到已经有值就
+/// 不自己翻了——前台恰好是别的 App 时，真应用被安上别人的包名（实测 SoterChecker 被
+/// 当成 bin.mt.plus / com.tencent.mobileqq），整轮退回本地。
+///
+/// `/data/misc/ommega/foreground` 那份副本也不再读，留给 daemon 用。
 
 /// 拼一个 JSON 字符串字面量。alias 里有 `&`、challenge 是十六进制，正常都不带引号，
 /// 但转发的东西不能靠「正常」活着，该转义的都转义 —— 拼坏了 daemon 那边直接拒收。
