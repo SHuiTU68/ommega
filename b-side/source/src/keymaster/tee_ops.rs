@@ -547,7 +547,9 @@ pub fn generate_attest_key_on(
     static FLIGHTS: OnceLock<AliasFlights> = OnceLock::new();
     let session = FLIGHTS.get_or_init(AliasFlights::default).get_or_generate(
         alias,
-        || session_get(alias).ok(),
+        // 同一个 alias 在 TEE 和 StrongBox 上是两把不同的钥匙：存着的会话如果来自另一个
+        // HAL，拿它当本次结果就是把 TEE 链当 StrongBox 交给调用方。只复用同一个 HAL 的。
+        || session_get(alias).ok().filter(|s| s.hal_service == service),
         || mint_attest_key_on(service, challenge, app_id_der, spec),
         |session| session_put(alias, session.clone()),
     )?;
