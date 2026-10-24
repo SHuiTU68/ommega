@@ -166,6 +166,21 @@ fi
 # 反而露马脚。开关后面打开时 post-fs-data.sh 会自己补建。
 STRONGBOX_HIDDEN=false
 CLIENTA_CONF=/data/misc/keystore/ommega/config
+# 装的时候看一眼：这台机器有没有 StrongBox。有就把它写成配置里的默认值，
+# 且**只在配置里没有这一项时写**——用户之前改过什么，之后面板上改了什么，
+# 一律以配置文件为准，安装不再插手，也没有任何开机时自动覆盖。
+#
+# 为什么有 StrongBox 就默认藏：不藏的话应用和检测器会去试 StrongBox 那条路，
+# 那条路上的材质、能力声明、时间戳跟 TEE 不是一套，两边对不齐就露；
+# 藏了之后全机只报 TEE，参数一致。
+if ! grep -qiE '^[[:space:]]*(hide_strongbox|no_strongbox|hide_strongbox_keystore)[[:space:]]*:' "$CLIENTA_CONF" 2>/dev/null; then
+  if pm list features 2>/dev/null | grep -q 'strongbox_keystore'; then
+    mkdir -p "$(dirname "$CLIENTA_CONF")" 2>/dev/null || true
+    [ -f "$CLIENTA_CONF" ] || : > "$CLIENTA_CONF" 2>/dev/null || true
+    printf 'hide_strongbox: 1\n' >> "$CLIENTA_CONF" 2>/dev/null || true
+    ui_print "- StrongBox detected: defaulting to declare it unsupported"
+  fi
+fi
 if [ -f "$CLIENTA_CONF" ]; then
   hide_val=$(grep -iE '^[[:space:]]*(hide_strongbox|no_strongbox|hide_strongbox_keystore)[[:space:]]*:' "$CLIENTA_CONF" 2>/dev/null | head -n 1 | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r')
   case "$hide_val" in
