@@ -580,39 +580,96 @@ pub enum KeyMaterial {
     Rsa(Box<rsa::RsaPrivateKey>),
 }
 
-pub fn parse_private_key(pem_data: &[u8]) -> anyhow::Result<KeyMaterial> {
-    let s = std::str::from_utf8(pem_data)?;
+/// PEM 正文一行的最大宽度（RFC 7468 规定 64 列）。
+const PEM_BODY_WIDTH: usize = 64;
+
+/// 把 PEM 文本里每个 BEGIN/END 块重新按 64 列折行。
+///
+/// keybox.xml 里的私钥常被写成**一整行超长 base64**（Yurikey 源发的就是这形状），
+/// 而 rustcrypto 的 `from_sec1_pem` / `from_pkcs8_pem` 走的是 pem-rfc7468 的严格
+/// 解码：行宽超标直接拒，报出来还只是看不出原因的 `unable to parse identity
+/// private key`。这里统一重新折行后再交给各解码器；`EC PARAMETERS` 这种非私钥
+/// 段也原样保留（它解不出来，但不妨碍后面的真私钥段）。
+fn refolded_pem_blocks(pem: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current: Option<(String, String)> = None;
+    for line in pem.lines() {
+        let t = line.trim();
+        if let Some(label) = t
+            .strip_prefix("-----BEGIN ")
+            .and_then(|r| r.strip_suffix("-----"))
+        {
+            current = Some((label.to_string(), String::new()));
+        } else if let Some(label) = t
+            .strip_prefix("-----END ")
+            .and_then(|r| r.strip_suffix("-----"))
+        {
+            if let Some((begin_label, body)) = current.take() {
+                if begin_label == label && !body.is_empty() {
+                    let mut block = String::with_capacity(body.len() + 64);
+                    block.push_str(&format!("-----BEGIN {label}-----\n"));
+                    for chunk in body.as_bytes().chunks(PEM_BODY_WIDTH) {
+                        block.push_str(std::str::from_utf8(chunk).unwrap_or_default());
+                        block.push('\n');
+                    }
+                    block.push_str(&format!("-----END {label}-----\n"));
+                    out.push(block);
+                }
+            }
+        } else if let Some((_, body)) = current.as_mut() {
+            body.push_str(t);
+        }
+    }
+    out
+}
+
+/// 在一个 PEM 串上把全部支持的解码器试一遍。
+fn decode_private_key(s: &str) -> Option<KeyMaterial> {
     if let Ok(sk) = P224SecretKey::from_sec1_pem(s) {
-        return Ok(KeyMaterial::Ec(EcKey::P224(sk)));
+        return Some(KeyMaterial::Ec(EcKey::P224(sk)));
     }
     if let Ok(sk) = P224SecretKey::from_pkcs8_pem(s) {
-        return Ok(KeyMaterial::Ec(EcKey::P224(sk)));
+        return Some(KeyMaterial::Ec(EcKey::P224(sk)));
     }
     if let Ok(sk) = P256SecretKey::from_sec1_pem(s) {
-        return Ok(KeyMaterial::Ec(EcKey::P256(sk)));
+        return Some(KeyMaterial::Ec(EcKey::P256(sk)));
     }
     if let Ok(sk) = P256SecretKey::from_pkcs8_pem(s) {
-        return Ok(KeyMaterial::Ec(EcKey::P256(sk)));
+        return Some(KeyMaterial::Ec(EcKey::P256(sk)));
     }
     if let Ok(sk) = P384SecretKey::from_sec1_pem(s) {
-        return Ok(KeyMaterial::Ec(EcKey::P384(sk)));
+        return Some(KeyMaterial::Ec(EcKey::P384(sk)));
     }
     if let Ok(sk) = P384SecretKey::from_pkcs8_pem(s) {
-        return Ok(KeyMaterial::Ec(EcKey::P384(sk)));
+        return Some(KeyMaterial::Ec(EcKey::P384(sk)));
     }
     if let Ok(sk) = P521SecretKey::from_sec1_pem(s) {
-        return Ok(KeyMaterial::Ec(EcKey::P521(sk)));
+        return Some(KeyMaterial::Ec(EcKey::P521(sk)));
     }
     if let Ok(sk) = P521SecretKey::from_pkcs8_pem(s) {
-        return Ok(KeyMaterial::Ec(EcKey::P521(sk)));
+        return Some(KeyMaterial::Ec(EcKey::P521(sk)));
     }
     if let Ok(rk) = rsa::RsaPrivateKey::from_pkcs8_pem(s) {
-        return Ok(KeyMaterial::Rsa(Box::new(rk)));
+        return Some(KeyMaterial::Rsa(Box::new(rk)));
     }
     // PKCS#1 RSA (common in keybox.xml `<PrivateKey format="pem">`).
     use rsa::pkcs1::DecodeRsaPrivateKey;
     if let Ok(rk) = rsa::RsaPrivateKey::from_pkcs1_pem(s) {
-        return Ok(KeyMaterial::Rsa(Box::new(rk)));
+        return Some(KeyMaterial::Rsa(Box::new(rk)));
+    }
+    None
+}
+
+pub fn parse_private_key(pem_data: &[u8]) -> anyhow::Result<KeyMaterial> {
+    let s = std::str::from_utf8(pem_data)?;
+    // 先原样试一次（绝大多数材料本来就是标准 64 列），再逐块折行重试。
+    if let Some(k) = decode_private_key(s) {
+        return Ok(k);
+    }
+    for block in refolded_pem_blocks(s) {
+        if let Some(k) = decode_private_key(&block) {
+            return Ok(k);
+        }
     }
     anyhow::bail!("unable to parse identity private key")
 }
@@ -2338,6 +2395,46 @@ mod bench {
 mod tests {
     use super::*;
     use base64::Engine as _;
+
+    /// keybox.xml 里那种「一整行超长 base64」的 SEC1 私钥必须能解出来。
+    ///
+    /// Yurikey 源发的 EC 私钥就是这个形状：`-----BEGIN EC PRIVATE KEY-----` 后面
+    /// 跟着一行一千多字符的 base64。rustcrypto 的严格 PEM 解码（pem-rfc7468）对
+    /// 行宽有硬要求，以前这种材料走管理接口上传一律报
+    /// `unable to parse identity private key`，只能手工转成 PKCS#8 才传得进去。
+    #[test]
+    fn single_line_sec1_private_key_parses() {
+        use pkcs8::LineEnding;
+        let sk = P256SecretKey::from_slice(&[9u8; 32]).expect("fixed scalar");
+        let doc = sk.to_sec1_pem(LineEnding::LF).expect("encode sec1");
+        let pem = String::from_utf8(doc.as_bytes().to_vec()).expect("utf8");
+        // 把正文压成一行，做成 keybox.xml 里常见的形状。
+        let body: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
+        assert!(body.len() > 64, "正文应该比一行宽：{} 字符", body.len());
+        let one_line =
+            format!("-----BEGIN EC PRIVATE KEY-----\n{body}\n-----END EC PRIVATE KEY-----\n");
+        match parse_private_key(one_line.as_bytes()) {
+            Ok(KeyMaterial::Ec(EcKey::P256(got))) => {
+                assert_eq!(got.to_bytes(), sk.to_bytes(), "解出来的私钥不对");
+            }
+            _ => panic!("单行 SEC1 私钥没解出来"),
+        }
+    }
+
+    /// 标准 64 列的 PEM 走快路径，不能被折行逻辑改坏。
+    #[test]
+    fn wrapped_sec1_private_key_still_parses() {
+        use pkcs8::LineEnding;
+        let sk = P256SecretKey::from_slice(&[5u8; 32]).expect("fixed scalar");
+        let doc = sk.to_sec1_pem(LineEnding::LF).expect("encode sec1");
+        let pem = String::from_utf8(doc.as_bytes().to_vec()).expect("utf8");
+        match parse_private_key(pem.as_bytes()) {
+            Ok(KeyMaterial::Ec(EcKey::P256(got))) => {
+                assert_eq!(got.to_bytes(), sk.to_bytes());
+            }
+            _ => panic!("标准 SEC1 私钥没解出来"),
+        }
+    }
 
     /// 真机链（Pixel 6a / qti / 小米实测）的中间证书是
     /// `(title=TEE, serialNumber=…)`，2019 年流出的公开 keybox 是反的。这个形状是

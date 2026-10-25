@@ -269,6 +269,7 @@ pub fn fill_in_body(chain: Chain, body: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
     use std::sync::Mutex;
 
     /// 这两个用例都靠 `OMMEGA_DEFAULT_DEVICE_FILE` 指路径（进程级），并行跑会互相盖，
