@@ -31,6 +31,32 @@ pub const FOLLOW_PKGS_KEY: &str = "OMMEGA_RELAY_PATCHLEVEL_SKIP_PKGS";
 const OS_PROP: &str = "ro.build.version.security_patch";
 const VENDOR_PROP: &str = "ro.vendor.build.security_patch";
 
+/// TEE 把 `os_version` 算成「主版本*10000 + 次版本*100」，而它读的是这几个字符串属性
+/// （不同厂商的 TA 读的不是同一个，所以能读到的都同步一份）。
+///
+/// `ro.build.version.sdk` 故意不动：那里是 36 这种整数，拿去算会变成 360000；
+/// 而且改它会让本机所有应用看到的 API 级别跟着变，影响面远超这一条链。
+const RELEASE_PROPS: &[&str] = &[
+    "ro.build.version.release",
+    "ro.build.version.release_or_codename",
+    "ro.system.build.version.release",
+    "ro.system.build.version.release_or_codename",
+];
+
+/// `os_version` 160000 → `"16"`；161000 → `"16.1"`。越界返回 None。
+fn release_value(v: i64) -> Option<String> {
+    let major = v / 10_000;
+    let minor = (v / 100) % 100;
+    if !(8..=99).contains(&major) || !(0..=99).contains(&minor) {
+        return None;
+    }
+    if minor == 0 {
+        Some(format!("{major}"))
+    } else {
+        Some(format!("{major}.{minor}"))
+    }
+}
+
 /// 开机时真机原值的落盘位置（面板恢复按钮读它）。
 const BASELINE_FILE: &str = "/data/adb/ommega-b/conf/baseline.props";
 
@@ -286,7 +312,12 @@ pub fn follow_a_side(payload: &Value, on: bool) -> Option<String> {
         .get("vendor_patch_level")
         .and_then(Value::as_i64)
         .and_then(vendor_prop_value);
-    if want_os.is_none() && want_vendor.is_none() {
+    let want_release = ctx
+        .get("os_version")
+        .and_then(Value::as_i64)
+        .filter(|v| (10_000..=999_999).contains(v))
+        .and_then(release_value);
+    if want_os.is_none() && want_vendor.is_none() && want_release.is_none() {
         return None;
     }
 
@@ -298,9 +329,37 @@ pub fn follow_a_side(payload: &Value, on: bool) -> Option<String> {
     }
 
     let mut applied: Vec<String> = Vec::new();
-    remember_baseline(&[OS_PROP, VENDOR_PROP]);
-    for (prop, want) in [(OS_PROP, want_os), (VENDOR_PROP, want_vendor)] {
-        let Some(want) = want else { continue };
+    let mut baseline_props: Vec<&str> = vec![OS_PROP, VENDOR_PROP];
+    baseline_props.extend_from_slice(RELEASE_PROPS);
+    remember_baseline(&baseline_props);
+
+    // 这轮要落哪些属性。os_version 不直接对应某个属性：它要拆成主/次版本，写到
+    // release 那一族字符串属性上；只写本机本来就有的，不凭空造新属性。
+    let mut targets: Vec<(String, String)> = Vec::new();
+    if let Some(want) = want_os {
+        targets.push((OS_PROP.to_string(), want));
+    }
+    if let Some(want) = want_vendor {
+        targets.push((VENDOR_PROP.to_string(), want));
+    }
+    if let Some(want) = want_release {
+        let mut hit = false;
+        for prop in RELEASE_PROPS {
+            if getprop(prop).map(|v| !v.trim().is_empty()).unwrap_or(false) {
+                targets.push(((*prop).to_string(), want.clone()));
+                hit = true;
+            }
+        }
+        if !hit {
+            log::warn!("patchlevel follow: 本机没有 release 属性可改，os_version 跟随跳过");
+        }
+    }
+
+    for (prop, want) in targets {
+        let prop = prop.as_str();
+        if want.is_empty() {
+            continue;
+        }
         let current = match getprop(prop) {
             Ok(v) => v,
             Err(e) => {
@@ -506,6 +565,16 @@ mod tests {
         assert!(!ce_unlocked_from_prop(Some("false")));
         assert!(!ce_unlocked_from_prop(Some("")));
         assert!(!ce_unlocked_from_prop(None));
+    }
+
+    #[test]
+    fn maps_os_version_to_release_string() {
+        assert_eq!(release_value(160000).as_deref(), Some("16"));
+        assert_eq!(release_value(150000).as_deref(), Some("15"));
+        assert_eq!(release_value(161000).as_deref(), Some("16.1"));
+        // 越界的不采信（老客户端发 7 之类的值）。
+        assert_eq!(release_value(7), None);
+        assert_eq!(release_value(0), None);
     }
 
     #[test]
