@@ -272,13 +272,24 @@ fi
 #   hide_device_ids  → android.software.device_id_attestation.xml
 # 后者声明「不支持 ID 认证」之后，应用/检测器会整体跳过设备 ID 证明（而不是每笔
 # 都回 CannotAttestIds），也就不需要再把本机型号/品牌同步成远端那台机器。
-WL_RELS="vendor/etc/permissions product/etc/permissions system_ext/etc/permissions etc/permissions"
+WL_RELS="vendor/etc/permissions product/etc/permissions system_ext/etc/permissions odm/etc/permissions etc/permissions"
 
 # mask_feature <feature xml 文件名> <配置键...>
 mask_feature() {
   mf_name=$1
   shift
   mf_enabled=false
+  # 先看上次开机落下的判定。原因：post-fs-data 阶段
+  # `/data/misc/keystore/ommega/config` 未必已经存在（client-a 的配置目录由
+  # keystore 那侧维护），只看它会让 hide_* 永远被判成“关”——表现就是面板里
+  # 开了「声明不支持 StrongBox」，重启后 feature 仍旧在、应用继续去要 StrongBox
+  # 拿到 -68。`/data/adb` 在 post-fs-data 阶段一定可读，所以把结果缓在这儿。
+  mf_state_file=$STATE_DIR/conf/mask.state
+  mf_state=0
+  [ -f "$mf_state_file" ] && mf_state=$(sed -n "s/^$mf_name=//p" "$mf_state_file" 2>/dev/null | head -n 1)
+  case "$mf_state" in
+    1) mf_enabled=true ;;
+  esac
   if [ -f "$TARGET_CONF" ]; then
     mf_pat=$(printf '%s|' "$@")
     mf_pat=${mf_pat%|}
@@ -289,12 +300,22 @@ mask_feature() {
       # 没写这个键时看调用方的默认值：device_id 那一项默认关，strongbox 默认关。
       *) [ "${OMMEGA_MASK_DEFAULT:-0}" = "1" ] && mf_enabled=true ;;
     esac
+    # 配置读到了就以它为准，并把结果落盘给下次开机用。
+    mkdir -p "$STATE_DIR/conf" 2>/dev/null
+    if [ -f "$mf_state_file" ]; then
+      grep -v "^$mf_name=" "$mf_state_file" > "$mf_state_file.tmp" 2>/dev/null
+    else
+      : > "$mf_state_file.tmp"
+    fi
+    printf '%s=%s\n' "$mf_name" "$([ "$mf_enabled" = true ] && echo 1 || echo 0)" >> "$mf_state_file.tmp" 2>/dev/null
+    mv -f "$mf_state_file.tmp" "$mf_state_file" 2>/dev/null
   fi
   for mf_rel in $WL_RELS; do
     mf_marker="$MODDIR/system/$mf_rel/$mf_name"
     # 换算回系统里的真实路径：vendor 那种自带分区前缀，system 的要补上
     case "$mf_rel" in
-      vendor/*|product/*|system_ext/*) mf_src="/$mf_rel/$mf_name" ;;
+      # 自带分区前缀的路径直接用；odm 必须在内，否则会拼成 /system/odm/...（不存在）
+      vendor/*|product/*|system_ext/*|odm/*) mf_src="/$mf_rel/$mf_name" ;;
       *) mf_src="/system/$mf_rel/$mf_name" ;;
     esac
     if [ "$mf_enabled" = true ]; then
@@ -329,7 +350,7 @@ mask_feature() {
     mf_fake_base=${OMMEGA_FAKE_MOUNT_BASE:-/mnt/vendor/vendor_permissions}
     for mf_rel in $WL_RELS; do
       case "$mf_rel" in
-        vendor/*|product/*|system_ext/*) mf_src="/$mf_rel/$mf_name" ;;
+        vendor/*|product/*|system_ext/*|odm/*) mf_src="/$mf_rel/$mf_name" ;;
         *) mf_src="/system/$mf_rel/$mf_name" ;;
       esac
       mf_dir=$(dirname "$mf_src")
@@ -338,31 +359,52 @@ mask_feature() {
       grep -q '<permissions/>' "$mf_src" 2>/dev/null && continue
       grep -q " $mf_src " /proc/mounts 2>/dev/null && continue
 
-      if ! grep -q " $mf_fake_base " /proc/mounts 2>/dev/null; then
-        mkdir -p "$mf_fake_base" 2>/dev/null
-        mount -t tmpfs -o mode=0755,seclabel tmpfs "$mf_fake_base" 2>/dev/null || {
-          log_line "ommega: tmpfs mount for $mf_fake_base failed; mask skipped"
-          continue
-        }
-      fi
+      # 暂存目录按目标分区选：
+      # - /odm 这类分区在 post-fs-data 阶段未必已经挂稳，**绝不**在 /mnt/vendor
+      #   下挂 tmpfs（vendor 自己随后挂载时会撞上，实测直接卡开机）——
+      #   直接在 /data 下暂存，只做单文件 bind。
+      # - 老路径（/vendor 等）保持原样：先挂一个小 tmpfs，看起来像 OEM 自己挂的。
+      case "$mf_src" in
+        /odm/*|/odm_dlkm/*)
+          mf_stage_base=$STATE_DIR/perm-stage
+          mkdir -p "$mf_stage_base" 2>/dev/null || continue
+          ;;
+        *)
+          mf_stage_base=$mf_fake_base
+          if ! grep -q " $mf_stage_base " /proc/mounts 2>/dev/null; then
+            mkdir -p "$mf_stage_base" 2>/dev/null
+            mount -t tmpfs -o mode=0755,seclabel tmpfs "$mf_stage_base" 2>/dev/null || {
+              log_line "ommega: tmpfs mount for $mf_stage_base failed; mask skipped"
+              continue
+            }
+          fi
+          ;;
+      esac
       # 暂存文件名别把目标写进去：mountinfo 里会原样显示挂载根的路径，
       # 写 `_vendor_etc_permissions_android.software.device_id_attestation.xml`
       # 等于自己把“我遮了哪个文件”写在脸上。
-      mf_stage="$mf_fake_base/vendor.conf"
+      mf_stage="$mf_stage_base/vendor.conf"
       printf '<?xml version="1.0" encoding="utf-8"?>\n<permissions/>\n' > "$mf_stage" 2>/dev/null || continue
       chmod 0644 "$mf_stage" 2>/dev/null
       case "$mf_src" in
-        /vendor/*) chcon u:object_r:vendor_file:s0 "$mf_stage" 2>/dev/null ;;
+        /vendor/*|/odm/*|/odm_dlkm/*) chcon u:object_r:vendor_file:s0 "$mf_stage" 2>/dev/null ;;
         *) chcon u:object_r:system_file:s0 "$mf_stage" 2>/dev/null ;;
       esac
       if mount --bind "$mf_stage" "$mf_src" 2>/dev/null; then
-        # 不再 remount,ro：那个 ro 只会落在其中一个挂载命名空间（init 这份），
-        # 而 shared:43 传播出去的另一份还是 rw —— 结果是同一个文件在不同进程的
-        # mountinfo 里一个 ro 一个 rw，DuckDetector 的「跨进程视图对比」正好拿这个
-        # 当“选择性隐藏”报出来（2026-10-23 实测：两份签名，分属 325 / 623 个进程）。
-        # 而它真正会报的 “System RW” 只判 target 完全等于 /vendor 的挂载，
-        # 文件级 bind 根本不在那条规则里，所以 ro 没赚到任何东西。
-        log_line "ommega: $mf_name masked by $mf_stage over $mf_src"
+        # 挂上了还不算完：标签/权限不对时 system_server 照样读不到，那等于没遮
+        # 而且留了个“半死”状态。这里自己回读一次，读不到就撤掉。
+        if grep -q '<permissions/>' "$mf_src" 2>/dev/null; then
+          # 不再 remount,ro：那个 ro 只会落在其中一个挂载命名空间（init 这份），
+          # 而 shared:43 传播出去的另一份还是 rw —— 结果是同一个文件在不同进程的
+          # mountinfo 里一个 ro 一个 rw，DuckDetector 的「跨进程视图对比」正好拿这个
+          # 当“选择性隐藏”报出来（2026-10-23 实测：两份签名，分属 325 / 623 个进程）。
+          # 而它真正会报的 “System RW” 只判 target 完全等于 /vendor 的挂载，
+          # 文件级 bind 根本不在那条规则里，所以 ro 没赚到任何东西。
+          log_line "ommega: $mf_name masked by $mf_stage over $mf_src"
+        else
+          umount "$mf_src" 2>/dev/null
+          log_line "ommega: bind for $mf_src landed but unreadable; reverted"
+        fi
       else
         log_line "ommega: bind for $mf_src failed; feature stays visible"
       fi
@@ -372,7 +414,21 @@ mask_feature() {
 
 OMMEGA_MASK_DEFAULT=0 mask_feature android.hardware.security.strongbox_keystore.xml hide_strongbox no_strongbox hide_strongbox_keystore
 OMMEGA_MASK_DEFAULT=0 mask_feature android.software.device_id_attestation.xml hide_device_ids no_device_ids hide_device_id_attestation
-unset WL_RELS mf_name mf_enabled mf_pat mf_value mf_rel mf_marker mf_src
+# 无条件落一行开机诊断（不看 debug 开关）：排查“面板开了却没生效”时，先看
+# conf 在 post-fs-data 阶段到底读不读得到。
+printf '%s conf=%s mask_state=%s\n' "$(date -u '+%H-%M-%S')" \
+  "$([ -f "$TARGET_CONF" ] && echo y || echo n)" \
+  "$(cat "$STATE_DIR/conf/mask.state" 2>/dev/null | tr '\n' ' ')" \
+  >> /data/adb/ommega/boot-debug.log 2>/dev/null
+# 分区可见性诊断：KSU 的 post-fs-data 可能比 /odm 挂载还早，那样下面两段
+# 会因为 target 不存在而静默跳过。
+printf '%s odm=%s odm_file=%s mnt_vendor=%s sys_perms=%s\n' "$(date -u '+%H-%M-%S')" \
+  "$([ -d /odm ] && echo y || echo n)" \
+  "$([ -f /odm/etc/permissions/android.hardware.hardware_keystore.jc-strongbox-keymint3.nxp.xml ] && echo y || echo n)" \
+  "$([ -d /mnt/vendor ] && echo y || echo n)" \
+  "$([ -d /system/etc/permissions ] && echo y || echo n)" \
+  >> /data/adb/ommega/boot-debug.log 2>/dev/null
+unset WL_RELS mf_name mf_enabled mf_pat mf_value mf_rel mf_marker mf_src mf_stage mf_stage_base mf_fake_base mf_state mf_state_file
 
 # ── 尽早把两个守护拉起来 ─────────────────────────────────────────────────
 # 为什么抢在 post-fs-data（最早那个阶段）而不是 service.sh（late_start）：注入 keystore2
