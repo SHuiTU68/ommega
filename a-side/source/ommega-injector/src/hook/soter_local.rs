@@ -69,11 +69,28 @@ const ASK_FILE_PATHS: [&str; 2] = [
 ];
 /// 环境变量覆盖，写测试和临时探针用。
 const ASK_FILE_ENV: &str = "OMMEGA_SOTER_ASK_PEM";
+
+/// 独立的 ASK 私钥（可选）。有它的时候两条路分开：`exportAskPublicKey` 吐它的公钥，
+/// `exportAttkPublicKey` 吐 ATTK 的公钥 —— 真机上这两个永远不相等，相等就是假的。
+/// 没有就退回旧行为（ASK 兼 ATTK）。
+const ASK_KEY_FILE_PATHS: [&str; 2] = [
+    "/data/misc/ommega/soter_ask_key.pem",
+    "/data/misc/keystore/ommega/soter_ask_key.pem",
+];
+const ASK_KEY_FILE_ENV: &str = "OMMEGA_SOTER_ASK_KEY_PEM";
+
+/// counter 起点。真机上这个号早就几千了（PLC110 实测 7394），从 1 开始会被当回滚。
+const COUNTER_BASE: u64 = 10_000;
+
+/// 强制覆盖 cpu_id 的文件。拿别台设备的 ATTK 重放时要跟那台报同一个号，
+/// 否则服务端按 cpu_id 查不到设备。daemon 不认识这个文件名，不会写回。
+const CPU_ID_OVERRIDE: &str = "/data/misc/ommega/soter_cpu_id.force";
 /// `fid` 在序列号读不到时的兜底种子。`cpu_id` **不用**它 —— 那个号只从真实属性来，
 /// 读不到就不报，绝不编一个（见 [`cpu_id`]）。
 const FALLBACK_SEED: &str = "ommega-a-side-local";
 
 /// 一对 RSA，加它的公钥 PEM（SOTER 里的"证书"就是拿这个验的）。
+#[derive(Clone)]
 struct Key {
     private: RsaPrivateKey,
     /// 公钥 PEM，`exportXxxPublicKey` 吐出去的就是它。
@@ -137,7 +154,9 @@ struct SignSession {
 
 /// 后端状态。签发用的 key 一开始就加载好（编译进来的，失败就是编坏了）。
 struct State {
-    /// 主 key：ASK 和 ATTK 都用它，自己签自己 —— 服务端 self_signed 那层就是这么干的。
+    /// 签名根（ATTK）。本地模式里它就是 `exportAttkPublicKey` 吐的那把。
+    attk: Key,
+    /// 对外导出的 ASK。有独立文件时是另一把，否则等于 attk（旧行为）。
     ask: Key,
     /// `{uid}|{alias}` -> AuthKey。
     auth: Mutex<HashMap<String, Key>>,
@@ -198,14 +217,46 @@ fn load_ask_key() -> Option<(Key, String)> {
     load_ask_key_with(None)
 }
 
+/// 再找一把「独立的 ASK」。找到就能把 ASK 和 ATTK 分开，找不到就返回 None
+/// （调用方拿 ATTK 自己顶）。
+fn load_independent_ask() -> Option<(Key, String)> {
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(path) = std::env::var_os(ASK_KEY_FILE_ENV) {
+        candidates.push(std::path::PathBuf::from(path));
+    }
+    candidates.extend(ASK_KEY_FILE_PATHS.iter().map(std::path::PathBuf::from));
+
+    for path in candidates {
+        let Ok(pem) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        match Key::from_pem(&pem) {
+            Some(key) => return Some((key, path.display().to_string())),
+            None => log::warn!(
+                "soter local independent ask at {} is not a usable PKCS#8 PEM; ignoring it",
+                path.display()
+            ),
+        }
+    }
+    None
+}
+
 fn state() -> Option<&'static State> {
     static STATE: OnceLock<Option<State>> = OnceLock::new();
     STATE
         .get_or_init(|| {
-            let (ask, origin) = load_ask_key()?;
-            log::info!("soter local ASK loaded from {origin}");
-            let _ = ASK_ORIGIN.set(origin);
+            let (attk, origin) = load_ask_key()?;
+            log::info!("soter local ATTK loaded from {origin}");
+            let (ask, ask_origin) = match load_independent_ask() {
+                Some((key, path)) => {
+                    log::info!("soter local ASK loaded from {path} (independent)");
+                    (key, format!("ask={path}; attk={origin}"))
+                }
+                None => (attk.clone(), format!("ask=attk={origin}")),
+            };
+            let _ = ASK_ORIGIN.set(ask_origin);
             Some(State {
+                attk,
                 ask,
                 auth: Mutex::new(HashMap::new()),
                 counters: Mutex::new(HashMap::new()),
@@ -215,6 +266,14 @@ fn state() -> Option<&'static State> {
             })
         })
         .as_ref()
+}
+
+/// 单调递增的下限。重启后即使文件丢了/读不到，也拿着它保证不回退。
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn now_millis() -> i64 {
@@ -254,6 +313,14 @@ fn cpu_id() -> String {
     // 代价：文件里存的是 daemon 从真机学来的号，不是本机序列号派生的那个。同一 uid 下
     // 转发和本地报不同号时检测器会判「两次 cpuid 不一致」；但「不答」比「号不一致」更糟
     // （前者整条链路直接不通），所以先取文件。
+    // 强制覆盖：重放别台设备的 ATTK 时，cpu_id 也得跟那台一致。
+    if let Ok(text) = std::fs::read_to_string(CPU_ID_OVERRIDE) {
+        if let Some(value) = kmr_common::soter_relay::parse_cpu_id(&text) {
+            log::info!("event=soter cpu_id forced by {CPU_ID_OVERRIDE}");
+            return value;
+        }
+        log::warn!("event=soter {CPU_ID_OVERRIDE} exists but holds no valid cpu_id");
+    }
     let (learned, source) = load_cpu_id();
     if let Some(value) = learned {
         log::debug!("event=soter cpu_id from {source}");
@@ -561,8 +628,8 @@ fn answer_inner(call: &soter::SoterCall) -> Option<Answer> {
         1 => {
             let uid = call.uid?;
             let counter = bump_counter(state, uid);
-            let document = ask_json(&state.ask, uid, counter).ok()?;
-            let signature = state.ask.sign(&document)?;
+            let document = ask_json(&state.ask.pem, uid, counter).ok()?;
+            let signature = state.attk.sign(&document)?;
             Some(Answer::Buffer {
                 code: OK,
                 data: Some(envelope(&document, &signature)),
@@ -576,6 +643,8 @@ fn answer_inner(call: &soter::SoterCall) -> Option<Answer> {
                 Some(key) => {
                     let counter = bump_counter(state, uid);
                     let document = auth_json(&key, uid, counter);
+                    // 这层必须用 **ASK** 签：App 手里只有 ASK 公钥，拿它验这个信封。
+                    // （ASK 自己那一层才是 ATTK 签的，两者别搞混。）
                     let signature = state.ask.sign(&document)?;
                     Some(Answer::Buffer {
                         code: OK,
@@ -610,13 +679,10 @@ fn answer_inner(call: &soter::SoterCall) -> Option<Answer> {
                 None => None,
             }
         }
-        // generateAskKeyPair(uid) —— 真机上这是建 ASK，我们这把一开始就在，
-        // 只需要把计数器归零，回成功。
+        // generateAskKeyPair(uid) —— 真机上这是建 ASK，我们这把一开始就在，回成功就行。
+        // **不要重置 counter**：重置就回退了，App 会当重放把钥匙删掉。
         5 => {
             let uid = call.uid?;
-            if let Ok(mut map) = state.counters.lock() {
-                map.insert(uid, 0);
-            }
             // 记下来，下一次 9 号就要答「有」。以前不记，9 号又写死答没有，
             // App 就会在这两步之间无限循环（Duck 的 keyPrep ask 永远是 false）。
             if let Ok(mut set) = state.ask_built.lock() {
@@ -721,10 +787,10 @@ pub(crate) fn ask_public_document(uid: i32) -> Vec<u8> {
         return Vec::new();
     };
     let counter = bump_counter(state, uid);
-    let Ok(document) = ask_json(&state.ask, uid, counter) else {
+    let Ok(document) = ask_json(&state.attk.pem, uid, counter) else {
         return Vec::new();
     };
-    let Some(signature) = state.ask.sign(&document) else {
+    let Some(signature) = state.attk.sign(&document) else {
         return Vec::new();
     };
     envelope(&document, &signature)
@@ -744,12 +810,25 @@ fn auth_key(state: &State, uid: i32, alias: &str) -> Option<Key> {
 }
 
 fn bump_counter(state: &State, uid: i32) -> u64 {
-    let Ok(mut map) = state.counters.lock() else {
-        return 1;
-    };
-    let entry = map.entry(uid).or_insert(0);
-    *entry += 1;
-    *entry
+    // counter 必须单调递增，而且**重启不能回退**：App 会记着上次看到的值，
+    // 小回去就当成重放，把本地钥匙删了重来。所以落到文件里。
+    let path = format!("/data/misc/ommega/soter_counter.{uid}");
+    let disk = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| text.trim().parse::<u64>().ok())
+        .unwrap_or(0);
+    let mem = state
+        .counters
+        .lock()
+        .ok()
+        .and_then(|map| map.get(&uid).copied())
+        .unwrap_or(0);
+    let next = disk.max(mem).max(COUNTER_BASE).max(now_secs()) + 1;
+    if let Ok(mut map) = state.counters.lock() {
+        map.insert(uid, next);
+    }
+    let _ = std::fs::write(&path, format!("{next}\n"));
+    next
 }
 
 /// 包 SOTER 的信封：`[i32 le JSON 长度][JSON][签名]`。三处回信封的地方都走它，
@@ -796,10 +875,11 @@ fn sign_json(uid: i32, raw: &str, counter: u64) -> Vec<u8> {
 }
 
 /// ASK 那份 JSON。键序照现场抓到的来，`uid` 是字符串别写成数字。
-fn ask_json(key: &Key, uid: i32, counter: u64) -> Result<Vec<u8>, ()> {
+/// `pub_pem` 是 **ASK 自己的公钥**（可能是独立的一把，也可能是 ATTK）。
+fn ask_json(pub_pem: &str, uid: i32, counter: u64) -> Result<Vec<u8>, ()> {
     let document = format!(
         "{{\"pub_key\":{},\"cpu_id\":\"{}\",\"counter\":{},\"uid\":\"{}\",\"rsa_pss_saltlen\":{}}}",
-        json_string(&key.pem),
+        json_string(pub_pem),
         cpu_id(),
         counter,
         uid,
