@@ -153,17 +153,14 @@ else
   ui_print "- KmInstallKeybox not in package, the RKP fix button will fall back to vendor"
 fi
 
-# ---- StrongBox 声明隐藏（hide_strongbox 开关的静态载体）----
-# 声明 android.hardware.security.strongbox_keystore 的 feature XML 在哪个分区因
-# 设备而异，安装时现场检测：对真实存在的声明文件，在模块 system/ 的对应相对路径
-# 下放 0:0 dummy 设备（Magisk/KSU 的标准 whiteout 语义，管理器挂载时会删掉目标
-# 文件）。挂载完全由 root 管理器完成，本模块不做任何手动 mount；开关关闭时
-# post-fs-data.sh 移除标记，管理器下次开机即恢复原状。
-# 开关关着就一个标记都不种。这里必须读配置：模块文件是在 magic mount
-# 阶段被挂上去的，而模块自己的 post-fs-data.sh 要在那之后才跑，
-# 所以安装时无脑创建的话，开关关着的用户装完第一次开机
-# 也会被隐藏，PM 说没有 StrongBox 而 daemon 照样提供服务，
-# 反而露马脚。开关后面打开时 post-fs-data.sh 会自己补建。
+# ---- 能力声明隐藏（hide_strongbox / hide_device_ids 的静态载体）----
+# 只写模块自己的一份能力声明 XML，用 SystemConfig 支持的 <unavailable-feature> 让系统
+# 报「本机没有这个能力」；厂商分区里的声明文件一个字节都不碰。
+#
+# 老实现是在 vendor/odm 的声明文件旁种 whiteout（0:0 字符设备）让管理器删掉目标文件。
+# 那条路有两个硬伤：一是整份 XML 被删/清空，同文件的 android.hardware.keystore.app_attest_key
+# 也会跟着消失（对得上账的检测器一眼看出来）；二是漏挂/内容不合法时 system_server 读
+# /odm/etc/permissions 直接失败，设备开不了机（2026-10-28 在 peridot 上实测过）。
 STRONGBOX_HIDDEN=false
 CLIENTA_CONF=/data/misc/keystore/ommega/config
 # 装的时候看一眼：这台机器有没有 StrongBox。有就把它写成配置里的默认值，
@@ -189,14 +186,9 @@ if [ -f "$CLIENTA_CONF" ]; then
   unset hide_val
 fi
 
-STRONGBOX_FEATURE="android.hardware.security.strongbox_keystore.xml"
-DEVICE_IDS_FEATURE="android.software.device_id_attestation.xml"
-
-# 声明「不支持 ID 认证」：置上 hide_device_ids 就给声明的 XML 种 whiteout。
-# 与 StrongBox 同一套机制，安装时就把两种开关都读一遍。
-# 默认关：只有显式写 1/true 才遮（“没写就不瑞”）。
+# 声明「不支持 ID 认证」：同一份 XML 里再写一条 unavailable-feature。
+# 默认关：只有显式写 1/true 才遮。
 DEVICE_IDS_HIDDEN=false
-CLIENTA_CONF=/data/misc/keystore/ommega/config
 if [ -f "$CLIENTA_CONF" ]; then
   ids_val=$(grep -iE '^[[:space:]]*(hide_device_ids|no_device_ids|hide_device_id_attestation)[[:space:]]*:' "$CLIENTA_CONF" 2>/dev/null | head -n 1 | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r')
   case "$ids_val" in
@@ -206,37 +198,32 @@ if [ -f "$CLIENTA_CONF" ]; then
   unset ids_val
 fi
 
-place_feature_mask() {
-  pf_feature=$1
-  for src_dir in \
-    /system/etc/permissions \
-    /system_ext/etc/permissions \
-    /vendor/etc/permissions \
-    /product/etc/permissions; do
-    [ -f "$src_dir/$pf_feature" ] || continue
-    # 模块镜像里的路径：Magisk 约定是 system/<分区>/...，而 /system 自己
-    # 不再带一层前缀（不然会变成 /system/system/...）。
-    rel=${src_dir#/}
-    rel=${rel#system/}
-    tgt="$MODPATH/system/$rel"
-    mkdir -p "$tgt"
-    if mknod "$tgt/$pf_feature" c 0 0 2>/dev/null; then
-      ui_print "- $pf_feature whiteout: $rel"
-    else
-      # mknod 被拒（SELinux/内核限制）时退化为空声明覆盖，效果一致
-      printf '<?xml version="1.0" encoding="utf-8"?>\n<permissions/>\n' > "$tgt/$pf_feature"
-      ui_print "- $pf_feature overlay: $rel (whiteout unavailable)"
-    fi
-  done
-}
+# 顺手清掉老版本留下的一次性标记（whiteout / 空声明），它们在管理器挂载时还会生效。
+for stale_feature in android.hardware.security.strongbox_keystore.xml android.software.device_id_attestation.xml; do
+  rm -f "$MODPATH/system/vendor/etc/permissions/$stale_feature" \
+        "$MODPATH/system/product/etc/permissions/$stale_feature" \
+        "$MODPATH/system/system_ext/etc/permissions/$stale_feature" \
+        "$MODPATH/system/odm/etc/permissions/$stale_feature" \
+        "$MODPATH/system/etc/permissions/$stale_feature" 2>/dev/null
+done
 
-if [ "$STRONGBOX_HIDDEN" = true ]; then
-  place_feature_mask "$STRONGBOX_FEATURE"
+CAP_XML_DIR="$MODPATH/system/etc/permissions"
+mkdir -p "$CAP_XML_DIR" 2>/dev/null
+{
+  printf '<?xml version="1.0" encoding="utf-8"?>\n<permissions>\n'
+  [ "$STRONGBOX_HIDDEN" = true ] && printf '  <unavailable-feature name="android.hardware.strongbox_keystore" />\n'
+  [ "$DEVICE_IDS_HIDDEN" = true ] && printf '  <unavailable-feature name="android.software.device_id_attestation" />\n'
+  printf '</permissions>\n'
+} > "$CAP_XML_DIR/ommega-capability-mask.xml" 2>/dev/null
+# 模块 system/ 下的文件要 root:root 0644 + system_file，不然管理器挂上之后 system_server
+# 读不到这份声明（KSU/APatch 的 set_perm_recursive 是 no-op，失败也不影响）。
+set_perm_recursive "$MODPATH/system" 0 0 0755 0644 u:object_r:system_file:s0 2>/dev/null || true
+if [ "$STRONGBOX_HIDDEN" = true ] || [ "$DEVICE_IDS_HIDDEN" = true ]; then
+  ui_print "- Capability declaration: strongbox=$STRONGBOX_HIDDEN device_ids=$DEVICE_IDS_HIDDEN (applies from this boot)"
+else
+  ui_print "- Capability declaration: nothing masked"
 fi
-if [ "$DEVICE_IDS_HIDDEN" = true ]; then
-  place_feature_mask "$DEVICE_IDS_FEATURE"
-fi
-unset STRONGBOX_FEATURE DEVICE_IDS_FEATURE STRONGBOX_HIDDEN DEVICE_IDS_HIDDEN CLIENTA_CONF
+unset STRONGBOX_HIDDEN DEVICE_IDS_HIDDEN CLIENTA_CONF CAP_XML_DIR stale_feature
 
 # resetprop：模块自己带一个（实现是 vendor/ 里的 resetprop-rs，源码在 vendor/prop-rs*、
 # vendor/prop-rs-android 和 resetprop/src/）。

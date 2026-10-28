@@ -453,20 +453,71 @@ Object.keys(DEVICE_ID_HINT).forEach(function(code){
   if (I18N[code]) I18N[code]["f.device_id.hint"] = DEVICE_ID_HINT[code];
 });
 
-/* 「声明不支持 ID 认证」开关的文案。开了之后系统不再上报 device_id_attestation，
-   应用/检测器会整项跳过，于是也不用再把型号/品牌同步成远端那台机器。 */
-var HIDE_DEVICE_IDS_TEXT = {
-  "zh-CN": {label: "声明不支持 ID 认证", hint: "系统不再要求设备 ID 证明（型号/品牌/序列号）；开了就不用同步机型那几项"},
-  "zh-TW": {label: "宣告不支援 ID 認證", hint: "系統不再要求裝置 ID 證明（型號/品牌/序號）；開了就不用同步機型那幾項"},
-  "en": {label: "Declare no device ID attestation", hint: "The system stops advertising device ID attestation, so brand/model/serial no longer need syncing"},
-  "ja": {label: "ID 認証非対応を宣言", hint: "端末 ID 証明を要求しなくなり、機種や型番の同期は不要になります"},
-  "ko": {label: "ID 인증 미지원 선언", hint: "기기 ID 증명을 요구하지 않으므로 모델·브랜드 동기화가 필요 없습니다"},
-  "ru": {label: "Объявить отсутствие ID attestation", hint: "Система перестаёт требовать подтверждение ID устройства, синхронизация модели/бренда больше не нужна"}
+/* 两个「声明不支持」开关的文案：只说清楚系统不再上报这个能力、所有应用看到同一份视图、
+   重启后生效、证书和厂商分区一律不动。信息再多反而误导。 */
+var CAP_MASK_TEXT = {
+  "zh-CN": { sb: "声明不支持 StrongBox",
+    sbh: "系统不再上报 StrongBox 能力，所有应用看到同一份视图，重启后生效；证书、密钥、厂商分区文件都不动",
+    ids: "声明不支持 ID 认证",
+    idsh: "系统不再要求设备 ID 证明（型号/品牌/序列号），就不必把机型同步成远端那台；重启后生效",
+    reboot: "（声明已写入，重启后生效）",
+    liveOn: "当前系统仍上报 StrongBox", liveOff: "当前系统已不上报 StrongBox",
+    fail: "能力声明写入失败：{msg}" },
+  "zh-TW": { sb: "宣告不支援 StrongBox",
+    sbh: "系統不再上報 StrongBox 能力，所有應用看到同一份視圖，重啟後生效；憑證、金鑰、廠商分區檔案都不動",
+    ids: "宣告不支援 ID 認證",
+    idsh: "系統不再要求裝置 ID 證明，就不必把機型同步成遠端那台；重啟後生效",
+    reboot: "（宣告已寫入，重啟後生效）",
+    liveOn: "目前系統仍上報 StrongBox", liveOff: "目前系統已不上報 StrongBox",
+    fail: "能力宣告寫入失敗：{msg}" },
+  "en": { sb: "Declare StrongBox unsupported",
+    sbh: "The system stops reporting StrongBox, so every app sees the same view; takes effect after a reboot. Certificates, keys and vendor files are left alone",
+    ids: "Declare no device ID attestation",
+    idsh: "The system stops asking for device ID attestation, so brand/model no longer need syncing; takes effect after a reboot",
+    reboot: "(declaration written; takes effect after reboot)",
+    liveOn: "The system still reports StrongBox right now", liveOff: "The system no longer reports StrongBox",
+    fail: "Could not write the capability declaration: {msg}" },
+  "ja": { sb: "StrongBox 非対応を宣言",
+    sbh: "システムが StrongBox を報告しなくなり、全アプリが同じビューを見ます。再起動後に有効。証明書・鍵・ベンダーファイルは変更しません",
+    ids: "ID 認証非対応を宣言",
+    idsh: "端末 ID 証明を要求しなくなるため、機種情報の同期は不要になります。再起動後に有効",
+    reboot: "（宣言を書き込みました。再起動後に有効）",
+    liveOn: "現在のシステムはまだ StrongBox を報告しています", liveOff: "現在のシステムは StrongBox を報告していません",
+    fail: "能力宣言の書き込みに失敗しました：{msg}" },
+  "ko": { sb: "StrongBox 미지원 선언",
+    sbh: "시스템이 StrongBox를 보고하지 않아 모든 앱이 같은 뷰를 봅니다. 재부팅 후 적용되며 인증서·키·벤더 파일은 건드리지 않습니다",
+    ids: "ID 인증 미지원 선언",
+    idsh: "기기 ID 증명을 요구하지 않으므로 모델 정보 동기화가 필요 없습니다. 재부팅 후 적용",
+    reboot: "(선언을 기록했습니다. 재부팅 후 적용)",
+    liveOn: "현재 시스템은 아직 StrongBox를 보고합니다", liveOff: "현재 시스템은 StrongBox를 보고하지 않습니다",
+    fail: "능력 선언 기록 실패: {msg}" },
+  "ru": { sb: "Объявить отсутствие StrongBox",
+    sbh: "Система перестаёт сообщать о StrongBox, все приложения видят одну картину; применяется после перезагрузки. Сертификаты, ключи и файлы вендора не изменяются",
+    ids: "Объявить отсутствие ID attestation",
+    idsh: "Система перестаёт требовать подтверждение ID устройства, синхронизация модели больше не нужна; применяется после перезагрузки",
+    reboot: "(декларация записана; применится после перезагрузки)",
+    liveOn: "Сейчас система всё ещё сообщает о StrongBox", liveOff: "Сейчас система не сообщает о StrongBox",
+    fail: "Не удалось записать декларацию возможностей: {msg}" }
 };
-Object.keys(HIDE_DEVICE_IDS_TEXT).forEach(function(code){
+var SB_LIVE = "";  // "true"/"false" = 系统现在报不报 StrongBox；空字符串 = 还没问到
+async function loadStrongboxLive(){
+  try {
+    var r = await exec("pm has-feature android.hardware.strongbox_keystore 2>/dev/null");
+    var v = String(r.stdout || "").trim().toLowerCase();
+    SB_LIVE = (v === "true" || v === "false") ? v : "";
+  } catch (e){ SB_LIVE = ""; }
+}
+Object.keys(CAP_MASK_TEXT).forEach(function(code){
   if (!I18N[code]) return;
-  I18N[code]["f.hide_device_ids"] = HIDE_DEVICE_IDS_TEXT[code].label;
-  I18N[code]["f.hide_device_ids.hint"] = HIDE_DEVICE_IDS_TEXT[code].hint;
+  var s = CAP_MASK_TEXT[code];
+  I18N[code]["f.hide_strongbox"] = s.sb;
+  I18N[code]["f.hide_strongbox.hint"] = s.sbh;
+  I18N[code]["f.hide_strongbox.live.on"] = s.liveOn;
+  I18N[code]["f.hide_strongbox.live.off"] = s.liveOff;
+  I18N[code]["f.hide_device_ids"] = s.ids;
+  I18N[code]["f.hide_device_ids.hint"] = s.idsh;
+  I18N[code]["toast.maskReboot"] = s.reboot;
+  I18N[code]["toast.maskFail"] = s.fail;
 });
 var MANAGED = REMOTE_FIELDS.map(function(f){ return f.key; });
 var curConfText = "", curPropsText = "";
@@ -745,6 +796,11 @@ function buildBoolRow(f, value, host){
   var name = el("div", "name");
   name.appendChild(el("b", null, t("f." + f.key)));
   name.appendChild(el("small", null, t("f." + f.key + ".hint")));
+  /* 系统现在到底还报不报这个能力，直接问 PackageManager 一句，免得以为勾了就已经生效
+     （声明要重启才换，管理器不给挂载时永远不会生效）。 */
+  if (f.key === "hide_strongbox" && SB_LIVE){
+    name.appendChild(el("small", null, SB_LIVE === "false" ? t("f.hide_strongbox.live.off") : t("f.hide_strongbox.live.on")));
+  }
   row.appendChild(name);
   var sw = el("button", "sw");
   sw.type = "button";
@@ -1190,27 +1246,27 @@ async function openSysApp(){
 }
 
 /* --------------------------------- 动作 --------------------------------- */
-/* 「声明不支持 ID 认证」靠模块的 system/ 镜像里放 whiteout 标记，由 root 管理器开机
-   挂载时生效。标记必须在**下次开机之前**就位，而开关是运行时才打开的，所以这里保存
-   完配置顺手把标记种上/删掉 —— 否则就要重启两次（本次开机 post-fs-data 才建标记，
-   得再等一次开机才挂得上）。 */
-async function syncDeviceIdMask(enabled){
-  var rels = ["vendor/etc/permissions", "product/etc/permissions",
-              "system_ext/etc/permissions", "etc/permissions"];
-  var name = "android.software.device_id_attestation.xml";
-  var lines = [];
-  rels.forEach(function(rel){
-    var marker = MODDIR + "/system/" + rel + "/" + name;
-    var src = (rel.indexOf("etc/permissions") === 0) ? "/system/" + rel + "/" + name
-                                                      : "/" + rel + "/" + name;
-    if (enabled){
-      lines.push('if [ -f ' + src + ' ] && [ ! -e ' + marker + ' ]; then mkdir -p ' + MODDIR + '/system/' + rel +
-                 '; mknod ' + marker + ' c 0 0 2>/dev/null || printf \'<?xml version="1.0" encoding="utf-8"?>\\n<permissions/>\\n\' > ' + marker + '; fi');
-    } else {
-      lines.push('rm -f ' + marker);
-    }
-  });
-  await exec(lines.join("; ") + "; true");
+/* 两个能力开关（StrongBox / 设备 ID 认证）都只落到模块自己的一份声明 XML：
+   /data/adb/modules/ommega/system/etc/permissions/ommega-capability-mask.xml
+   里面写 <unavailable-feature name="..." />，SystemConfig 读完所有权限 XML 后会把同名
+   feature 从可用表删掉，于是 PackageManager、feature 枚举、以及进程里的
+   SystemFeaturesCache 拿到的是同一份「本机没有这个能力」。
+   为什么不种 whiteout / 不 bind 厂商那份 XML：那两条都要动真实分区的文件，整份文件被清掉
+   会连带同文件里的 app_attest_key 一起消失；万一内容不合法（暂存文件复用踩过一次），
+   system_server 解析 /odm/etc/permissions 失败，设备直接开不了机。
+   XML 必须赶在 system_server 之前就位，所以保存时先写一遍，重启后由 post-fs-data 再对齐一次。 */
+async function syncCapabilityMask(sb, ids){
+  var dir = MODDIR + "/system/etc/permissions";
+  var f = dir + "/ommega-capability-mask.xml";
+  var lines = ['<?xml version="1.0" encoding="utf-8"?>', '<permissions>'];
+  if (sb) lines.push('  <unavailable-feature name="android.hardware.strongbox_keystore" />');
+  if (ids) lines.push('  <unavailable-feature name="android.software.device_id_attestation" />');
+  lines.push('</permissions>');
+  var args = lines.map(function(s){ return "'" + s.replace(/'/g, "'\\''") + "'"; });
+  var cmd = 'mkdir -p ' + dir + ' && printf \'%s\\n\' ' + args.join(" ") +
+            ' > ' + f + '.new && mv -f ' + f + '.new ' + f + ' && chmod 644 ' + f;
+  var r = await exec(cmd);
+  return Number(r.errno) === 0;
 }
 
 async function saveRemote(){
@@ -1220,8 +1276,10 @@ async function saveRemote(){
   if (r.errno !== 0){ toast(t("toast.saveFail", {msg: r.stderr || r.errno}), true); return; }
   curConfText = text;
   aDirty = false;
-  await syncDeviceIdMask(truthy(vals.hide_device_ids));
-  toast(t("toast.saved"));
+  var masked = await syncCapabilityMask(truthy(vals.hide_strongbox), truthy(vals.hide_device_ids));
+  if (!masked){ toast(t("toast.maskFail", {msg: "capability-mask.xml"}), true); return; }
+  var note = (truthy(vals.hide_strongbox) || truthy(vals.hide_device_ids)) ? " " + t("toast.maskReboot") : "";
+  toast(t("toast.saved") + note);
   setTimeout(function(){ refreshStatus().catch(function(){}); }, 2000);
 }
 /* 用系统意图把链接丢出去（面板自己是个 WebView，点 <a> 要么没反应、要么把面板顶掉）。
@@ -1574,6 +1632,7 @@ document.addEventListener("change", function(ev){ if (!(ev && ev.target && ev.ta
     document.getElementById("tb-ver").textContent = ver;
     document.getElementById("about-ver").textContent = ver;
 
+    await loadStrongboxLive();
     renderRemote(parseKV(curConfText, true));
 
     propsToPatchFields();
