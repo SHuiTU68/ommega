@@ -751,6 +751,13 @@ fn load_clienta_remote_override() -> Option<RemoteConfig> {
         Some("1" | "true" | "yes" | "on")
     );
 
+    // 「伪装参数」的同步模式：1 = 机型/指纹/补丁/哈希全对齐，2 = 只同步启动哈希和启动补丁。
+    // 缺省 1；写别的数就当没写（面板只会写这两个值）。
+    let sync_mode = get(&["sync_mode"])
+        .and_then(|v| v.trim().parse::<u8>().ok())
+        .filter(|mode| *mode == 1 || *mode == 2)
+        .unwrap_or_else(default_sync_mode);
+
     // WebUI "mask SOTER" switch, off by default (an absent key means off).
     // `kmod-loader.sh` is the only consumer and reads the flat key itself;
     // `hide_soter` is accepted as an alias so a hand-written config cannot
@@ -816,6 +823,7 @@ fn load_clienta_remote_override() -> Option<RemoteConfig> {
         fallback_local,
         debug_logging,
         hide_strongbox,
+        sync_mode,
         soter_hide,
         soter_inject,
         soter_uid_map,
@@ -884,6 +892,12 @@ pub struct RemoteConfig {
     /// PackageManager reports the feature as absent.
     #[serde(default)]
     pub hide_strongbox: bool,
+    /// WebUI「伪装参数 → 同步模式」：`1`（缺省）= 机型/品牌/指纹/系统版本 + 三处补丁 + 启动
+    /// 哈希全都跟服务端上那台 B 对齐；`2` = 只同步启动哈希和启动补丁。
+    /// 面板自己读写这个键（拼进 props.conf），A 端运行时不用它，但这里得认识它，
+    /// 否则面板存一次配置就把它当未知键丢掉了。
+    #[serde(default = "default_sync_mode")]
+    pub sync_mode: u8,
     /// WebUI option "Mask SOTER". `kmod-loader.sh` reads the flat config key
     /// directly and hides `/system/priv-app/SoterService` with the bundled
     /// PathMask kernel module when the local SOTER binder service cannot be
@@ -946,6 +960,7 @@ impl Default for RemoteConfig {
             fallback_local: true,
             debug_logging: false,
             hide_strongbox: false,
+            sync_mode: default_sync_mode(),
             soter_hide: false,
             // 默认接管 SOTER：接管后才能自己答 ASK/签名，不接管就只能透传原厂 HAL。
             soter_inject: true,
@@ -955,6 +970,11 @@ impl Default for RemoteConfig {
             bind_iface: String::new(),
         }
     }
+}
+
+/// 「伪装参数」同步模式的缺省值：1 = 整机对齐（机型/指纹/补丁/哈希都跟 B）。
+fn default_sync_mode() -> u8 {
+    1
 }
 
 /// 「只在本地兜底回答」名单的缺省值：还是拿 `soter_relay` 那份常量，免得两处跑偏。

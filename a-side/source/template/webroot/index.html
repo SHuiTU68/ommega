@@ -237,6 +237,13 @@
     <div class="card">
       <h2 data-i18n="patch.title"></h2>
       <div id="grp-patch"></div>
+      <div class="row">
+        <div class="name"><b data-i18n="patch.mode"></b><small data-i18n="patch.mode.hint"></small></div>
+        <span style="min-width:46%"><select id="patch-mode" style="width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);font-size:13px;font-family:inherit">
+          <option value="1" data-i18n="patch.mode1"></option>
+          <option value="2" data-i18n="patch.mode2"></option>
+        </select></span>
+      </div>
       <p class="hint" data-i18n="patch.current"></p>
       <div id="patch-summary"></div>
       <div class="acts">
@@ -519,9 +526,119 @@ Object.keys(CAP_MASK_TEXT).forEach(function(code){
   I18N[code]["toast.maskReboot"] = s.reboot;
   I18N[code]["toast.maskFail"] = s.fail;
 });
+
+/* 「伪装参数」的两种同步模式：模式1 跟选中的 B 整机对齐（机型/指纹/版本 + 三处补丁 + 启动
+   哈希），模式2 只同步启动哈希和启动补丁。默认模式1。 */
+var SYNC_MODE_TEXT = {
+  "zh-CN": { mode: "同步模式",
+    hint: "模式1 跟选中的 B 整机对齐（机型/品牌/指纹/版本 + 三处补丁 + 启动哈希）；模式2 只同步启动哈希和启动补丁。",
+    m1: "模式1 · 整机对齐（默认）", m2: "模式2 · 只同步启动哈希/补丁",
+    synchint: "用上面的服务器地址和设备 ID 查 /api/status/：模式1 取那台 B 的机型/品牌/指纹/系统版本、三处安全补丁和启动哈希，模式2 只取启动哈希和启动补丁。设备 ID 留空时按负载挑一台 keymint 有效、已锁定、可信任启动的设备。" },
+  "zh-TW": { mode: "同步模式",
+    hint: "模式1 跟選中的 B 整機對齊（機型/品牌/指紋/版本 + 三處補丁 + 啟動雜湊）；模式2 只同步啟動雜湊和啟動補丁。",
+    m1: "模式1 · 整機對齊（預設）", m2: "模式2 · 只同步啟動雜湊/補丁",
+    synchint: "用上面的伺服器位址和裝置 ID 查 /api/status/：模式1 取那台 B 的機型/品牌/指紋/系統版本、三處安全補丁和啟動雜湊，模式2 只取啟動雜湊和啟動補丁。裝置 ID 留空時按負載挑一台 keymint 有效、已鎖定、可信任啟動的裝置。" },
+  "en": { mode: "Sync mode",
+    hint: "Mode 1 aligns the whole device with the selected B (model/brand/fingerprint/version + three patch levels + boot hash); mode 2 only syncs the boot hash and boot patch.",
+    m1: "Mode 1 · full alignment (default)", m2: "Mode 2 · boot hash and patch only",
+    synchint: "Queries /api/status/ with the server address and device ID above: mode 1 takes that B's model/brand/fingerprint/system version, all three security patch levels and the boot hash, mode 2 only the boot hash and boot patch. An empty device ID picks the least loaded device with valid keymint, a locked bootloader and verified boot." },
+  "ja": { mode: "同期モード",
+    hint: "モード1 は選択した B に端末全体を合わせます（機種/ブランド/指紋/バージョン + 3 つのパッチ + 起動ハッシュ）。モード2 は起動ハッシュと起動パッチだけ。",
+    m1: "モード1 · 端末全体を合わせる（既定）", m2: "モード2 · 起動ハッシュとパッチのみ",
+    synchint: "上記のサーバーアドレスとデバイス ID で /api/status/ を照会します。モード1 はその B の機種/ブランド/指紋/システムバージョン、3 つのセキュリティパッチ、起動ハッシュを取得し、モード2 は起動ハッシュと起動パッチだけを取得します。デバイス ID が空欄の場合は負荷の軽い順に選びます。" },
+  "ko": { mode: "동기화 모드",
+    hint: "모드1은 선택한 B에 기기 전체를 맞춥니다(모델/브랜드/지문/버전 + 패치 세 곳 + 부팅 해시). 모드2는 부팅 해시와 부팅 패치만 동기화합니다.",
+    m1: "모드1 · 전체 맞춤(기본)", m2: "모드2 · 부팅 해시/패치만",
+    synchint: "위의 서버 주소와 기기 ID로 /api/status/를 조회합니다. 모드1은 그 B의 모델/브랜드/지문/시스템 버전과 보안 패치 세 곳, 부팅 해시를 가져오고 모드2는 부팅 해시와 부팅 패치만 가져옵니다. 기기 ID를 비우면 부하 순으로 선택합니다." },
+  "ru": { mode: "Режим синхронизации",
+    hint: "Режим 1 выравнивает всё устройство по выбранному B (модель/бренд/отпечаток/версия + три уровня патча + хэш загрузки); режим 2 синхронизирует только хэш загрузки и патч загрузки.",
+    m1: "Режим 1 · полное выравнивание (по умолчанию)", m2: "Режим 2 · только хэш и патч загрузки",
+    synchint: "Запрашивает /api/status/ по адресу сервера и ID устройства выше: режим 1 берёт модель/бренд/отпечаток/версию системы, три уровня патча и хэш загрузки, режим 2 — только хэш и патч загрузки. Пустой ID выбирает наименее загруженное устройство." }
+};
+Object.keys(SYNC_MODE_TEXT).forEach(function(code){
+  if (!I18N[code]) return;
+  var s = SYNC_MODE_TEXT[code];
+  I18N[code]["patch.mode"] = s.mode;
+  I18N[code]["patch.mode.hint"] = s.hint;
+  I18N[code]["patch.mode1"] = s.m1;
+  I18N[code]["patch.mode2"] = s.m2;
+  I18N[code]["patch.sync.hint"] = s.synchint;
+});
+
+/* 本地兜底那把密钥的文案。它在本机是**签名根（ATTK）**：面板选的自定义文件写进
+   soter_ask.pem，注入器就拿它当 ATTK；跟真机一样 ASK 是另一把，需要时单独放
+   soter_ask_key.pem（不放就沿用旧行为：ASK 兼作 ATTK）。 */
+var SOTER_KEY_TEXT = {
+  "zh-CN": { title: "SOTER 密钥（本地兜底 ATTK）",
+    hint: "写入 /data/misc/keystore/ommega/soter_ask.pem，注入器守护会同步到 app 域并重启 SOTER 宿主，随即生效；清除后回到二进制里内置的那把。它在本机是签名根（ATTK）；ASK 是另一把，需要时单独放 soter_ask_key.pem，不放就沿用旧行为（ASK 兼作 ATTK）。",
+    fromFile: "选一份自己的 PEM（PKCS#8）写入 soter_ask.pem，充当本机兜底的 ATTK",
+    clear: "删除自定义文件，回到内置那把 ATTK" },
+  "zh-TW": { title: "SOTER 金鑰（本機兜底 ATTK）",
+    hint: "寫入 /data/misc/keystore/ommega/soter_ask.pem，注入器守護會同步到 app 領域並重啟 SOTER 宿主，隨即生效；清除後回到二進位內建的那把。它在本機是簽名根（ATTK）；ASK 是另一把，需要時單獨放 soter_ask_key.pem，不放就沿用舊行為。",
+    fromFile: "選一份自己的 PEM（PKCS#8）寫入 soter_ask.pem，當作本機兜底的 ATTK",
+    clear: "刪除自訂檔案，回到內建那把 ATTK" },
+  "en": { title: "SOTER key (local fallback ATTK)",
+    hint: "Written to /data/misc/keystore/ommega/soter_ask.pem; the injector daemon mirrors it into the app domain and restarts the SOTER host, so it applies at once. On this device it is the signing root (ATTK); ASK is a separate key — drop soter_ask_key.pem in the same directory if you want one, otherwise ASK doubles as ATTK as before.",
+    fromFile: "Pick your own PEM (PKCS#8) for soter_ask.pem, used as the local fallback ATTK",
+    clear: "Remove the custom file and go back to the built-in ATTK" },
+  "ja": { title: "SOTER 鍵（ローカル代替 ATTK）",
+    hint: "/data/misc/keystore/ommega/soter_ask.pem に書き込みます。インジェクタが app ドメインへ同期し SOTER ホストを再起動するため即時反映。本機ではこれが署名のルート（ATTK）です。ASK は別の鍵で、必要なら同じ場所に soter_ask_key.pem を置きます（置かなければ従来どおり ASK が ATTK を兼ねます）。",
+    fromFile: "自分の PEM（PKCS#8）を選んで soter_ask.pem に書き込み、ローカル代替の ATTK にします",
+    clear: "カスタムファイルを削除し、内蔵の ATTK に戻します" },
+  "ko": { title: "SOTER 키(로컬 대체 ATTK)",
+    hint: "/data/misc/keystore/ommega/soter_ask.pem에 기록합니다. 인젝터 데몬이 app 도메인으로 동기화하고 SOTER 호스트를 재시작하므로 즉시 적용됩니다. 이 기기에서 이것이 서명 루트(ATTK)입니다. ASK는 별도 키이며 필요하면 같은 위치에 soter_ask_key.pem을 두세요(없으면 예전처럼 ASK가 ATTK를 겸합니다).",
+    fromFile: "자신의 PEM(PKCS#8)을 골라 soter_ask.pem에 기록해 로컬 대체 ATTK로 사용",
+    clear: "사용자 파일을 지우고 내장 ATTK로 돌아갑니다" },
+  "ru": { title: "Ключ SOTER (локальный ATTK)",
+    hint: "Записывается в /data/misc/keystore/ommega/soter_ask.pem; демон-инжектор копирует его в домен приложений и перезапускает хост SOTER, поэтому применяется сразу. Здесь это корень подписи (ATTK); ASK — отдельный ключ, при необходимости положите рядом soter_ask_key.pem (иначе ASK по-прежнему выполняет роль ATTK).",
+    fromFile: "Выбрать свой PEM (PKCS#8) для soter_ask.pem в качестве локального ATTK",
+    clear: "Удалить свой файл и вернуться к встроенному ATTK" }
+};
+Object.keys(SOTER_KEY_TEXT).forEach(function(code){
+  if (!I18N[code]) return;
+  var s = SOTER_KEY_TEXT[code];
+  I18N[code]["sk.title"] = s.title;
+  I18N[code]["sk.hint"] = s.hint;
+  I18N[code]["sk.fromFile.hint"] = s.fromFile;
+  I18N[code]["sk.clear.hint"] = s.clear;
+});
+/* 当前同步模式：flat config 里的 `sync_mode`（缺省/写别的数都算 1）。 */
+function syncMode(){
+  var m = /^[ \t]*sync_mode[ \t]*:[ \t]*([^\r\n]*)/m.exec(curConfText || "");
+  return (m && String(m[1]).trim() === "2") ? 2 : 1;
+}
+/* 改模式就落盘（不必再点「设置」里的保存）；只改这一个键，其余行原样保留。 */
+async function setSyncMode(mode){
+  var text = mergeKV(curConfText, {sync_mode: String(mode)}, ["sync_mode"], false);
+  var r = await writeFile(CONF, text, "644");
+  if (r.errno !== 0){ toast(t("toast.saveFail", {msg: r.stderr || r.errno}), true); return false; }
+  curConfText = text;
+  return true;
+}
 var MANAGED = REMOTE_FIELDS.map(function(f){ return f.key; });
 var curConfText = "", curPropsText = "";
-var PROP_KEYS = ["ro.boot.vbmeta.digest", "ro.boot.build.security_patch"];
+/* 伪装参数写进 props.conf 的键。两组：
+   PATCH_KEYS = 启动链那几项（模式2 只写这些）；
+   IDENT_KEYS = 机型/品牌/指纹/系统版本（模式1 才同步）。
+   为什么身份那套要连分区级的 ro.product.<part>.{brand,device,model} 一起写：daemon 从链里
+   拿到的身份也是这么铺的（品牌/型号这类属性不少 ROM 会优先读分区级那份），只写根级会出现
+   两套值互相矛盾。*/
+var PATCH_KEYS = ["ro.boot.vbmeta.digest", "ro.build.version.security_patch",
+                  "ro.boot.build.security_patch", "ro.vendor.build.security_patch"];
+var IDENT_ROOT_KEYS = ["ro.product.brand", "ro.product.device", "ro.product.name",
+                       "ro.product.manufacturer", "ro.product.model"];
+var IDENT_PART_KEYS = [];
+["system", "vendor", "odm", "product", "system_ext"].forEach(function(part){
+  ["brand", "device", "model"].forEach(function(field){ IDENT_PART_KEYS.push("ro.product." + part + "." + field); });
+});
+var IDENT_KEYS = IDENT_ROOT_KEYS.concat(["ro.build.fingerprint", "ro.build.version.release"], IDENT_PART_KEYS);
+var PROP_KEYS = PATCH_KEYS.concat(IDENT_KEYS);
+/* 模式2 只管这两项（启动哈希 + 启动补丁）：切过去时把它们之外的都从 props.conf 里清掉，
+   不然上一轮模式1 同步的 os/vendor 补丁和机型会一直留在文件里。 */
+var MODE2_KEYS = ["ro.boot.vbmeta.digest", "ro.boot.build.security_patch"];
+/* 最近一次「从服务器同步」挑中的那台 B：boot（哈希/三处补丁/os_version）和 identity
+   （品牌/型号/指纹那几项）。syncPatch 拿它拼 props.conf。 */
+var LAST_PICK = null;
 var RETIRED_KEYS = ["ro.boot.vbmeta.public_key_digest"];
 var curTarget = {normal:[], generate:[], hack:[]};
 /* 本机（A 端）版本号，init 时从 module.prop 读出来；挑 B 端时按它比版本。 */
@@ -1322,6 +1439,16 @@ function refreshPatchSummary(){
   if (!box) return;
   function v(id){ var e = document.getElementById(id); return e ? (e.value || "").trim() : ""; }
   var rows = [];
+  var mode = syncMode();
+  rows.push([t("patch.mode"), mode === 2 ? t("patch.mode2") : t("patch.mode1")]);
+  /* 模式1 同步进去的身份/补丁项直接列出来：面板上说“已同步”但文件里到底有什么，
+     以 props.conf 为准才看得出来。 */
+  var props = currentPropsKV();
+  if (props["ro.build.version.security_patch"]) rows.push([t("patch.short.system"), props["ro.build.version.security_patch"]]);
+  if (props["ro.vendor.build.security_patch"]) rows.push([t("patch.short.vendor"), props["ro.vendor.build.security_patch"]]);
+  if (props["ro.build.version.release"]) rows.push([t("patch.release"), props["ro.build.version.release"]]);
+  if (props["ro.product.model"]) rows.push([t("patch.model"), (props["ro.product.brand"] ? props["ro.product.brand"] + " / " : "") + props["ro.product.model"]]);
+  if (props["ro.build.fingerprint"]) rows.push([t("patch.fingerprint"), props["ro.build.fingerprint"].slice(0, 32) + "…"]);
   if (v("patch-boot")) rows.push([t("patch.short.boot"), v("patch-boot")]);
   /* 设备身份：品牌/型号/序列号，有哪几项列哪几项。 */
   var model = v("ident-model"), brand = v("ident-brand"), serial = v("ident-serial");
@@ -1466,13 +1593,81 @@ async function fetchDeviceBoot(){
   capturePatchInputs();
   var major = androidMajor(b.os_version);
   var name = (hit.machine_id || hit.device_id) + (major ? " (Android " + major + ")" : "") + (hit.version ? " · v" + hit.version : "");
+  LAST_PICK = {boot: b, identity: hit.identity || {}, name: name};
   toast(auto ? t("toast.pickedAuto", {name: name}) : t("toast.picked", {name: name}));
+  return true;
+}
+/* props.conf 里当前已有的那些项（只认我们管的键） */
+function currentPropsKV(){
+  var kv = {};
+  (curPropsText || "").split("\n").forEach(function(line){
+    var m = /^([A-Za-z0-9_.]+)\s*:\s*(.*)$/.exec(line.trim());
+    if (m && PROP_KEYS.indexOf(m[1]) >= 0) kv[m[1]] = m[2].trim();
+  });
+  return kv;
+}
+/* 把 B 的身份填进去：根级五项 + 指纹 + 系统版本，再加上分区级那三项。
+   根级用 Build 读的那份，分区级跟 daemon 从链里拿身份时的铺法保持一致。 */
+function fillIdentityKV(kv, ids, boot){
+  var map = {brand: "ro.product.brand", device: "ro.product.device", product: "ro.product.name",
+             manufacturer: "ro.product.manufacturer", model: "ro.product.model"};
+  Object.keys(map).forEach(function(k){
+    var v = String((ids && ids[k]) || "").trim();
+    if (v) kv[map[k]] = v;
+  });
+  var fp = String((ids && ids.fingerprint) || "").trim();
+  if (fp) kv["ro.build.fingerprint"] = fp;
+  var major = androidMajor(boot && boot.os_version);
+  if (/^\d{1,2}$/.test(major)) kv["ro.build.version.release"] = major;
+  ["system", "vendor", "odm", "product", "system_ext"].forEach(function(part){
+    ["brand", "device", "model"].forEach(function(field){
+      var v = String((ids && ids[field]) || "").trim();
+      if (v) kv["ro.product." + part + "." + field] = v;
+    });
+  });
+}
+/* 把 kv 写回 props.conf：模式1 管全集，模式2 把身份那几行直接去掉（daemon 那边就又能
+   按链里带的身份自己对齐了）；当前模式用不到的值一律不写 ——— 空值 = 不覆盖。 */
+async function writePropsKV(kv){
+  var text = dropKeys(mergeKV(curPropsText, kv, PROP_KEYS, true), RETIRED_KEYS);
+  if (syncMode() === 2) text = dropKeys(text, PROP_KEYS.filter(function(k){ return MODE2_KEYS.indexOf(k) < 0; }));
+  if (!curPropsText.trim()){
+    text = "# 开机时统一应用的系统属性覆盖（面板「伪装参数」写的就是这里）。\n" +
+           "# 一行一项，格式 `键: 值`；# 开头是注释；空值 = 不覆盖（由模块自己的默认值决定）。\n" +
+           "# 为什么不写在 post-fs-data.sh 里：模块升级会把那个脚本整个换掉，写进去的设置会丢。\n" + text;
+  }
+  var r = await writeFile(PROPS, text, "0644");
+  if (r.errno !== 0){ toast(t("toast.saveFail", {msg: r.stderr || r.errno}), true); return false; }
+  curPropsText = text;
+  aDirty = false;
   return true;
 }
 async function syncPatch(){
   if (!(await fetchDeviceBoot())) return;
-  await savePatch();
+  var pick = LAST_PICK || {}, b = pick.boot || {}, ids = pick.identity || {};
+  var kv = currentPropsKV();
+  var hash = String(b.boot_hash || "").toLowerCase();
+  if (/^[0-9a-f]{64}$/.test(hash)) kv["ro.boot.vbmeta.digest"] = hash;
+  var bootPatch = patchDate(b.patch_boot);
+  if (bootPatch) kv["ro.boot.build.security_patch"] = bootPatch;
+  if (syncMode() === 1){
+    var sysPatch = patchDate(b.patch_system), venPatch = patchDate(b.patch_vendor);
+    if (sysPatch) kv["ro.build.version.security_patch"] = sysPatch;
+    if (venPatch) kv["ro.vendor.build.security_patch"] = venPatch;
+    fillIdentityKV(kv, ids, b);
+  }
+  if (!(await writePropsKV(kv))) return;
   await saveRemote();
+  /* 只当场该那两项：重启前 zygote 里的 Build 已经固化，身份那几项只能等下次开机。 */
+  var now = {};
+  if (kv["ro.boot.build.security_patch"]) now["ro.boot.build.security_patch"] = kv["ro.boot.build.security_patch"];
+  if (kv["ro.boot.vbmeta.digest"]) now["ro.boot.vbmeta.digest"] = kv["ro.boot.vbmeta.digest"];
+  var keys = Object.keys(now);
+  if (keys.length){
+    await exec(keys.map(function(k){
+      return '(R=' + RESETPROP + '; [ -x "$R" ] || R=resetprop; "$R" -n ' + k + " " + quoteShell(now[k]) + ")";
+    }).join("; "));
+  }
   refreshPatchSummary();
   refreshSoter().catch(function(){});
 }
@@ -1481,27 +1676,19 @@ async function savePatch(){
   var boot = document.getElementById("patch-boot").value.trim();
   if (hash && !/^[0-9a-f]{64}$/.test(hash)){ toast(t("toast.hashBad"), true); return; }
   if (boot && !/^\d{4}-\d{2}-\d{2}$/.test(boot)){ toast(t("toast.patchBad", {field: t("patch.boot")}), true); return; }
-  var kv = {};
-  if (hash) kv["ro.boot.vbmeta.digest"] = hash;
-  if (boot) kv["ro.boot.build.security_patch"] = boot;
-  var text = dropKeys(mergeKV(curPropsText, kv, PROP_KEYS, true), RETIRED_KEYS);
-  if (!curPropsText.trim()){
-    text = "# 开机时统一应用的系统属性覆盖（面板「伪装参数」写的就是这里）。\n" +
-           "# 一行一项，格式 `键: 值`；# 开头是注释；空值 = 不覆盖（由模块自己的默认值决定）。\n" +
-           "# 为什么不写在 post-fs-data.sh 里：模块升级会把那个脚本整个换掉，写进去的设置会丢。\n" + text;
-  }
-  var r = await writeFile(PROPS, text, "0644");
-  if (r.errno !== 0){ toast(t("toast.saveFail", {msg: r.stderr || r.errno}), true); return; }
-  curPropsText = text;
-  aDirty = false;
-  var now = [], vals = {};
-  if (boot){ now.push("ro.boot.build.security_patch"); vals["ro.boot.build.security_patch"] = boot; }
-  if (now.length){
-    await exec(now.map(function(k){
-      return '(R=' + RESETPROP + '; [ -x "$R" ] || R=resetprop; "$R" -n ' + k + " " + quoteShell(vals[k]) + ")";
+  var kv = currentPropsKV();
+  kv["ro.boot.vbmeta.digest"] = hash;
+  kv["ro.boot.build.security_patch"] = boot;
+  if (!(await writePropsKV(kv))) return;
+  var now = {};
+  if (boot) now["ro.boot.build.security_patch"] = boot;
+  var keys = Object.keys(now);
+  if (keys.length){
+    await exec(keys.map(function(k){
+      return '(R=' + RESETPROP + '; [ -x "$R" ] || R=resetprop; "$R" -n ' + k + " " + quoteShell(now[k]) + ")";
     }).join("; "));
   }
-  toast(now.length ? t("toast.savedApplied") : t("toast.savedBoot"));
+  toast(keys.length ? t("toast.savedApplied") : t("toast.savedBoot"));
   refreshPatchSummary();
 }
 
@@ -1568,7 +1755,7 @@ async function readFromDisk(){
   return ver;
 }
 /* 把 props.conf 里那几个键填进「伪装参数」的输入框和「当前」摘要。 */
-function propsToPatchFields(){
+async function propsToPatchFields(){
   var rp = {};
   curPropsText.split("\n").forEach(function(line){
     var m = /^([A-Za-z0-9_.]+)\s*:\s*(.*)$/.exec(line.trim());
@@ -1579,6 +1766,8 @@ function propsToPatchFields(){
     "patch-boot": rp["ro.boot.build.security_patch"] || ""
   };
   IDENT_FIELDS.forEach(function(pair){ patchValues[pair[0]] = rp[pair[1]] || ""; });
+  var sel = document.getElementById("patch-mode");
+  if (sel) sel.value = String(syncMode());
   fillPatchInputs();
   refreshPatchSummary();
 }
@@ -1738,6 +1927,25 @@ document.addEventListener("change", function(ev){ if (!(ev && ev.target && ev.ta
       /* 这一步要连服务器拿启动信息，同样给个常驻提示 + 禁用，别让面板看着像卡死。 */
       runBusy("patch-sync", t("patch.syncing"), function(){ return syncPatch(); });
     };
+    /* 同步模式就存在 flat config 里，改了就单存一项，不用再跑一趟「设置 → 保存」。 */
+    var modeSel = document.getElementById("patch-mode");
+    if (modeSel){
+      modeSel.onchange = function(){
+        var next = String(modeSel.value) === "2" ? 2 : 1;
+        setSyncMode(next).then(function(ok){
+          if (!ok) return;
+          /* 切到模式2 就当场把不是“启动哈希/启动补丁”的那些行从 props.conf 里清掉，
+             免得面板说“只同步补丁”而文件里还留着上一轮对齐的机型和 os/vendor 补丁。 */
+          if (next === 2){
+            var kv = currentPropsKV();
+            PROP_KEYS.forEach(function(k){ if (MODE2_KEYS.indexOf(k) < 0) delete kv[k]; });
+            writePropsKV(kv);
+          }
+          refreshPatchSummary();
+        });
+      };
+      modeSel.value = String(syncMode());
+    }
     document.getElementById("patch-clear").onclick = function(){
       ["boot-hash", "patch-boot"].forEach(function(id){
         var e = document.getElementById(id);
