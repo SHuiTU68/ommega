@@ -237,13 +237,6 @@
     <div class="card">
       <h2 data-i18n="patch.title"></h2>
       <div id="grp-patch"></div>
-      <div class="row">
-        <div class="name"><b data-i18n="patch.mode"></b><small data-i18n="patch.mode.hint"></small></div>
-        <span style="min-width:46%"><select id="patch-mode" style="width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);font-size:13px;font-family:inherit">
-          <option value="1" data-i18n="patch.mode1"></option>
-          <option value="2" data-i18n="patch.mode2"></option>
-        </select></span>
-      </div>
       <p class="hint" data-i18n="patch.current"></p>
       <div id="patch-summary"></div>
       <div class="acts">
@@ -547,45 +540,6 @@ Object.keys(CAP_MASK_TEXT).forEach(function(code){
   I18N[code]["toast.maskFail"] = s.fail;
 });
 
-/* 「伪装参数」的两种同步模式：模式1 跟选中的 B 对齐三处补丁 + 系统版本 + 启动哈希，
-   模式2 只同步启动哈希和启动补丁。机型/品牌/指纹这些**不自动同步**，需要就手动填。
-   默认模式1。 */
-var SYNC_MODE_TEXT = {
-  "zh-CN": { mode: "同步模式",
-    hint: "模式1 跟选中的 B 对齐三处补丁、系统版本和启动哈希；模式2 只同步启动哈希和启动补丁。机型/品牌/指纹不自动同步，需要就手动填。",
-    m1: "模式1 · 补丁 + 系统版本（默认）", m2: "模式2 · 只同步启动哈希/补丁",
-    synchint: "用上面的服务器地址和设备 ID 查 /api/status/：模式1 取那台 B 的三处安全补丁、系统版本和启动哈希，模式2 只取启动哈希和启动补丁。机型/品牌/指纹不会自动同步。设备 ID 留空时按负载挑一台 keymint 有效、已锁定、可信任启动的设备。" },
-  "zh-TW": { mode: "同步模式",
-    hint: "模式1 跟選中的 B 對齊三處補丁、系統版本和啟動雜湊；模式2 只同步啟動雜湊和啟動補丁。機型/品牌/指紋不自動同步。",
-    m1: "模式1 · 補丁 + 系統版本（預設）", m2: "模式2 · 只同步啟動雜湊/補丁",
-    synchint: "用上面的伺服器位址和裝置 ID 查 /api/status/：模式1 取那台 B 的三處安全補丁、系統版本和啟動雜湊，模式2 只取啟動雜湊和啟動補丁。機型那幾項不會自動同步。" },
-  "en": { mode: "Sync mode",
-    hint: "Mode 1 aligns the three patch levels, the system version and the boot hash with the selected B; mode 2 only syncs the boot hash and the boot patch. Model/brand/fingerprint are never synced automatically.",
-    m1: "Mode 1 · patches + system version (default)", m2: "Mode 2 · boot hash and patch only",
-    synchint: "Queries /api/status/ with the server address and device ID above: mode 1 takes the three security patch levels, the system version and the boot hash, mode 2 only the boot hash and the boot patch. Identity fields are not synced automatically." },
-  "ja": { mode: "同期モード",
-    hint: "モード1 は選択した B に 3 つのパッチ、システムバージョン、起動ハッシュを合わせます。モード2 は起動ハッシュと起動パッチだけ。機種/ブランド/指紋は自動同期しません。",
-    m1: "モード1 · パッチ + システムバージョン（既定）", m2: "モード2 · 起動ハッシュとパッチのみ",
-    synchint: "上記のサーバーアドレスとデバイス ID で /api/status/ を照会します。モード1 は 3 つのパッチ、システムバージョン、起動ハッシュを取得し、モード2 は起動ハッシュと起動パッチだけを取得します。機種情報は自動同期しません。" },
-  "ko": { mode: "동기화 모드",
-    hint: "모드1은 선택한 B에 패치 세 곳, 시스템 버전, 부팅 해시를 맞춥니다. 모드2는 부팅 해시와 부팅 패치만. 모델/브랜드/지문은 자동 동기화하지 않습니다.",
-    m1: "모드1 · 패치 + 시스템 버전(기본)", m2: "모드2 · 부팅 해시/패치만",
-    synchint: "위의 서버 주소와 기기 ID로 /api/status/를 조회합니다. 모드1은 보안 패치 세 곳, 시스템 버전, 부팅 해시를 가져오고 모드2는 부팅 해시와 부팅 패치만 가져옵니다. 기기 정보는 자동 동기화하지 않습니다." },
-  "ru": { mode: "Режим синхронизации",
-    hint: "Режим 1 выравнивает три уровня патча, версию системы и хэш загрузки по выбранному B; режим 2 синхронизирует только хэш загрузки и патч загрузки. Модель/бренд/отпечаток автоматически не синхронизируются.",
-    m1: "Режим 1 · патчи + версия системы (по умолчанию)", m2: "Режим 2 · только хэш и патч загрузки",
-    synchint: "Запрашивает /api/status/ по адресу сервера и ID устройства выше: режим 1 берёт три уровня патча, версию системы и хэш загрузки, режим 2 — только хэш и патч загрузки. Данные модели автоматически не синхронизируются." }
-};
-Object.keys(SYNC_MODE_TEXT).forEach(function(code){
-  if (!I18N[code]) return;
-  var s = SYNC_MODE_TEXT[code];
-  I18N[code]["patch.mode"] = s.mode;
-  I18N[code]["patch.mode.hint"] = s.hint;
-  I18N[code]["patch.mode1"] = s.m1;
-  I18N[code]["patch.mode2"] = s.m2;
-  I18N[code]["patch.sync.hint"] = s.synchint;
-});
-
 /* 本地兜底那把密钥的文案。它在本机是**签名根（ATTK）**：面板选的自定义文件写进
    soter_ask.pem，注入器就拿它当 ATTK；跟真机一样 ASK 是另一把，需要时单独放
    soter_ask_key.pem（不放就沿用旧行为：ASK 兼作 ATTK）。 */
@@ -678,19 +632,6 @@ Object.keys(SOTER_KEY_TEXT).forEach(function(code){
   I18N[code]["sk.fromFile.hint"] = s.fromFile;
   I18N[code]["sk.clear.hint"] = s.clear;
 });
-/* 当前同步模式：flat config 里的 `sync_mode`（缺省/写别的数都算 1）。 */
-function syncMode(){
-  var m = /^[ \t]*sync_mode[ \t]*:[ \t]*([^\r\n]*)/m.exec(curConfText || "");
-  return (m && String(m[1]).trim() === "2") ? 2 : 1;
-}
-/* 改模式就落盘（不必再点「设置」里的保存）；只改这一个键，其余行原样保留。 */
-async function setSyncMode(mode){
-  var text = mergeKV(curConfText, {sync_mode: String(mode)}, ["sync_mode"], false);
-  var r = await writeFile(CONF, text, "644");
-  if (r.errno !== 0){ toast(t("toast.saveFail", {msg: r.stderr || r.errno}), true); return false; }
-  curConfText = text;
-  return true;
-}
 var MANAGED = REMOTE_FIELDS.map(function(f){ return f.key; });
 var curConfText = "", curPropsText = "";
 /* 伪装参数写进 props.conf 的键。两组：
@@ -709,9 +650,6 @@ var IDENT_PART_KEYS = [];
 });
 var IDENT_KEYS = IDENT_ROOT_KEYS.concat(["ro.build.fingerprint", "ro.build.version.release"], IDENT_PART_KEYS);
 var PROP_KEYS = PATCH_KEYS.concat(IDENT_KEYS);
-/* 模式2 只管这两项（启动哈希 + 启动补丁）：切过去时把它们之外的都从 props.conf 里清掉，
-   不然上一轮模式1 同步的 os/vendor 补丁和机型会一直留在文件里。 */
-var MODE2_KEYS = ["ro.boot.vbmeta.digest", "ro.boot.build.security_patch"];
 /* 最近一次「从服务器同步」挑中的那台 B：boot（哈希/三处补丁/os_version）和 identity
    （品牌/型号/指纹那几项）。syncPatch 拿它拼 props.conf。 */
 var LAST_PICK = null;
@@ -1531,8 +1469,6 @@ function refreshPatchSummary(){
   if (!box) return;
   function v(id){ var e = document.getElementById(id); return e ? (e.value || "").trim() : ""; }
   var rows = [];
-  var mode = syncMode();
-  rows.push([t("patch.mode"), mode === 2 ? t("patch.mode2") : t("patch.mode1")]);
   /* 模式1 同步进去的身份/补丁项直接列出来：面板上说“已同步”但文件里到底有什么，
      以 props.conf 为准才看得出来。 */
   var props = currentPropsKV();
@@ -1698,16 +1634,10 @@ function currentPropsKV(){
   });
   return kv;
 }
-/* 把 B 的系统版本写进去（下游那套只跟补丁 + os 版本，不跟机型）。 */
-function fillOsVersionKV(kv, boot){
-  var major = androidMajor(boot && boot.os_version);
-  if (/^\d{1,2}$/.test(major)) kv["ro.build.version.release"] = major;
-}
 /* 把 kv 写回 props.conf：模式1 管全集，模式2 把身份那几行直接去掉（daemon 那边就又能
    按链里带的身份自己对齐了）；当前模式用不到的值一律不写 ——— 空值 = 不覆盖。 */
 async function writePropsKV(kv){
   var text = dropKeys(mergeKV(curPropsText, kv, PROP_KEYS, true), RETIRED_KEYS);
-  if (syncMode() === 2) text = dropKeys(text, PROP_KEYS.filter(function(k){ return MODE2_KEYS.indexOf(k) < 0; }));
   if (!curPropsText.trim()){
     text = "# 开机时统一应用的系统属性覆盖（面板「伪装参数」写的就是这里）。\n" +
            "# 一行一项，格式 `键: 值`；# 开头是注释；空值 = 不覆盖（由模块自己的默认值决定）。\n" +
@@ -1721,20 +1651,12 @@ async function writePropsKV(kv){
 }
 async function syncPatch(){
   if (!(await fetchDeviceBoot())) return;
-  var pick = LAST_PICK || {}, b = pick.boot || {}, ids = pick.identity || {};
+  var pick = LAST_PICK || {}, b = pick.boot || {};
   var kv = currentPropsKV();
   var hash = String(b.boot_hash || "").toLowerCase();
   if (/^[0-9a-f]{64}$/.test(hash)) kv["ro.boot.vbmeta.digest"] = hash;
   var bootPatch = patchDate(b.patch_boot);
   if (bootPatch) kv["ro.boot.build.security_patch"] = bootPatch;
-  if (syncMode() === 1){
-    var sysPatch = patchDate(b.patch_system), venPatch = patchDate(b.patch_vendor);
-    if (sysPatch) kv["ro.build.version.security_patch"] = sysPatch;
-    if (venPatch) kv["ro.vendor.build.security_patch"] = venPatch;
-    /* 只跟补丁和系统版本，不跟机型：机型/指纹那几项归手动编辑和链自己的身份，
-       自动同步不插手（跟下游那套一样）。 */
-    fillOsVersionKV(kv, b);
-  }
   if (!(await writePropsKV(kv))) return;
   await saveRemote();
   /* 只当场该那两项：重启前 zygote 里的 Build 已经固化，身份那几项只能等下次开机。 */
@@ -1855,8 +1777,6 @@ async function propsToPatchFields(){
     "patch-boot": rp["ro.boot.build.security_patch"] || ""
   };
   IDENT_FIELDS.forEach(function(pair){ patchValues[pair[0]] = rp[pair[1]] || ""; });
-  var sel = document.getElementById("patch-mode");
-  if (sel) sel.value = String(syncMode());
   fillPatchInputs();
   refreshPatchSummary();
 }
@@ -2016,25 +1936,6 @@ document.addEventListener("change", function(ev){ if (!(ev && ev.target && ev.ta
       /* 这一步要连服务器拿启动信息，同样给个常驻提示 + 禁用，别让面板看着像卡死。 */
       runBusy("patch-sync", t("patch.syncing"), function(){ return syncPatch(); });
     };
-    /* 同步模式就存在 flat config 里，改了就单存一项，不用再跑一趟「设置 → 保存」。 */
-    var modeSel = document.getElementById("patch-mode");
-    if (modeSel){
-      modeSel.onchange = function(){
-        var next = String(modeSel.value) === "2" ? 2 : 1;
-        setSyncMode(next).then(function(ok){
-          if (!ok) return;
-          /* 切到模式2 就当场把不是“启动哈希/启动补丁”的那些行从 props.conf 里清掉，
-             免得面板说“只同步补丁”而文件里还留着上一轮对齐的机型和 os/vendor 补丁。 */
-          if (next === 2){
-            var kv = currentPropsKV();
-            PROP_KEYS.forEach(function(k){ if (MODE2_KEYS.indexOf(k) < 0) delete kv[k]; });
-            writePropsKV(kv);
-          }
-          refreshPatchSummary();
-        });
-      };
-      modeSel.value = String(syncMode());
-    }
     document.getElementById("patch-clear").onclick = function(){
       patchInputs().forEach(function(pair){
         var e = document.getElementById(pair[0]);
