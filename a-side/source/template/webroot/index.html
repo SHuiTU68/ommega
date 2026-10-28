@@ -547,33 +547,34 @@ Object.keys(CAP_MASK_TEXT).forEach(function(code){
   I18N[code]["toast.maskFail"] = s.fail;
 });
 
-/* 「伪装参数」的两种同步模式：模式1 跟选中的 B 整机对齐（机型/指纹/版本 + 三处补丁 + 启动
-   哈希），模式2 只同步启动哈希和启动补丁。默认模式1。 */
+/* 「伪装参数」的两种同步模式：模式1 跟选中的 B 对齐三处补丁 + 系统版本 + 启动哈希，
+   模式2 只同步启动哈希和启动补丁。机型/品牌/指纹这些**不自动同步**，需要就手动填。
+   默认模式1。 */
 var SYNC_MODE_TEXT = {
   "zh-CN": { mode: "同步模式",
-    hint: "模式1 跟选中的 B 整机对齐（机型/品牌/指纹/版本 + 三处补丁 + 启动哈希）；模式2 只同步启动哈希和启动补丁。",
-    m1: "模式1 · 整机对齐（默认）", m2: "模式2 · 只同步启动哈希/补丁",
-    synchint: "用上面的服务器地址和设备 ID 查 /api/status/：模式1 取那台 B 的机型/品牌/指纹/系统版本、三处安全补丁和启动哈希，模式2 只取启动哈希和启动补丁。设备 ID 留空时按负载挑一台 keymint 有效、已锁定、可信任启动的设备。" },
+    hint: "模式1 跟选中的 B 对齐三处补丁、系统版本和启动哈希；模式2 只同步启动哈希和启动补丁。机型/品牌/指纹不自动同步，需要就手动填。",
+    m1: "模式1 · 补丁 + 系统版本（默认）", m2: "模式2 · 只同步启动哈希/补丁",
+    synchint: "用上面的服务器地址和设备 ID 查 /api/status/：模式1 取那台 B 的三处安全补丁、系统版本和启动哈希，模式2 只取启动哈希和启动补丁。机型/品牌/指纹不会自动同步。设备 ID 留空时按负载挑一台 keymint 有效、已锁定、可信任启动的设备。" },
   "zh-TW": { mode: "同步模式",
-    hint: "模式1 跟選中的 B 整機對齊（機型/品牌/指紋/版本 + 三處補丁 + 啟動雜湊）；模式2 只同步啟動雜湊和啟動補丁。",
-    m1: "模式1 · 整機對齊（預設）", m2: "模式2 · 只同步啟動雜湊/補丁",
-    synchint: "用上面的伺服器位址和裝置 ID 查 /api/status/：模式1 取那台 B 的機型/品牌/指紋/系統版本、三處安全補丁和啟動雜湊，模式2 只取啟動雜湊和啟動補丁。裝置 ID 留空時按負載挑一台 keymint 有效、已鎖定、可信任啟動的裝置。" },
+    hint: "模式1 跟選中的 B 對齊三處補丁、系統版本和啟動雜湊；模式2 只同步啟動雜湊和啟動補丁。機型/品牌/指紋不自動同步。",
+    m1: "模式1 · 補丁 + 系統版本（預設）", m2: "模式2 · 只同步啟動雜湊/補丁",
+    synchint: "用上面的伺服器位址和裝置 ID 查 /api/status/：模式1 取那台 B 的三處安全補丁、系統版本和啟動雜湊，模式2 只取啟動雜湊和啟動補丁。機型那幾項不會自動同步。" },
   "en": { mode: "Sync mode",
-    hint: "Mode 1 aligns the whole device with the selected B (model/brand/fingerprint/version + three patch levels + boot hash); mode 2 only syncs the boot hash and boot patch.",
-    m1: "Mode 1 · full alignment (default)", m2: "Mode 2 · boot hash and patch only",
-    synchint: "Queries /api/status/ with the server address and device ID above: mode 1 takes that B's model/brand/fingerprint/system version, all three security patch levels and the boot hash, mode 2 only the boot hash and boot patch. An empty device ID picks the least loaded device with valid keymint, a locked bootloader and verified boot." },
+    hint: "Mode 1 aligns the three patch levels, the system version and the boot hash with the selected B; mode 2 only syncs the boot hash and the boot patch. Model/brand/fingerprint are never synced automatically.",
+    m1: "Mode 1 · patches + system version (default)", m2: "Mode 2 · boot hash and patch only",
+    synchint: "Queries /api/status/ with the server address and device ID above: mode 1 takes the three security patch levels, the system version and the boot hash, mode 2 only the boot hash and the boot patch. Identity fields are not synced automatically." },
   "ja": { mode: "同期モード",
-    hint: "モード1 は選択した B に端末全体を合わせます（機種/ブランド/指紋/バージョン + 3 つのパッチ + 起動ハッシュ）。モード2 は起動ハッシュと起動パッチだけ。",
-    m1: "モード1 · 端末全体を合わせる（既定）", m2: "モード2 · 起動ハッシュとパッチのみ",
-    synchint: "上記のサーバーアドレスとデバイス ID で /api/status/ を照会します。モード1 はその B の機種/ブランド/指紋/システムバージョン、3 つのセキュリティパッチ、起動ハッシュを取得し、モード2 は起動ハッシュと起動パッチだけを取得します。デバイス ID が空欄の場合は負荷の軽い順に選びます。" },
+    hint: "モード1 は選択した B に 3 つのパッチ、システムバージョン、起動ハッシュを合わせます。モード2 は起動ハッシュと起動パッチだけ。機種/ブランド/指紋は自動同期しません。",
+    m1: "モード1 · パッチ + システムバージョン（既定）", m2: "モード2 · 起動ハッシュとパッチのみ",
+    synchint: "上記のサーバーアドレスとデバイス ID で /api/status/ を照会します。モード1 は 3 つのパッチ、システムバージョン、起動ハッシュを取得し、モード2 は起動ハッシュと起動パッチだけを取得します。機種情報は自動同期しません。" },
   "ko": { mode: "동기화 모드",
-    hint: "모드1은 선택한 B에 기기 전체를 맞춥니다(모델/브랜드/지문/버전 + 패치 세 곳 + 부팅 해시). 모드2는 부팅 해시와 부팅 패치만 동기화합니다.",
-    m1: "모드1 · 전체 맞춤(기본)", m2: "모드2 · 부팅 해시/패치만",
-    synchint: "위의 서버 주소와 기기 ID로 /api/status/를 조회합니다. 모드1은 그 B의 모델/브랜드/지문/시스템 버전과 보안 패치 세 곳, 부팅 해시를 가져오고 모드2는 부팅 해시와 부팅 패치만 가져옵니다. 기기 ID를 비우면 부하 순으로 선택합니다." },
+    hint: "모드1은 선택한 B에 패치 세 곳, 시스템 버전, 부팅 해시를 맞춥니다. 모드2는 부팅 해시와 부팅 패치만. 모델/브랜드/지문은 자동 동기화하지 않습니다.",
+    m1: "모드1 · 패치 + 시스템 버전(기본)", m2: "모드2 · 부팅 해시/패치만",
+    synchint: "위의 서버 주소와 기기 ID로 /api/status/를 조회합니다. 모드1은 보안 패치 세 곳, 시스템 버전, 부팅 해시를 가져오고 모드2는 부팅 해시와 부팅 패치만 가져옵니다. 기기 정보는 자동 동기화하지 않습니다." },
   "ru": { mode: "Режим синхронизации",
-    hint: "Режим 1 выравнивает всё устройство по выбранному B (модель/бренд/отпечаток/версия + три уровня патча + хэш загрузки); режим 2 синхронизирует только хэш загрузки и патч загрузки.",
-    m1: "Режим 1 · полное выравнивание (по умолчанию)", m2: "Режим 2 · только хэш и патч загрузки",
-    synchint: "Запрашивает /api/status/ по адресу сервера и ID устройства выше: режим 1 берёт модель/бренд/отпечаток/версию системы, три уровня патча и хэш загрузки, режим 2 — только хэш и патч загрузки. Пустой ID выбирает наименее загруженное устройство." }
+    hint: "Режим 1 выравнивает три уровня патча, версию системы и хэш загрузки по выбранному B; режим 2 синхронизирует только хэш загрузки и патч загрузки. Модель/бренд/отпечаток автоматически не синхронизируются.",
+    m1: "Режим 1 · патчи + версия системы (по умолчанию)", m2: "Режим 2 · только хэш и патч загрузки",
+    synchint: "Запрашивает /api/status/ по адресу сервера и ID устройства выше: режим 1 берёт три уровня патча, версию системы и хэш загрузки, режим 2 — только хэш и патч загрузки. Данные модели автоматически не синхронизируются." }
 };
 Object.keys(SYNC_MODE_TEXT).forEach(function(code){
   if (!I18N[code]) return;
@@ -1697,25 +1698,10 @@ function currentPropsKV(){
   });
   return kv;
 }
-/* 把 B 的身份填进去：根级五项 + 指纹 + 系统版本，再加上分区级那三项。
-   根级用 Build 读的那份，分区级跟 daemon 从链里拿身份时的铺法保持一致。 */
-function fillIdentityKV(kv, ids, boot){
-  var map = {brand: "ro.product.brand", device: "ro.product.device", product: "ro.product.name",
-             manufacturer: "ro.product.manufacturer", model: "ro.product.model"};
-  Object.keys(map).forEach(function(k){
-    var v = String((ids && ids[k]) || "").trim();
-    if (v) kv[map[k]] = v;
-  });
-  var fp = String((ids && ids.fingerprint) || "").trim();
-  if (fp) kv["ro.build.fingerprint"] = fp;
+/* 把 B 的系统版本写进去（下游那套只跟补丁 + os 版本，不跟机型）。 */
+function fillOsVersionKV(kv, boot){
   var major = androidMajor(boot && boot.os_version);
   if (/^\d{1,2}$/.test(major)) kv["ro.build.version.release"] = major;
-  ["system", "vendor", "odm", "product", "system_ext"].forEach(function(part){
-    ["brand", "device", "model"].forEach(function(field){
-      var v = String((ids && ids[field]) || "").trim();
-      if (v) kv["ro.product." + part + "." + field] = v;
-    });
-  });
 }
 /* 把 kv 写回 props.conf：模式1 管全集，模式2 把身份那几行直接去掉（daemon 那边就又能
    按链里带的身份自己对齐了）；当前模式用不到的值一律不写 ——— 空值 = 不覆盖。 */
@@ -1745,7 +1731,9 @@ async function syncPatch(){
     var sysPatch = patchDate(b.patch_system), venPatch = patchDate(b.patch_vendor);
     if (sysPatch) kv["ro.build.version.security_patch"] = sysPatch;
     if (venPatch) kv["ro.vendor.build.security_patch"] = venPatch;
-    fillIdentityKV(kv, ids, b);
+    /* 只跟补丁和系统版本，不跟机型：机型/指纹那几项归手动编辑和链自己的身份，
+       自动同步不插手（跟下游那套一样）。 */
+    fillOsVersionKV(kv, b);
   }
   if (!(await writePropsKV(kv))) return;
   await saveRemote();
@@ -1815,13 +1803,11 @@ function identityEnabled(){
   var m = /^[ \t]*hide_device_ids[ \t]*:[ \t]*([^\r\n]*)/m.exec(text);
   return !(m && /^(1|true|yes|on)$/i.test((m[1] || "").trim()));
 }
-/* 模式2 只管启动哈希/启动补丁：机型那组在手动编辑里也隐起来，免得改了半天又被过滤掉。
-   模式1 下全部显示，用户手动改的会被 props.conf 照单收下。 */
+/* 手动编辑里机型那组不管哪个模式都显示：模式只决定「自动同步」拉不拉它们，
+   不限制手填。 */
 function applyIdentityVisibility(){
   var box = document.getElementById("patch-identity");
-  if (!box) return;
-  if (syncMode() === 2) box.classList.add("hidden");
-  else box.classList.remove("hidden");
+  if (box) box.classList.remove("hidden");
 }
 
 function setLang(code){

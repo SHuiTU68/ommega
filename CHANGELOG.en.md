@@ -4,10 +4,13 @@
 
 ## 1.7.8
 
-- The spoof panel gained a sync mode: mode 1 aligns the whole device with the
-  selected B (model, brand, fingerprint, system version, the three patch levels
-  and the boot hash), mode 2 only syncs the boot hash and the boot patch level.
-  Mode 1 is the default.
+- The spoof panel gained a sync mode: mode 1 aligns the three patch levels, the
+  system version and the boot hash with the selected B (default), mode 2 only
+  syncs the boot hash and the boot patch level. Model, brand and fingerprint are
+  not synced automatically.
+- The spoof panel's manual editor now covers every item (three patch levels, the
+  system version, the five identity fields and the build fingerprint); clearing a
+  field removes it from the overrides.
 - "Declare no StrongBox" now works on its own, without the root manager mounting
   the module: after a reboot the system reports no StrongBox, and the other
   features declared in the same file (app_attest_key, for example) stay intact.
