@@ -118,6 +118,14 @@ struct Store {
     self_signed: Mutex<Option<Arc<MintKey>>>,
     /// 专给探测机作答的那一把（见 `crate::soter_probe`），自己一份、永不轮换。
     builtin: Mutex<Option<Arc<MintKey>>>,
+    /// `{device}|{layer}` -> 这一层的 ASK。
+    ///
+    /// 真机的 SOTER 里 ATTK 和 ASK 是两把钥匙：ASK 证书用 ATTK 签、AuthKey 证书用
+    /// ASK 签、finishSign 用 AuthKey 签。以前这里只有一把（ASK 兼作 ATTK），
+    /// `exportAskPublicKey` 和 `exportAttkPublicKey` 吐同一把公钥 —— App 拿到的就是
+    /// 真机上永远不会出现的形状，会直接把该 uid 下的钥匙全删掉重来（A 端本地兜底
+    /// 已经这么修过一轮，见 a-side `soter_local.rs`）。
+    ask: Mutex<HashMap<String, Arc<MintKey>>>,
     /// `{device}|{uid}|{alias}` -> AuthKey
     auth: Mutex<HashMap<String, Arc<MintKey>>>,
     /// `{device}|{uid}` -> 签名计数器
@@ -193,6 +201,7 @@ fn store() -> &'static Store {
     STORE.get_or_init(|| Store {
         self_signed: Mutex::new(None),
         builtin: Mutex::new(None),
+        ask: Mutex::new(HashMap::new()),
         auth: Mutex::new(HashMap::new()),
         counters: Mutex::new(HashMap::new()),
         next_session: Mutex::new(chrono::Utc::now().timestamp_millis()),
@@ -250,6 +259,44 @@ fn rotate_self_signed_key() -> Result<Arc<MintKey>> {
         .map_err(|_| anyhow!("self-signed material lock poisoned"))?;
     *guard = Some(fresh.clone());
     Ok(fresh)
+}
+
+/// 这一层的 ASK（按需生成、进程内缓存）。
+///
+/// 跟 ATTK 分开存：真机上这两把公钥永远不相等，`exportAskPublicKey` 和
+/// `exportAttkPublicKey` 吐同一把会让 App 把该 uid 下的钥匙全删掉重来。
+fn layer_ask_key(device: &str, layer: &str) -> Result<Arc<MintKey>> {
+    let id = format!("{device}|{layer}");
+    let mut map = store()
+        .ask
+        .lock()
+        .map_err(|_| anyhow!("ask material lock poisoned"))?;
+    if let Some(existing) = map.get(&id) {
+        return Ok(existing.clone());
+    }
+    let fresh = Arc::new(MintKey::generate()?);
+    map.insert(id, fresh.clone());
+    Ok(fresh)
+}
+
+/// 重建 ASK（`generate_ask_key_pair` 就是它）。
+fn rotate_layer_ask_key(device: &str, layer: &str) -> Result<Arc<MintKey>> {
+    let id = format!("{device}|{layer}");
+    let fresh = Arc::new(MintKey::generate()?);
+    let mut map = store()
+        .ask
+        .lock()
+        .map_err(|_| anyhow!("ask material lock poisoned"))?;
+    map.insert(id, fresh.clone());
+    Ok(fresh)
+}
+
+/// ATTK 换了以后旧的 ASK 证书就废了（ASK 证书是 ATTK 签的），缓存要一并丢掉。
+fn drop_layer_ask_key(device: &str, layer: &str) {
+    let id = format!("{device}|{layer}");
+    if let Ok(mut map) = store().ask.lock() {
+        map.remove(&id);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -700,7 +747,11 @@ pub fn run(layer: &str, device_id: &str, body: &Value, key_pem: Option<&str>) ->
                 Ok(out)
             }
             "export_attk_public_key" => Ok(data_result(op, OK, key.attk_pem.as_bytes())),
-            "export_ask_public_key" => ask_result(op, layer, &key, &product, uid_of(body)?),
+            // 导出的是 **ASK** 的公钥（跟 ATTK 是两把），文档用 ATTK 签 —— 与真机一致。
+            "export_ask_public_key" => {
+                let ask = layer_ask_key(&product, layer)?;
+                ask_result(op, layer, &ask, &key, &product, uid_of(body)?)
+            }
             // 兜底层**不许声称「ASK 已存在」**（2026-10-11 实测的毒化根源）。
             //
             // 应用只在「没有 ASK」时才把 ASK 上报腾讯；而这两层现造的 ASK 腾讯那边永远
@@ -721,13 +772,14 @@ pub fn run(layer: &str, device_id: &str, body: &Value, key_pem: Option<&str>) ->
                 },
             )),
             "export_auth_key_public_key" => match auth_key(device_id, body) {
-                // 回的是「AuthKey 的自描述 + 签名」的信封，签名得用这一层的身份
-                // （也就是 ASK）私钥 —— App 是先拿 ASK 公钥再验这个的。只回一把
-                // 裸 PEM 的话，宿主拿它当信封解，解出来的是垃圾。
+                // 回的是「AuthKey 的自描述 + 签名」的信封，签名用 **ASK** 私钥 ——
+                // 真机上 AuthKey 证书就是 ASK 签的，App 拿 exportAskPublicKey 的
+                // 公钥验这一份（用 ATTK 签就验不过）。
                 Some(auth) => {
+                    let ask = layer_ask_key(&product, layer)?;
                     let counter = counter_for(&slot_id(device_id, uid_of(body)?));
                     let document = key_doc(&auth.attk_pem, &product, counter, uid_of(body)?)?;
-                    let signature = key.sign(&document)?;
+                    let signature = ask.sign(&document)?;
                     let mut out = envelope_result(op, &document, &signature)?;
                     out["layer"] = json!(layer);
                     Ok(out)
@@ -759,10 +811,17 @@ pub fn run(layer: &str, device_id: &str, body: &Value, key_pem: Option<&str>) ->
                 unpin_layer(device_id, uid);
                 Ok(code_result(op, OK))
             }
-            "generate_ask_key_pair" | "generate_attk_key_pair" => {
-                // 自签层就是换一把新的。keybox 层那把是服务端存的身份，轮换不了
+            // 重建 ASK：只换 ASK，不动 ATTK（两把）。AuthKey 是 ASK 签的，
+            // 换了 ASK 它们也就验不过了，App 会自己重新生成。
+            "generate_ask_key_pair" => {
+                rotate_layer_ask_key(&product, layer)?;
+                unpin_layer(device_id, uid_of(body)?);
+                Ok(code_result(op, OK))
+            }
+            "generate_attk_key_pair" => {
+                // 自签层换一把新 ATTK；keybox 层这把是服务端存的身份，轮换不了
                 // —— 但也不能回错误：一报错调用方就往下换层，这个槽位的材料立刻
-                // 劈成两半。它的 ASK 本来就在，回成功，让流程留在这层里。
+                // 劈成两半。它的 ATTK 本来就在，回成功，让流程留在这层里。
                 if layer == "self_signed" {
                     rotate_self_signed_key()?;
                 } else if layer == "keybox" {
@@ -770,10 +829,8 @@ pub fn run(layer: &str, device_id: &str, body: &Value, key_pem: Option<&str>) ->
                         "soter: layer={layer} 拿着服务端存的身份，{op} 不轮换、直接回成功"
                     );
                 }
-                // `builtin`（探测机）也不轮换：那一把 ASK 换了只会把正在跑的一轮劈成
-                // 两半，而探测机根本不看「换没换」。
-                // 重建 ASK = 全新一轮流程（App 正在把旧的扔掉），槽位的钉子也该摘掉：
-                // 后面哪一层服务这一轮，它就重新钉到哪一层。
+                // ATTK 换了，旧 ASK 证书就废了（ASK 证书是 ATTK 签的）。
+                drop_layer_ask_key(&product, layer);
                 unpin_layer(device_id, uid_of(body)?);
                 Ok(code_result(op, OK))
             }
@@ -1040,10 +1097,19 @@ fn envelope_result(op: &str, document: &[u8], signature: &[u8]) -> Result<Value>
     Ok(out)
 }
 
-fn ask_result(op: &str, layer: &str, key: &MintKey, device_id: &str, uid: i32) -> Result<Value> {
+/// ASK 的自描述文档：`pub_key` 是 **ASK 的公钥**，签名用 **ATTK** —— 真机上 ASK 证书
+/// 就是 ATTK 签的，App 先拿 exportAttkPublicKey 再验这一份。
+fn ask_result(
+    op: &str,
+    layer: &str,
+    ask: &MintKey,
+    attk: &MintKey,
+    device_id: &str,
+    uid: i32,
+) -> Result<Value> {
     let counter = counter_for(&slot_id(device_id, uid));
-    let document = key_doc(&key.attk_pem, device_id, counter, uid)?;
-    let signature = key.sign(&document)?;
+    let document = key_doc(&ask.attk_pem, device_id, counter, uid)?;
+    let signature = attk.sign(&document)?;
     let mut out = envelope_result(op, &document, &signature)?;
     out["layer"] = json!(layer);
     Ok(out)
@@ -1114,14 +1180,18 @@ mod tests {
     use rsa::pss::{Signature as PssSignature, VerifyingKey as PssVerifyingKey};
     use rsa::signature::Verifier;
 
-    fn ask_payload(uid: i64) -> Value {
+    fn ask_payload_for(device: &str, uid: i64) -> Value {
         run(
             "self_signed",
-            "device-a-test",
+            device,
             &json!({ "op": "export_ask_public_key", "uid": uid }),
             None,
         )
         .expect("self-signed layer should handle export_ask_public_key")
+    }
+
+    fn ask_payload(uid: i64) -> Value {
+        ask_payload_for("device-a-test", uid)
     }
 
     #[test]
@@ -1162,6 +1232,43 @@ mod tests {
         verifying
             .verify(document, &signature)
             .expect("the ASK document must verify with the exported ATTK key");
+    }
+
+    /// 真机上 ASK 和 ATTK 是两把钥匙：`exportAskPublicKey` 吐的是 ASK 公钥，`exportAttkPublicKey`
+    /// 吐的是 ATTK 公钥，两者永远不相等。以前这层只有一把（ASK 兼作 ATTK），App 拿到
+    /// 同一把公钥会把该 uid 下的钥匙全删掉重来。
+    #[test]
+    fn ask_and_attk_are_two_different_keys() {
+        let device = "device-a-ask-attk-split";
+        let uid = 10373i64;
+        let ask = ask_payload_for(device, uid);
+        let raw = base64::engine::general_purpose::STANDARD
+            .decode(ask["data"].as_str().expect("data is base64"))
+            .expect("payload decodes");
+        let (ask_document, ask_signature) = split_ask_payload(&raw).expect("ASK payload splits");
+        let ask_public = pem_of(&String::from_utf8(ask_document.to_vec()).expect("json is utf-8"));
+
+        let attk = run(
+            "self_signed",
+            device,
+            &json!({ "op": "export_attk_public_key" }),
+            None,
+        )
+        .expect("attk export is handled");
+        let attk_public = attk["text"].as_str().expect("ATTK PEM is printable");
+
+        assert_ne!(
+            ask_public, attk_public,
+            "ASK and ATTK must be different keys, exactly like a real device"
+        );
+        assert!(
+            verifies(attk_public, ask_document, ask_signature),
+            "the ASK document is signed by ATTK"
+        );
+        assert!(
+            !verifies(&ask_public, ask_document, ask_signature),
+            "the ASK document must not verify with the ASK key itself"
+        );
     }
 
     #[test]
