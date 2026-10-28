@@ -203,24 +203,42 @@ keep_daemons_alive() {
 }
 
 # ---- 能力声明隐藏的自检（不看 debug 开关，每次开机落一行）----
-# 面板里开了「声明不支持」却仍然被检测到，只有两种可能：管理器没把模块的 system/ 挂上
-# （KernelSU 要装挂载 metamodule），或者这份 XML 还没写进去。看这行就知道是哪一种。
+# 面板里开了「声明不支持」却仍然被检测到，只有三种可能：模块那份 XML 没被管理器挂上、
+# 自己那套单文件 bind 没盖成、或者开关本来就没开。看这行就能分出来。
 cap_mask_want=$MODDIR/system/etc/permissions/ommega-capability-mask.xml
 cap_mask_live=/system/etc/permissions/ommega-capability-mask.xml
-cap_mask_state=missing
+cap_mask_state=xml-missing
 if [ -f "$cap_mask_live" ]; then
   if cmp -s "$cap_mask_want" "$cap_mask_live" 2>/dev/null; then
-    cap_mask_state=mounted
+    cap_mask_state=xml-mounted
   else
-    cap_mask_state=mismatch
+    cap_mask_state=xml-mismatch
   fi
 fi
-printf '%s mask=%s has_strongbox=%s has_device_ids=%s\n' "$(date -u '+%H-%M-%S')" \
-  "$cap_mask_state" \
-  "$(pm has-feature android.hardware.strongbox_keystore 2>/dev/null | tr -d '\r\n')" \
-  "$(pm has-feature android.software.device_id_attestation 2>/dev/null | tr -d '\r\n')" \
+# service 阶段 package 服务未必已经就绪（实测过刚开机问会回 `Can't find service`），
+# 所以先等它回话再落日志。
+cap_has_sb=""; cap_has_ids=""
+i=0
+while [ $i -lt 10 ]; do
+  cap_has_sb=$(pm has-feature android.hardware.strongbox_keystore 2>/dev/null | tr -d '\r\n')
+  case "$cap_has_sb" in
+    true|false) cap_has_ids=$(pm has-feature android.software.device_id_attestation 2>/dev/null | tr -d '\r\n'); break ;;
+  esac
+  i=$((i + 1))
+  sleep 3
+done
+# 厂商分区里还剩多少「正着声明」的 feature（注意不能算我们那份 unavailable-feature）
+cap_sb_decl=$(grep -l '<feature[^>]*name="android.hardware.strongbox_keystore"' \
+  /system/etc/permissions/*.xml /system_ext/etc/permissions/*.xml /vendor/etc/permissions/*.xml \
+  /product/etc/permissions/*.xml /odm/etc/permissions/*.xml 2>/dev/null | tr '\n' ' ')
+cap_ids_decl=$(grep -l '<feature[^>]*name="android.software.device_id_attestation"' \
+  /system/etc/permissions/*.xml /system_ext/etc/permissions/*.xml /vendor/etc/permissions/*.xml \
+  /product/etc/permissions/*.xml /odm/etc/permissions/*.xml 2>/dev/null | tr '\n' ' ')
+printf '%s mask=%s decl_sb=%s decl_ids=%s has_strongbox=%s has_device_ids=%s\n' "$(date -u '+%H-%M-%S')" \
+  "$cap_mask_state" "${cap_sb_decl:-none}" "${cap_ids_decl:-none}" \
+  "${cap_has_sb:-unknown}" "${cap_has_ids:-unknown}" \
   >> /data/adb/ommega/boot-debug.log 2>/dev/null
-unset cap_mask_want cap_mask_live cap_mask_state
+unset cap_mask_want cap_mask_live cap_mask_state cap_sb_decl cap_ids_decl cap_has_sb cap_has_ids i
 
 (
   while true; do

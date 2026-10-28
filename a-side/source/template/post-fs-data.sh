@@ -337,6 +337,109 @@ chcon u:object_r:system_file:s0 "$MASK_XML" 2>/dev/null
 # 开机诊断（不看 debug 开关）：内容是什么、厂商侧还有没有声明。
 printf '%s mask_sb=%s mask_ids=%s xml=%s\n' "$(date -u '+%H-%M-%S')" "$mask_sb" "$mask_ids" \
   "$(tr -d '\n' < "$MASK_XML" 2>/dev/null)" >> /data/adb/ommega/boot-debug.log 2>/dev/null
+
+# ---- 主力：我们自己把那条 feature 从厂商声明里摘掉 ----
+# KernelSU 3.x 天生不做模块文件挂载（要装挂载 metamodule 才有），所以模块 system/ 里那份
+# XML 在这类机器上根本不会出现，不能指着管理器帮忙。真正干活的是这里：把厂商那份声明 XML
+# 复制一份、只删掉提到该 feature 的那一行，再单文件 bind 盖回原处。
+#
+# 2026-10-28 在 peridot（KernelSU 3.3.1，没装任何 metamodule）实测：开机能过，
+# pm has-feature android.hardware.strongbox_keystore 变 false，同一个文件里的
+# android.hardware.keystore.app_attest_key 还在。
+#
+# 三条保守规则（/odm 的权限 XML 一旦变成非法 XML，system_server 就起不来，代价太大）：
+#   - 该 feature 必须是单独一行的 <feature ... />；
+#   - 删完必须正好少一条 feature、且剩下 </permissions>，否则跳过这个文件、只记日志；
+#   - 挂完回读一次，feature 还在就立刻 umount。
+mask_stage=$STATE_DIR/perm-stage
+mask_binds_file=$STATE_DIR/conf/mask.binds
+mask_n=0
+mask_binds=""
+mask_log() { printf '%s %s\n' "$(date -u '+%H-%M-%S')" "$*" >> /data/adb/ommega/boot-debug.log 2>/dev/null; }
+
+# 暂存目录别长得像 root 模块：/mnt/vendor 已经是独立挂载点时，在里面挂个小 tmpfs，看起来
+# 像 OEM 自己挂的权限目录；不是的话退回状态目录（bind 源路径只在 mountinfo 里露一下）。
+# /odm* 例外：那些分区在 post-fs-data 阶段未必已经挂稳，以前在 /mnt/vendor 下挂 tmpfs
+# 撞上 vendor 自己的挂载、实测直接卡开机，所以 odm 目标一律在状态目录里暂存。
+mask_stage_dir() {
+  ms_dir=
+  if [ -d /mnt/vendor ] && grep -q ' /mnt/vendor ' /proc/mounts 2>/dev/null; then
+    ms_dir=/mnt/vendor/vendor_permissions
+    if ! grep -q " $ms_dir " /proc/mounts 2>/dev/null; then
+      mkdir -p "$ms_dir" 2>/dev/null
+      mount -t tmpfs -o mode=0755,seclabel tmpfs "$ms_dir" 2>/dev/null || ms_dir=
+    fi
+  fi
+  [ -n "$ms_dir" ] || ms_dir=$mask_stage
+  printf '%s' "$ms_dir"
+}
+
+mask_one_xml() {
+  mx_src=$1
+  mx_feature=$2
+  mask_n=$((mask_n + 1))
+  # 暂存文件名不带目标路径：mountinfo 里会原样显示，写全了等于自己交代遮了哪个文件
+  case "$mx_src" in
+    /odm/*|/odm_dlkm/*) mx_stage_dir=$mask_stage ;;
+    *) mx_stage_dir=$(mask_stage_dir) ;;
+  esac
+  mx_stage=$mx_stage_dir/perm.$mask_n
+  mx_before=$(grep -c '<feature' "$mx_src" 2>/dev/null || true); mx_before=${mx_before:-0}
+  grep -v "<feature[^>]*name=\"$mx_feature\"" "$mx_src" > "$mx_stage" 2>/dev/null || return 0
+  mx_after=$(grep -c '<feature' "$mx_stage" 2>/dev/null || true); mx_after=${mx_after:-0}
+  if [ "$mx_before" -ne $((mx_after + 1)) ] || ! grep -q '</permissions>' "$mx_stage" 2>/dev/null; then
+    mask_log "mask-skip unusual file: $mx_src"
+    rm -f "$mx_stage"
+    return 0
+  fi
+  chmod 0644 "$mx_stage" 2>/dev/null
+  case "$mx_src" in
+    /vendor/*|/odm/*|/odm_dlkm/*) chcon u:object_r:vendor_file:s0 "$mx_stage" 2>/dev/null ;;
+    *) chcon u:object_r:system_file:s0 "$mx_stage" 2>/dev/null ;;
+  esac
+  if mount --bind "$mx_stage" "$mx_src" 2>/dev/null; then
+    if grep -q "$mx_feature" "$mx_src" 2>/dev/null; then
+      umount "$mx_src" 2>/dev/null
+      mask_log "mask-revert bind had no effect: $mx_src"
+      rm -f "$mx_stage"
+      return 0
+    fi
+    mask_binds="$mask_binds $mx_src"
+    mask_log "mask-bind $mx_feature -> $mx_src"
+  else
+    mask_log "mask-fail bind failed: $mx_src"
+    rm -f "$mx_stage"
+  fi
+}
+
+mask_declaration_by_bind() {
+  md_feature=$1
+  for md_dir in /system/etc/permissions /system_ext/etc/permissions /vendor/etc/permissions \
+                /product/etc/permissions /odm/etc/permissions; do
+    [ -d "$md_dir" ] || continue
+    for md_src in "$md_dir"/*.xml; do
+      [ -f "$md_src" ] || continue
+      grep -q "<feature[^>]*name=\"$md_feature\"" "$md_src" 2>/dev/null || continue
+      mask_one_xml "$md_src" "$md_feature"
+    done
+  done
+}
+
+rm -rf "$mask_stage" 2>/dev/null
+mkdir -p "$mask_stage" 2>/dev/null
+# 管理器真挂了模块 system/ 的话 feature 已经没了，不用再盖厂商文件（少一层挂载痕迹）
+if [ -f "/system/etc/permissions/ommega-capability-mask.xml" ]; then
+  mask_log "mask-tier: module xml mounted, self bind skipped"
+else
+  [ "$mask_sb" = 1 ] && mask_declaration_by_bind android.hardware.strongbox_keystore
+  [ "$mask_ids" = 1 ] && mask_declaration_by_bind android.software.device_id_attestation
+fi
+# 记一份自己挂过谁：面板/自检要看，将来加「立即撤销」也认这个。
+mkdir -p "$STATE_DIR/conf" 2>/dev/null
+printf '%s\n' ${mask_binds:-} > "$mask_binds_file" 2>/dev/null
+mask_log "mask-tier: self bind ->${mask_binds:- none}"
+unset mask_stage mask_binds_file mask_n mask_binds ms_dir mx_src mx_feature mx_stage mx_before mx_after mx_stage_dir
+unset md_feature md_dir md_src
 unset MASK_XML_REL MASK_XML mask_state_file mask_sb mask_ids me_name me_enabled me_state me_pat me_value mf_stale mf_old
 
 # ── 尽早把两个守护拉起来 ─────────────────────────────────────────────────

@@ -153,14 +153,18 @@ else
   ui_print "- KmInstallKeybox not in package, the RKP fix button will fall back to vendor"
 fi
 
-# ---- 能力声明隐藏（hide_strongbox / hide_device_ids 的静态载体）----
-# 只写模块自己的一份能力声明 XML，用 SystemConfig 支持的 <unavailable-feature> 让系统
-# 报「本机没有这个能力」；厂商分区里的声明文件一个字节都不碰。
+# ---- 能力声明隐藏（hide_strongbox / hide_device_ids）----
+# 这里只把模块自己那份 XML 写成当前开关对应的内容。它是「顺便」的一层：管理器真会给模块
+# 挂目录时（Magisk、装过挂载 metamodule 的 KSU）它直接生效，不用去动厂商分区里的文件。
 #
-# 老实现是在 vendor/odm 的声明文件旁种 whiteout（0:0 字符设备）让管理器删掉目标文件。
-# 那条路有两个硬伤：一是整份 XML 被删/清空，同文件的 android.hardware.keystore.app_attest_key
-# 也会跟着消失（对得上账的检测器一眼看出来）；二是漏挂/内容不合法时 system_server 读
-# /odm/etc/permissions 直接失败，设备开不了机（2026-10-28 在 peridot 上实测过）。
+# 不靠它的原因：KernelSU 3.x 自己不做模块文件挂载，模块 system/ 里的东西根本不会出现，
+# 所以真正干活的是 post-fs-data.sh 里那套：把厂商那份声明 XML 复制一份、只删掉提到该
+# feature 的那一行，再单文件 bind 盖回去。
+#
+# 老实现是在 vendor/odm 的声明文件旁种 whiteout（0:0 字符设备）让管理器删掉目标文件，
+# 那条路有两个硬伤：整份 XML 被删/清空会让同文件的 android.hardware.keystore.app_attest_key
+# 跟着消失；漏挂或内容不合法时 system_server 读 /odm/etc/permissions 直接失败，
+# 设备开不了机（2026-10-28 在 peridot 上实测过）。
 STRONGBOX_HIDDEN=false
 CLIENTA_CONF=/data/misc/keystore/ommega/config
 # 装的时候看一眼：这台机器有没有 StrongBox。有就把它写成配置里的默认值，
