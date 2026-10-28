@@ -257,6 +257,26 @@
           <input type="text" id="boot-hash" autocapitalize="none"></div>
         <div class="row"><div class="name"><b data-i18n="patch.boot"></b><small data-i18n="patch.boot.hint"></small></div>
           <input type="text" id="patch-boot" autocapitalize="none" placeholder="2025-01-01"></div>
+        <div class="row"><div class="name"><b data-i18n="patch.system"></b><small data-i18n="patch.system.hint"></small></div>
+          <input type="text" id="patch-system" autocapitalize="none" placeholder="2025-01-01"></div>
+        <div class="row"><div class="name"><b data-i18n="patch.vendor"></b><small data-i18n="patch.vendor.hint"></small></div>
+          <input type="text" id="patch-vendor" autocapitalize="none" placeholder="2025-01-01"></div>
+        <div id="patch-identity">
+          <div class="row"><div class="name"><b data-i18n="patch.release"></b><small data-i18n="patch.release.hint"></small></div>
+            <input type="text" id="ident-release" autocapitalize="none" placeholder="16"></div>
+          <div class="row"><div class="name"><b data-i18n="patch.ident.brand"></b><small data-i18n="patch.ident.brand.hint"></small></div>
+            <input type="text" id="ident-brand" autocapitalize="none"></div>
+          <div class="row"><div class="name"><b data-i18n="patch.ident.device"></b><small data-i18n="patch.ident.device.hint"></small></div>
+            <input type="text" id="ident-device" autocapitalize="none"></div>
+          <div class="row"><div class="name"><b data-i18n="patch.ident.name"></b><small data-i18n="patch.ident.name.hint"></small></div>
+            <input type="text" id="ident-name" autocapitalize="none"></div>
+          <div class="row"><div class="name"><b data-i18n="patch.ident.manufacturer"></b><small data-i18n="patch.ident.manufacturer.hint"></small></div>
+            <input type="text" id="ident-manufacturer" autocapitalize="none"></div>
+          <div class="row"><div class="name"><b data-i18n="patch.model"></b><small data-i18n="patch.ident.model.hint"></small></div>
+            <input type="text" id="ident-model" autocapitalize="none"></div>
+          <div class="row"><div class="name"><b data-i18n="patch.fingerprint"></b><small data-i18n="patch.fingerprint.hint"></small></div>
+            <input type="text" id="ident-fingerprint" autocapitalize="none"></div>
+        </div>
         <div class="acts">
           <button class="btn primary" id="save-patch" data-i18n="patch.save"></button>
           <button class="btn sm" id="patch-clear" data-i18n="patch.clear"></button>
@@ -594,6 +614,61 @@ var SOTER_KEY_TEXT = {
     fromFile: "Выбрать свой PEM (PKCS#8) для soter_ask.pem в качестве локального ATTK",
     clear: "Удалить свой файл и вернуться к встроенному ATTK" }
 };
+/* 「伪装参数 → 手动编辑」里机型那几项的标签。值会写进 props.conf，开机时统一应用；
+   改完重启才生效（ro.* 没法运行时热改）。 */
+var IDENT_TEXT = {
+  "zh-CN": { brand: "品牌", brandh: "ro.product.brand，例如 Xiaomi / OnePlus",
+    device: "设备代号", deviceh: "ro.product.device，例如 peridot",
+    name: "产品名", nameh: "ro.product.name，通常跟设备代号一致",
+    manufacturer: "厂商", manufacturerh: "ro.product.manufacturer",
+    modelh: "ro.product.model，整机型号，检测器最常比对的一项",
+    fingerprinth: "ro.build.fingerprint，整条构建指纹" },
+  "zh-TW": { brand: "品牌", brandh: "ro.product.brand，例如 Xiaomi / OnePlus",
+    device: "裝置代號", deviceh: "ro.product.device，例如 peridot",
+    name: "產品名", nameh: "ro.product.name，通常跟裝置代號一致",
+    manufacturer: "廠商", manufacturerh: "ro.product.manufacturer",
+    modelh: "ro.product.model，整機型號",
+    fingerprinth: "ro.build.fingerprint，整條建置指紋" },
+  "en": { brand: "Brand", brandh: "ro.product.brand, e.g. Xiaomi / OnePlus",
+    device: "Device", deviceh: "ro.product.device, e.g. peridot",
+    name: "Product", nameh: "ro.product.name, usually the same as the device",
+    manufacturer: "Manufacturer", manufacturerh: "ro.product.manufacturer",
+    modelh: "ro.product.model, the model name detectors compare most often",
+    fingerprinth: "ro.build.fingerprint, the full build fingerprint" },
+  "ja": { brand: "ブランド", brandh: "ro.product.brand（例: Xiaomi / OnePlus）",
+    device: "デバイス名", deviceh: "ro.product.device（例: peridot）",
+    name: "プロダクト名", nameh: "ro.product.name（通常はデバイス名と同じ）",
+    manufacturer: "メーカー", manufacturerh: "ro.product.manufacturer",
+    modelh: "ro.product.model（型番。検出ツールが最も比較する項目）",
+    fingerprinth: "ro.build.fingerprint（ビルド全体の指紋）" },
+  "ko": { brand: "브랜드", brandh: "ro.product.brand (예: Xiaomi / OnePlus)",
+    device: "기기 코드명", deviceh: "ro.product.device (예: peridot)",
+    name: "제품명", nameh: "ro.product.name (보통 기기 코드명과 같음)",
+    manufacturer: "제조사", manufacturerh: "ro.product.manufacturer",
+    modelh: "ro.product.model (모델명, 검사 도구가 가장 많이 비교)",
+    fingerprinth: "ro.build.fingerprint (전체 빌드 지문)" },
+  "ru": { brand: "Бренд", brandh: "ro.product.brand, напр. Xiaomi / OnePlus",
+    device: "Код устройства", deviceh: "ro.product.device, напр. peridot",
+    name: "Имя продукта", nameh: "ro.product.name, обычно совпадает с кодом",
+    manufacturer: "Производитель", manufacturerh: "ro.product.manufacturer",
+    modelh: "ro.product.model, модель, которую чаще всего сверяют детекторы",
+    fingerprinth: "ro.build.fingerprint, полный отпечаток сборки" }
+};
+Object.keys(IDENT_TEXT).forEach(function(code){
+  if (!I18N[code]) return;
+  var s = IDENT_TEXT[code];
+  I18N[code]["patch.ident.brand"] = s.brand;
+  I18N[code]["patch.ident.brand.hint"] = s.brandh;
+  I18N[code]["patch.ident.device"] = s.device;
+  I18N[code]["patch.ident.device.hint"] = s.deviceh;
+  I18N[code]["patch.ident.name"] = s.name;
+  I18N[code]["patch.ident.name.hint"] = s.nameh;
+  I18N[code]["patch.ident.manufacturer"] = s.manufacturer;
+  I18N[code]["patch.ident.manufacturer.hint"] = s.manufacturerh;
+  I18N[code]["patch.ident.model.hint"] = s.modelh;
+  I18N[code]["patch.fingerprint.hint"] = s.fingerprinth;
+});
+
 Object.keys(SOTER_KEY_TEXT).forEach(function(code){
   if (!I18N[code]) return;
   var s = SOTER_KEY_TEXT[code];
@@ -655,8 +730,24 @@ async function loadOwnPatch(){
 var LAST_STATUS = null;
 var appRows = [], appFilter = "";
 var showSystem = false;   // 默认只看用户应用，点工具栏那个开关才把系统应用也列出来
-/* 伪装参数表单里每一项：输入框 id → 要写的属性名。 */
-var IDENT_FIELDS = [];
+/* 伪装参数表单里每一项：输入框 id → 要写的属性名。
+   手动编辑现在能改的就是模式1 会同步的那一整组（启动哈希/三处补丁/机型那几项/指纹/系统版本），
+   免得只能看着摘要里的值而不能改。 */
+var IDENT_FIELDS = [
+  ["patch-system", "ro.build.version.security_patch"],
+  ["patch-vendor", "ro.vendor.build.security_patch"],
+  ["ident-release", "ro.build.version.release"],
+  ["ident-brand", "ro.product.brand"],
+  ["ident-device", "ro.product.device"],
+  ["ident-name", "ro.product.name"],
+  ["ident-manufacturer", "ro.product.manufacturer"],
+  ["ident-model", "ro.product.model"],
+  ["ident-fingerprint", "ro.build.fingerprint"]
+];
+/* 表单里的全部输入框：前两项是启动链那对数（模式2 只动这两项）。 */
+function patchInputs(){
+  return [["boot-hash", "ro.boot.vbmeta.digest"], ["patch-boot", "ro.boot.build.security_patch"]].concat(IDENT_FIELDS);
+}
 var patchValues = {};
 var fpTarget = "";           // 选文件的目标：keybox / ask
 var fpDir = "/sdcard/Download";
@@ -1674,14 +1765,24 @@ async function syncPatch(){
 async function savePatch(){
   var hash = document.getElementById("boot-hash").value.trim().toLowerCase();
   var boot = document.getElementById("patch-boot").value.trim();
+  var sys = document.getElementById("patch-system").value.trim();
+  var vendor = document.getElementById("patch-vendor").value.trim();
   if (hash && !/^[0-9a-f]{64}$/.test(hash)){ toast(t("toast.hashBad"), true); return; }
-  if (boot && !/^\d{4}-\d{2}-\d{2}$/.test(boot)){ toast(t("toast.patchBad", {field: t("patch.boot")}), true); return; }
-  var kv = currentPropsKV();
-  kv["ro.boot.vbmeta.digest"] = hash;
-  kv["ro.boot.build.security_patch"] = boot;
+  var bad = [[boot, t("patch.boot")], [sys, t("patch.system")], [vendor, t("patch.vendor")]].filter(function(p){
+    return p[0] && !/^\d{4}-\d{2}-\d{2}$/.test(p[0]);
+  });
+  if (bad.length){ toast(t("toast.patchBad", {field: bad[0][1]}), true); return; }
+  /* 以表单为准重建我们管的那一整组：清空的项就从 props.conf 里去掉（空 = 不覆盖）。 */
+  var kv = {};
+  patchInputs().forEach(function(pair){
+    var e = document.getElementById(pair[0]);
+    var v = e ? String(e.value || "").trim() : "";
+    if (v) kv[pair[1]] = v;
+  });
   if (!(await writePropsKV(kv))) return;
   var now = {};
   if (boot) now["ro.boot.build.security_patch"] = boot;
+  if (hash) now["ro.boot.vbmeta.digest"] = hash;
   var keys = Object.keys(now);
   if (keys.length){
     await exec(keys.map(function(k){
@@ -1694,15 +1795,15 @@ async function savePatch(){
 
 /* -------------------------------- 语言切换 ------------------------------- */
 function capturePatchInputs(){
-  ["boot-hash", "patch-boot"].concat(IDENT_FIELDS.map(function(p){ return p[0]; })).forEach(function(id){
-    var e = document.getElementById(id);
-    if (e) patchValues[id] = e.value;
+  patchInputs().forEach(function(pair){
+    var e = document.getElementById(pair[0]);
+    if (e) patchValues[pair[0]] = e.value;
   });
 }
 function fillPatchInputs(){
-  ["boot-hash", "patch-boot"].concat(IDENT_FIELDS.map(function(p){ return p[0]; })).forEach(function(id){
-    var e = document.getElementById(id);
-    if (e && patchValues[id] !== undefined) e.value = patchValues[id];
+  patchInputs().forEach(function(pair){
+    var e = document.getElementById(pair[0]);
+    if (e && patchValues[pair[0]] !== undefined) e.value = patchValues[pair[0]];
   });
 }
 /* 「声明不支持 ID 认证」开着的时候，型号/品牌那几项就隐藏起来（也不需要同步）：
@@ -1714,11 +1815,13 @@ function identityEnabled(){
   var m = /^[ \t]*hide_device_ids[ \t]*:[ \t]*([^\r\n]*)/m.exec(text);
   return !(m && /^(1|true|yes|on)$/i.test((m[1] || "").trim()));
 }
-/* 「声明不支持 ID 认证」不再自动隐藏机型那几项：用户手动编辑时应该全都看得到。
-   这个开关只影响「从服务器同步时拉不拉身份」，不限制手动填。 */
+/* 模式2 只管启动哈希/启动补丁：机型那组在手动编辑里也隐起来，免得改了半天又被过滤掉。
+   模式1 下全部显示，用户手动改的会被 props.conf 照单收下。 */
 function applyIdentityVisibility(){
   var box = document.getElementById("patch-identity");
-  if (box) box.classList.remove("hidden");
+  if (!box) return;
+  if (syncMode() === 2) box.classList.add("hidden");
+  else box.classList.remove("hidden");
 }
 
 function setLang(code){
@@ -1947,11 +2050,11 @@ document.addEventListener("change", function(ev){ if (!(ev && ev.target && ev.ta
       modeSel.value = String(syncMode());
     }
     document.getElementById("patch-clear").onclick = function(){
-      ["boot-hash", "patch-boot"].forEach(function(id){
-        var e = document.getElementById(id);
+      patchInputs().forEach(function(pair){
+        var e = document.getElementById(pair[0]);
         if (!e) return;
         e.value = "";
-        patchValues[id] = "";
+        patchValues[pair[0]] = "";
       });
       refreshPatchSummary();
       toast(t("toast.cleared"));
