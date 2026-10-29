@@ -336,7 +336,8 @@ fn synthetic_unexpected_null_parse_errors_are_status_replies() {
         cookie: 0x6682,
     };
     let mut invalid_key_request = request_parcel(identify::KEYSTORE_SECURITY_LEVEL_INTERFACE);
-    invalid_key_request.write(&2i32).unwrap();
+    // 非 0 的标记现在按 AOSP 算「存在」，要造 UnexpectedNull 得用 0（真正的 null）。
+    invalid_key_request.write(&0i32).unwrap();
     let invalid_key_tr = transaction_for_parcel(
         security_level_target,
         crate::android::system::keystore2::IKeystoreSecurityLevel::transactions::r#deleteKey,
@@ -355,7 +356,7 @@ fn synthetic_unexpected_null_parse_errors_are_status_replies() {
             "BR_TRANSACTION",
         )
     }
-    .expect("invalid key presence flag should be handled");
+    .expect("null key descriptor should be handled");
     assert_synthetic_exception_reply(reply, ExceptionCode::NullPointer);
 }
 

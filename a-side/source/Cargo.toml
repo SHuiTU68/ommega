@@ -76,11 +76,17 @@ members = [
   "watchdog",
   "ommega-injector",
   "resetprop",
+  "vendor/rsbinder",
   "vendor/prop-rs",
   "vendor/prop-rs-android",
 ]
 
 [patch.crates-io]
+# rsbinder 只改一处：nullable 的存在标记。AOSP 是“非 0 即存在”（Java
+# `readInt() != 0`、C++ `readInt32() != 0`），上游只认 1，于是同一个请求把标记换
+# 成 2 / -1 / INT_MAX 就在我们这边解析失败、被当陌生流量转发出去（KEY_NOT_FOUND），
+# 检测器一测一个准。改动在 vendor/rsbinder/src/{parcelable,macros}.rs。
+rsbinder = { path = "vendor/rsbinder" }
 kmr-derive = { path = "derive" }
 kmr-common = { path = "common" }
 kmr-crypto-ommega = { path = "crypto" }

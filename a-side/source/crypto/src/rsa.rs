@@ -236,20 +236,39 @@ impl crypto::AccumulatingOperation for OmmegaRsaDigestSignOperation {
             _ => return Err(km_err!(UnsupportedPaddingMode, "not a digest sign mode")),
         };
         let hashed = hash_digest(digest, &self.pending_input)?;
-        let sig = match self.mode {
-            SignMode::Pkcs1_1_5Padding(_) => priv_key
-                .sign(Pkcs1v15Sign::new::<Sha256>(), &hashed)
-                .map_err(|e| km_err!(UnknownError, "RSA-PKCS1 sign failed: {e:?}"))?,
-            SignMode::PssPadding(_) => {
+        // PKCS#1 和 PSS 的摘要类型会影响 DigestInfo 前缀 / 盐长度，所以得跟着请求的
+        // 摘要走。以前一律写死 Sha256，SHA-1/224/384/512 的请求要么直接出错、要么
+        // 出来的签名用对应算法验不过。
+        macro_rules! sign_pkcs1 {
+            ($d:ty) => {{
+                priv_key
+                    .sign(Pkcs1v15Sign::new::<$d>(), &hashed)
+                    .map_err(|e| km_err!(UnknownError, "RSA-PKCS1 sign failed: {e:?}"))?
+            }};
+        }
+        macro_rules! sign_pss {
+            ($d:ty) => {{
                 // RSA-PSS needs a random salt, so a rng is mandatory: the
                 // rsa crate's `Pss::sign` returns `InvalidPaddingScheme` when
                 // given `None`, which surfaced as UNKNOWN_ERROR (-1000) on
                 // RSA-PSS signature operations.
                 let mut rng = OsRng;
                 priv_key
-                    .sign_with_rng(&mut rng, Pss::new::<Sha256>(), &hashed)
+                    .sign_with_rng(&mut rng, Pss::new::<$d>(), &hashed)
                     .map_err(|e| km_err!(UnknownError, "RSA-PSS sign failed: {e:?}"))?
-            }
+            }};
+        }
+        let sig = match (self.mode, digest) {
+            (SignMode::Pkcs1_1_5Padding(_), Digest::Sha1) => sign_pkcs1!(Sha1),
+            (SignMode::Pkcs1_1_5Padding(_), Digest::Sha224) => sign_pkcs1!(Sha224),
+            (SignMode::Pkcs1_1_5Padding(_), Digest::Sha256) => sign_pkcs1!(Sha256),
+            (SignMode::Pkcs1_1_5Padding(_), Digest::Sha384) => sign_pkcs1!(Sha384),
+            (SignMode::Pkcs1_1_5Padding(_), Digest::Sha512) => sign_pkcs1!(Sha512),
+            (SignMode::PssPadding(_), Digest::Sha1) => sign_pss!(Sha1),
+            (SignMode::PssPadding(_), Digest::Sha224) => sign_pss!(Sha224),
+            (SignMode::PssPadding(_), Digest::Sha256) => sign_pss!(Sha256),
+            (SignMode::PssPadding(_), Digest::Sha384) => sign_pss!(Sha384),
+            (SignMode::PssPadding(_), Digest::Sha512) => sign_pss!(Sha512),
             _ => return Err(km_err!(UnsupportedPaddingMode, "unsupported sign mode")),
         };
         Ok(sig)
@@ -338,4 +357,53 @@ fn hash_digest(digest: Digest, data: &[u8]) -> Result<Vec<u8>, Error> {
         d => return Err(km_err!(UnsupportedDigest, "unsupported digest {:?}", d)),
     };
     try_to_vec(out.as_slice())
+}
+#[cfg(test)]
+mod digest_tests {
+    use super::*;
+    use crypto::AccumulatingOperation as _;
+
+    fn rsa_key() -> (RsaPrivateKey, crypto::rsa::Key) {
+        let mut rng = rand_core::OsRng;
+        let key = RsaPrivateKey::new(&mut rng, 2048).unwrap();
+        let der = key.to_pkcs1_der().unwrap().as_bytes().to_vec();
+        (key, crypto::rsa::Key(der))
+    }
+
+    /// PKCS#1 v1.5 的 DigestInfo 前缀得跟请求的摘要一致；写死 Sha256 的话
+    /// SHA-384 的签名用同样算法验不过。
+    #[test]
+    fn pkcs1_sign_follows_the_requested_digest() {
+        let (priv_key, key) = rsa_key();
+        let message = b"ommega rsa digest check";
+
+        let mut op =
+            OmmegaRsaDigestSignOperation::new(key, SignMode::Pkcs1_1_5Padding(Digest::Sha384))
+                .unwrap();
+        op.update(message).unwrap();
+        let sig = Box::new(op).finish().unwrap();
+
+        let hashed = hash_digest(Digest::Sha384, message).unwrap();
+        priv_key
+            .to_public_key()
+            .verify(Pkcs1v15Sign::new::<Sha384>(), &hashed, &sig)
+            .unwrap_or_else(|e| panic!("SHA384withRSA 验签失败: {e:?}"));
+    }
+
+    #[test]
+    fn pss_sign_follows_the_requested_digest() {
+        let (priv_key, key) = rsa_key();
+        let message = b"ommega rsa pss check";
+
+        let mut op =
+            OmmegaRsaDigestSignOperation::new(key, SignMode::PssPadding(Digest::Sha1)).unwrap();
+        op.update(message).unwrap();
+        let sig = Box::new(op).finish().unwrap();
+
+        let hashed = hash_digest(Digest::Sha1, message).unwrap();
+        priv_key
+            .to_public_key()
+            .verify(Pss::new::<Sha1>(), &hashed, &sig)
+            .unwrap_or_else(|e| panic!("SHA1withRSA/PSS 验签失败: {e:?}"));
+    }
 }

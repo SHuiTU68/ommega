@@ -19,7 +19,7 @@
 
 use der::Decode as _;
 use der::Encode as _;
-use ecdsa::signature::{SignatureEncoding as _, Signer as _};
+use ecdsa::signature::SignatureEncoding as _;
 use ecdsa::SigningKey as EcdsaSigningKey;
 use kmr_common::{
     crypto,
@@ -334,8 +334,8 @@ impl crypto::AccumulatingOperation for OmmegaEcDigestSignOperation {
     }
 
     fn finish(self: Box<Self>) -> Result<Vec<u8>, Error> {
-        let _ = self.digest;
-        sign_ecdsa(&self.key, self.curve, &self.pending_input)
+        let digest = ec_digest_bytes(self.digest, &self.pending_input)?;
+        sign_ecdsa_prehashed(&self.key, self.curve, &digest)
     }
 }
 
@@ -359,22 +359,51 @@ impl OmmegaEcUndigestSignOperation {
 }
 
 impl crypto::AccumulatingOperation for OmmegaEcUndigestSignOperation {
+    fn max_input_size(&self) -> Option<usize> {
+        Some(self.max_size)
+    }
+
     fn update(&mut self, data: &[u8]) -> Result<(), Error> {
-        let max_extra_data = self.max_size.saturating_sub(self.pending_input.len());
-        if max_extra_data > 0 {
-            let len = core::cmp::min(max_extra_data, data.len());
-            self.pending_input.try_extend_from_slice(&data[..len])?;
+        // 以前这里是把超出的部分默默截掉。AOSP 那边是回 InvalidInputLength，
+        // 静默截断会让“我签了 64 字节”和“签名覆盖前 32 字节”两边的认知不
+        // 一致（检测器一组对照就能看出来），所以改成直接报错。
+        if data.len() + self.pending_input.len() > self.max_size {
+            return Err(km_err!(
+                InvalidInputLength,
+                "undigest sign input exceeds {} bytes",
+                self.max_size
+            ));
         }
+        self.pending_input.try_extend_from_slice(data)?;
         Ok(())
     }
 
     fn finish(self: Box<Self>) -> Result<Vec<u8>, Error> {
-        sign_ecdsa(&self.key, self.curve, &self.pending_input)
+        sign_ecdsa_prehashed(&self.key, self.curve, &self.pending_input)
     }
 }
 
-/// Sign `msg` (already hashed or raw, per caller) with ECDSA, returning a DER signature.
-fn sign_ecdsa(key: &Key, curve: ec::NistCurve, msg: &[u8]) -> Result<Vec<u8>, Error> {
+/// 按请求的摘要算一遍（EC 签名的输入是消息本体，摘要由 TA 算）。
+fn ec_digest_bytes(digest: Digest, data: &[u8]) -> Result<Vec<u8>, Error> {
+    use sha2::Digest as _;
+    let out = match digest {
+        Digest::Sha1 => sha1::Sha1::digest(data).to_vec(),
+        Digest::Sha224 => sha2::Sha224::digest(data).to_vec(),
+        Digest::Sha256 => sha2::Sha256::digest(data).to_vec(),
+        Digest::Sha384 => sha2::Sha384::digest(data).to_vec(),
+        Digest::Sha512 => sha2::Sha512::digest(data).to_vec(),
+        d => return Err(km_err!(UnsupportedDigest, "unsupported digest {:?}", d)),
+    };
+    Ok(out)
+}
+
+/// Sign a digest directly with ECDSA, returning a DER signature.
+///
+/// 必须用 `sign_prehash`：`sign()` 会按曲线默认摘要（P-256 是 SHA-256）把输入
+/// 再哈希一遍，`Digest::None` 那种「输入已经是摘要」的请求就被多算了一层，
+/// 产出的签名用 NONEwithECDSA 验不过。
+fn sign_ecdsa_prehashed(key: &Key, curve: ec::NistCurve, msg: &[u8]) -> Result<Vec<u8>, Error> {
+    use ecdsa::signature::hazmat::PrehashSigner as _;
     let priv_bytes = nist_priv_bytes(key)?;
     let sig = match curve {
         // P-224 只有工程模式那类自检会要（`KeyAttestationTest.testEcAttestation` 用的就是
@@ -383,19 +412,25 @@ fn sign_ecdsa(key: &Key, curve: ec::NistCurve, msg: &[u8]) -> Result<Vec<u8>, Er
         ec::NistCurve::P224 => {
             let sk = EcdsaSigningKey::<p224::NistP224>::from_slice(&priv_bytes)
                 .map_err(|e| km_err!(UnknownError, "P-224 key: {e:?}"))?;
-            let s: SigP224 = sk.sign(msg);
+            let s: SigP224 = sk
+                .sign_prehash(msg)
+                .map_err(|e| km_err!(UnknownError, "P-224 prehash sign: {e:?}"))?;
             s.to_der().to_vec()
         }
         ec::NistCurve::P256 => {
             let sk = EcdsaSigningKey::<p256::NistP256>::from_slice(&priv_bytes)
                 .map_err(|e| km_err!(UnknownError, "P-256 key: {e:?}"))?;
-            let s: SigP256 = sk.sign(msg);
+            let s: SigP256 = sk
+                .sign_prehash(msg)
+                .map_err(|e| km_err!(UnknownError, "P-256 prehash sign: {e:?}"))?;
             s.to_der().to_vec()
         }
         ec::NistCurve::P384 => {
             let sk = EcdsaSigningKey::<p384::NistP384>::from_slice(&priv_bytes)
                 .map_err(|e| km_err!(UnknownError, "P-384 key: {e:?}"))?;
-            let s: SigP384 = sk.sign(msg);
+            let s: SigP384 = sk
+                .sign_prehash(msg)
+                .map_err(|e| km_err!(UnknownError, "P-384 prehash sign: {e:?}"))?;
             s.to_der().to_vec()
         }
         ec::NistCurve::P521 => {
@@ -439,5 +474,88 @@ impl crypto::AccumulatingOperation for OmmegaEd25519SignOperation {
         use ed25519_dalek::Signer as _;
         let sig = self.key.sign(&self.pending_input);
         Ok(sig.to_bytes().to_vec())
+    }
+}
+#[cfg(test)]
+mod signing_tests {
+    use super::*;
+    use ecdsa::signature::hazmat::PrehashVerifier as _;
+    use sha2::Digest as _;
+
+    fn p256_key() -> Key {
+        let sk = p256::SecretKey::random(&mut rand_core::OsRng);
+        Key::P256(ec::NistKey(sk.to_sec1_der().unwrap().to_vec()))
+    }
+
+    fn p256_verifier(key: &Key) -> p256::ecdsa::VerifyingKey {
+        let priv_bytes = nist_priv_bytes(key).unwrap();
+        let sk = EcdsaSigningKey::<p256::NistP256>::from_slice(&priv_bytes).unwrap();
+        *sk.verifying_key()
+    }
+
+    /// DIGEST_NONE：输入本来就是摘要，不能再哈希一层。
+    #[test]
+    fn undigest_signs_the_given_digest_without_hashing_again() {
+        let key = p256_key();
+        let digest = [0x5au8; 32];
+        let mut op = OmmegaEcUndigestSignOperation::new(
+            match &key {
+                Key::P256(k) => k.clone(),
+                _ => unreachable!(),
+            },
+            ec::NistCurve::P256,
+        )
+        .unwrap();
+        op.update(&digest).unwrap();
+        let sig = Box::new(op).finish().unwrap();
+
+        let verifier = p256_verifier(&key);
+        let sig = SigP256::from_der(&sig).unwrap();
+        verifier
+            .verify_prehash(&digest, &sig)
+            .unwrap_or_else(|e| panic!("NONEwithECDSA 验签失败（说明又哈希了一层）: {e:?}"));
+    }
+
+    #[test]
+    fn undigest_rejects_input_longer_than_the_field() {
+        let key = p256_key();
+        let mut op = OmmegaEcUndigestSignOperation::new(
+            match &key {
+                Key::P256(k) => k.clone(),
+                _ => unreachable!(),
+            },
+            ec::NistCurve::P256,
+        )
+        .unwrap();
+        op.update(&[0u8; 24]).unwrap();
+        let err = op.update(&[0u8; 16]).unwrap_err();
+        assert!(matches!(
+            err.kind(),
+            kmr_common::ErrorKind::Hal(kmr_wire::keymint::ErrorCode::InvalidInputLength, _)
+        ));
+    }
+
+    /// 带摘要的请求：算的必须是请求指定的摘要，不是曲线默认的 SHA-256。
+    #[test]
+    fn digest_sign_honours_the_requested_digest() {
+        let key = p256_key();
+        let message = b"ommega digest check";
+        let mut op = OmmegaEcDigestSignOperation::new(
+            match &key {
+                Key::P256(k) => k.clone(),
+                _ => unreachable!(),
+            },
+            ec::NistCurve::P256,
+            Digest::Sha384,
+        )
+        .unwrap();
+        op.update(message).unwrap();
+        let sig = Box::new(op).finish().unwrap();
+
+        let verifier = p256_verifier(&key);
+        let sig = SigP256::from_der(&sig).unwrap();
+        verifier
+            .verify_prehash(&sha2::Sha384::digest(message), &sig)
+            .unwrap_or_else(|e| panic!("SHA384withECDSA 验签失败: {e:?}"));
     }
 }
