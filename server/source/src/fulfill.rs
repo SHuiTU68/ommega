@@ -45,6 +45,9 @@ const PURGE_INTERVAL_MS: u64 = 60 * 1000;
 
 static LAST_PURGE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// 「超上限但没东西可删」这条告警上次打的时间，用来自助限频。
+static SESSION_CAP_REPORTED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Where server_keybox sessions (leaf private key + chain) are persisted so a
 /// relay restart does not orphan the A-side's `KeyMaterial::Remote` keys.
 /// The A-side derives the session alias deterministically from the attestation
@@ -249,10 +252,27 @@ impl Fulfill {
             Err(e) => tracing::warn!("sessions: 库里清过期会话失败：{e:#}"),
         }
         let cap = crate::statedb::SESSION_MAX;
-        match self.state.trim_sessions_lru(cap) {
+        match self
+            .state
+            .trim_sessions_lru(cap, crate::statedb::SESSION_EVICT_MIN_IDLE_MS)
+        {
             Ok(0) => {}
-            Ok(n) => tracing::info!("sessions: 库里按 LRU 淘汰 {n} 条（上限 {cap}）"),
+            Ok(n) => tracing::info!(
+                "sessions: 库里按 LRU 淘汰 {n} 条闲置会话（上限 {cap}，只动闲置超 3 天的）"
+            ),
             Err(e) => tracing::warn!("sessions: 库里按 LRU 淘汰失败：{e:#}"),
+        }
+        // 超上限但全是活跃会话时，上一行是 0 —— 得能看出来现在到底多少条。
+        // 隔一小时才报一次，不刷屏。
+        if let Ok(count) = self.state.session_count() {
+            if count > cap
+                && now_ms.saturating_sub(SESSION_CAP_REPORTED.swap(now_ms, Ordering::Relaxed))
+                    > 3_600_000
+            {
+                tracing::warn!(
+                    "sessions: 库里有 {count} 条会话，超过上限 {cap}，但没有可淘汰的闲置会话（宁可超限也不动在用的）"
+                );
+            }
         }
     }
 
