@@ -697,37 +697,37 @@ var SBKB_TEXT = {
     clear: "清除", clearHint: "删掉这份，StrongBox 级别回到沿用上面那份",
     hint: "写入 keybox_strongbox.xml。两份分开之后，TEE 请求用上面那份、StrongBox 请求用这份；没有这份时两个级别共用同一份。",
     written: "已写入 StrongBox 级别的 keybox", cleared: "已清除，StrongBox 回到沿用上面那份",
-    set: "已配置", unset: "未配置（沿用上面那份）" },
+    set: "已配置", setId: "已配置 · {id}", unset: "未配置（沿用上面那份）" },
   "zh-TW": { title: "StrongBox 級別密鑰（可選）", current: "目前",
     fromFile: "自訂（StrongBox）", fromFileHint: "選一份 keybox XML，只給 StrongBox 級別用",
     clear: "清除", clearHint: "刪掉這份，StrongBox 回到沿用上面那份",
     hint: "寫入 keybox_strongbox.xml。兩份分開之後，TEE 請求用上面那份、StrongBox 請求用這份。",
     written: "已寫入 StrongBox 級別的 keybox", cleared: "已清除，StrongBox 回到沿用上面那份",
-    set: "已設定", unset: "未設定（沿用上面那份）" },
+    set: "已設定", setId: "已設定 · {id}", unset: "未設定（沿用上面那份）" },
   "en": { title: "StrongBox keybox (optional)", current: "Current",
     fromFile: "Custom (StrongBox)", fromFileHint: "Pick a keybox XML used only for the StrongBox level (security level 2)",
     clear: "Clear", clearHint: "Remove it so the StrongBox level falls back to the keybox above",
     hint: "Written to keybox_strongbox.xml. With both files set, TEE requests use the one above and StrongBox requests use this one; without this file both levels share the same keybox.",
     written: "StrongBox keybox written", cleared: "Cleared; the StrongBox level falls back to the keybox above",
-    set: "Configured", unset: "Not configured (uses the keybox above)" },
+    set: "Configured", setId: "Configured · {id}", unset: "Not configured (uses the keybox above)" },
   "ja": { title: "StrongBox 用キーボックス（任意）", current: "現在",
     fromFile: "カスタム（StrongBox）", fromFileHint: "StrongBox レベル専用の keybox XML を選ぶ",
     clear: "消去", clearHint: "削除すると StrongBox は上のキーボックスを使う",
     hint: "keybox_strongbox.xml に書き込みます。両方あるときは TEE が上、StrongBox がこちらを使います。",
     written: "StrongBox 用キーボックスを書き込みました", cleared: "消去しました（上のキーボックスを使用）",
-    set: "設定済み", unset: "未設定（上のキーボックスを使用）" },
+    set: "設定済み", setId: "設定済み · {id}", unset: "未設定（上のキーボックスを使用）" },
   "ko": { title: "StrongBox 전용 키박스(선택)", current: "현재",
     fromFile: "사용자 지정(StrongBox)", fromFileHint: "StrongBox 레벨에만 쓸 keybox XML을 고르세요",
     clear: "지우기", clearHint: "지우면 StrongBox는 위 키박스를 사용합니다",
     hint: "keybox_strongbox.xml에 기록합니다. 둘 다 있으면 TEE는 위, StrongBox는 이 파일을 씁니다.",
     written: "StrongBox 키박스를 기록했습니다", cleared: "지웠습니다(위 키박스 사용)",
-    set: "설정됨", unset: "설정 안 됨(위 키박스 사용)" },
+    set: "설정됨", setId: "설정됨 · {id}", unset: "설정 안 됨(위 키박스 사용)" },
   "ru": { title: "Keybox для StrongBox (необязательно)", current: "Текущий",
     fromFile: "Свой (StrongBox)", fromFileHint: "Выберите keybox XML только для уровня StrongBox",
     clear: "Очистить", clearHint: "Удалить файл, чтобы StrongBox использовал keybox выше",
     hint: "Пишется в keybox_strongbox.xml. Если заданы оба, TEE берёт верхний, StrongBox — этот.",
     written: "Keybox для StrongBox записан", cleared: "Очищено; StrongBox использует keybox выше",
-    set: "Настроен", unset: "Не настроен (используется keybox выше)" }
+    set: "Настроен", setId: "Настроен · {id}", unset: "Не настроен (используется keybox выше)" }
 };
 Object.keys(SBKB_TEXT).forEach(function(code){
   if (!I18N[code]) return;
@@ -742,6 +742,7 @@ Object.keys(SBKB_TEXT).forEach(function(code){
   I18N[code]["sbkb.written"] = s.written;
   I18N[code]["sbkb.cleared"] = s.cleared;
   I18N[code]["sbkb.set"] = s.set;
+  I18N[code]["sbkb.setId"] = s.setId;
   I18N[code]["sbkb.unset"] = s.unset;
 });
 
@@ -754,7 +755,9 @@ async function refreshStrongboxKeybox(){
   var out = String(r.stdout || "");
   if (out.indexOf("SET") < 0){ setT(el, "sbkb.unset"); return; }
   var m = /DeviceID="([^"]+)"/.exec(out);
-  el.textContent = t("sbkb.set") + (m ? " · " + m[1] : "");
+  /* 用 setT 记下「键 + 变量」，切语言时 applyI18n 会按新语言重算；直接写 textContent 会停在旧语言。 */
+  if (m) setT(el, "sbkb.setId", { id: m[1] });
+  else setT(el, "sbkb.set");
 }
 
 /* 最近一次 /api/status/ 的响应：设备信息那块用它显示配对的 B 端与版本。 */
