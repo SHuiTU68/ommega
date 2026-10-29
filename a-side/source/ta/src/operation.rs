@@ -435,10 +435,12 @@ impl crate::KeyMintTa {
                         km_err!(MemoryAllocationFailed, "remote sign buffer overflow")
                     })?;
                 }
+                let raw_len = data.len();
                 let data = match raw_digest_len {
                     Some(len) => raw_digest_fitted(&data, len),
                     None => data,
                 };
+                let sent = data.len();
                 let remote = self.dev.remote.as_ref().ok_or_else(|| {
                     km_err!(
                         UnknownError,
@@ -448,9 +450,13 @@ impl crate::KeyMintTa {
                 if !remote.enabled() {
                     return Err(km_err!(UnknownError, "remote backend disabled"));
                 }
-                remote
-                    .sign(&alias, &data, &algorithm)?
-                    .ok_or_else(|| km_err!(UnknownError, "remote sign failed"))
+                let signed = remote.sign(&alias, &data, &algorithm);
+                if let Err(error) = &signed {
+                    error!(
+                        "remote_sign failed alias={alias} algorithm={algorithm} raw={raw_len} sent={sent} fitted={raw_digest_len:?}: {error:?}"
+                    );
+                }
+                signed?.ok_or_else(|| km_err!(UnknownError, "remote sign failed"))
             }
             CryptoOperation::RemoteDecrypt {
                 alias,
@@ -463,14 +469,18 @@ impl crate::KeyMintTa {
                         km_err!(MemoryAllocationFailed, "remote decrypt buffer overflow")
                     })?;
                 }
+                let in_len = data.len();
                 if let Some(expected) = expected_len {
-                    if data.len() != expected {
-                        // 跟本地那条路回同一个类別（rsa crate 对长度不对的密文也是
-                        // 解密失败），远端压根不转发。
+                    if in_len != expected {
+                        // 本地那条路是 update 阶段按最大输入长度拦的，回
+                        // `INVALID_INPUT_LENGTH`（测出来的 -21）；这里跟着它走，
+                        // 否则同一个请求本地/远程两边错误类别不一样。
+                        error!(
+                            "remote_decrypt rejected alias={alias} algorithm={algorithm} in={in_len} expected={expected}"
+                        );
                         return Err(km_err!(
-                            VerificationFailed,
-                            "RSA ciphertext is {} bytes, expected {expected}",
-                            data.len()
+                            InvalidInputLength,
+                            "RSA ciphertext is {in_len} bytes, expected {expected}"
                         ));
                     }
                 }
@@ -483,9 +493,13 @@ impl crate::KeyMintTa {
                 if !remote.enabled() {
                     return Err(km_err!(UnknownError, "remote backend disabled"));
                 }
-                remote
-                    .decrypt(&alias, &data, &algorithm)?
-                    .ok_or_else(|| km_err!(UnknownError, "remote decrypt failed"))
+                let plain = remote.decrypt(&alias, &data, &algorithm);
+                if let Err(error) = &plain {
+                    error!(
+                        "remote_decrypt failed alias={alias} algorithm={algorithm} in={in_len} expected={expected_len:?}: {error:?}"
+                    );
+                }
+                plain?.ok_or_else(|| km_err!(UnknownError, "remote decrypt failed"))
             }
         };
         if result.is_ok() {
@@ -738,7 +752,7 @@ impl crate::KeyMintTa {
         } else if let Some(expected) = expected_len {
             if buf.len() != expected {
                 return Err(km_err!(
-                    VerificationFailed,
+                    InvalidInputLength,
                     "RSA ciphertext is {} bytes, expected {expected}",
                     buf.len()
                 ));
