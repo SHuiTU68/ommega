@@ -331,11 +331,10 @@ impl crypto::AccumulatingOperation for OmmegaRsaUndigestSignOperation {
         } else {
             // EMSA-PKCS1-v1_5（type 1）：00 || 01 || FF* || 00 || M，正好模长字节。
             let msg = &self.pending_input;
-            let pad_len = key_len
-                .checked_sub(msg.len() + PKCS1_UNDIGESTED_SIGNATURE_PADDING_OVERHEAD)
-                .ok_or_else(|| {
-                    km_err!(InvalidInputLength, "message too long for PKCS#1 v1.5 sign")
-                })?;
+            // EM = 00 || 01 || PS(FF…) || 00 || M，PS 长度 = k - len(M) - 3。
+            let pad_len = key_len.checked_sub(msg.len() + 3).ok_or_else(|| {
+                km_err!(InvalidInputLength, "message too long for PKCS#1 v1.5 sign")
+            })?;
             let mut em = vec_try![0; key_len]?;
             em[1] = 0x01;
             for b in em.iter_mut().skip(2).take(pad_len) {

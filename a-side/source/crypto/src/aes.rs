@@ -379,7 +379,8 @@ macro_rules! gcm_dispatch {
         use aes_gcm::{AesGcm, Nonce};
         macro_rules! run {
             ($c:ty, $t:ty) => {{
-                let cipher = AesGcm::<$c, $t>::new_from_slice($key)
+                // AesGcm<Cipher, NonceSize, TagSize>：nonce 固定 12，tag 长度走第三格。
+                let cipher = AesGcm::<$c, U12, $t>::new_from_slice($key)
                     .map_err(|_| km_err!(UnknownError, "invalid GCM key"))?;
                 let nonce = Nonce::from_slice($nonce);
                 let payload = Payload {
