@@ -198,9 +198,12 @@ impl KeystoreService {
     /// StrongBox is offered when the A-side natively exposes a StrongBox
     /// KeyMint HAL AND the WebUI has not enabled "Declare StrongBox
     /// unsupported" (`hide_strongbox` in the flat config). The config watcher
-    /// keeps the runtime config in sync with that file, so toggling the option
-    /// applies without a daemon restart; `get_security_level` then fails with
-    /// HARDWARE_TYPE_UNAVAILABLE, matching a device without StrongBox.
+    /// StrongBox 什么时候对上层可见：只有本机真的有 StrongBox KeyMint HAL，
+    /// 且面板没开「声明不支持 StrongBox」。
+    ///
+    /// 配了 `keybox_strongbox.xml` 也**不**能把 StrongBox 无中生有：本机没有硬件 SE
+    /// 就对外说没有，否则链上的 level 声明跟设备实际能力不一致。那份 keybox 只在
+    /// 「本机确实支持 StrongBox」时决定 level 2 用哪把签发者。
     fn strongbox_available(&self) -> bool {
         self.strongbox_enabled && !crate::config::strongbox_hidden()
     }
