@@ -702,6 +702,19 @@ pub fn initialize() -> Result<()> {
         ) {
             error!("failed to watch keybox.xml: {error:#}");
         }
+        // StrongBox 那份同理：面板里选完文件就该生效，不该等下次开机。
+        if let Err(error) = kmr_common::runtime::file_watch::spawn_path_watcher(
+            "ommega-keybox-sb-watch",
+            PathBuf::from(STRONGBOX_KEYBOX_PATH),
+            |_trigger| {
+                if let Err(reload_error) = reload_from_disk() {
+                    error!("failed to reload keybox_strongbox.xml after change: {reload_error:#}");
+                }
+            },
+        ) {
+            // 大多数设备上这个文件一开始不存在，watcher 可能装不上，不算错误。
+            debug!("strongbox keybox watcher not installed: {error:#}");
+        }
     });
     Ok(())
 }
