@@ -1,6 +1,6 @@
 # A-side module changelog
 
-[中文](CHANGELOG.md)
+[涓枃](CHANGELOG.md)
 
 ## 1.7.8
 
@@ -9,6 +9,7 @@
 - The spoof panel's manual editor covers every item (three patch levels, the
   system version, the five identity fields and the build fingerprint); clearing a
   field removes it from the overrides.
+- The relay no longer drops the day from a patch level: a local chain stamped 2026-08-01 used to come back as 2026-08 over the relay. 
 - "Declare no StrongBox" now works on its own, without the root manager mounting
   the module: after a reboot the system reports no StrongBox, and the other
   features declared in the same file (app_attest_key, for example) stay intact.
