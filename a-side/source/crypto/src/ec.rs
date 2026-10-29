@@ -344,7 +344,6 @@ pub struct OmmegaEcUndigestSignOperation {
     key: Key,
     curve: ec::NistCurve,
     pending_input: Vec<u8>,
-    max_size: usize,
 }
 
 impl OmmegaEcUndigestSignOperation {
@@ -353,27 +352,15 @@ impl OmmegaEcUndigestSignOperation {
             key: key_from_nist(key, curve),
             curve,
             pending_input: Vec::new(),
-            max_size: curve.coord_len(),
         })
     }
 }
 
 impl crypto::AccumulatingOperation for OmmegaEcUndigestSignOperation {
-    fn max_input_size(&self) -> Option<usize> {
-        Some(self.max_size)
-    }
-
     fn update(&mut self, data: &[u8]) -> Result<(), Error> {
-        // 以前这里是把超出的部分默默截掉。AOSP 那边是回 InvalidInputLength，
-        // 静默截断会让“我签了 64 字节”和“签名覆盖前 32 字节”两边的认知不
-        // 一致（检测器一组对照就能看出来），所以改成直接报错。
-        if data.len() + self.pending_input.len() > self.max_size {
-            return Err(km_err!(
-                InvalidInputLength,
-                "undigest sign input exceeds {} bytes",
-                self.max_size
-            ));
-        }
+        // 真机量到的语义：输入比域宽长不是错误，ECDSA 把它当大整数，只取最左边域宽
+        // 那几字节（RFC 6979 的 bits2int）；短的就左边补 0。上一版这里直接回
+        // InvalidInputLength，检测器拿 128 字节的"摘要"进来就拿到 -21。
         self.pending_input.try_extend_from_slice(data)?;
         Ok(())
     }
@@ -542,9 +529,11 @@ mod signing_tests {
             .unwrap_or_else(|e| panic!("NONEwithECDSA 验签失败（说明又哈希了一层）: {e:?}"));
     }
 
+    /// 长摘要（比域宽）：不是错误，取最左边域宽那几字节再签（RFC 6979 bits2int）。
     #[test]
-    fn undigest_rejects_input_longer_than_the_field() {
+    fn undigest_truncates_input_longer_than_the_field() {
         let key = p256_key();
+        let long: Vec<u8> = (0u8..128).collect();
         let mut op = OmmegaEcUndigestSignOperation::new(
             match &key {
                 Key::P256(k) => k.clone(),
@@ -553,12 +542,15 @@ mod signing_tests {
             ec::NistCurve::P256,
         )
         .unwrap();
-        op.update(&[0u8; 24]).unwrap();
-        let err = op.update(&[0u8; 16]).unwrap_err();
-        assert!(matches!(
-            err.kind(),
-            kmr_common::ErrorKind::Hal(kmr_wire::keymint::ErrorCode::InvalidInputLength, _)
-        ));
+        op.update(&long[..64]).unwrap();
+        op.update(&long[64..]).expect("128 字节不该报错");
+        let sig = Box::new(op).finish().unwrap();
+
+        let verifier = p256_verifier(&key);
+        let sig = SigP256::from_der(&sig).unwrap();
+        verifier
+            .verify_prehash(&long[..32], &sig)
+            .unwrap_or_else(|e| panic!("长摘要应当取左边 32 字节验得过: {e:?}"));
     }
 
     /// 短摘要（比域窄）：左边补 0 再签，不能直接报错。

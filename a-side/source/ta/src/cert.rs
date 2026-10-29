@@ -2314,6 +2314,14 @@ mod tests {
             (keymint::SecurityLevel::TrustedEnvironment, 1u32),
             (keymint::SecurityLevel::Strongbox, 2u32),
         ] {
+            let unique_id: Vec<u8> = Vec::new();
+            let boot_info = keymint::BootInfo {
+                verified_boot_key: Vec::new(),
+                device_boot_locked: true,
+                verified_boot_state: keymint::VerifiedBootState::Verified,
+                verified_boot_hash: Vec::new(),
+                boot_patchlevel: 0,
+            };
             let ext = attestation_extension(
                 300,
                 b"challenge",
@@ -2322,8 +2330,8 @@ mod tests {
                 None,
                 &[],
                 &[],
-                &[],
-                None,
+                &unique_id,
+                &boot_info,
                 &[],
             )
             .expect("extension encodes");

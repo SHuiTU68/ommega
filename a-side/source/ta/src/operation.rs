@@ -56,12 +56,20 @@ pub(crate) enum CryptoOperation {
         alias: String,
         algorithm: String,
         data: Vec<u8>,
+        /// `NONEwithECDSA` 时要的域宽：真 TEE 对输入长度很挑，太短太长都可能拒；
+        /// 本地软件 TA 是 pad/truncate 处理，两边不统一就会出现「本地能签、远程报错」。
+        raw_digest_len: Option<usize>,
     },
     /// Remote (B-side TEE) decryption operation.
     RemoteDecrypt {
         alias: String,
         algorithm: String,
         data: Vec<u8>,
+        /// RSA 的模长（字节）。真 TEE 收到长度不对的密文会回自己的错误码（QTI 上是
+        /// `-33 INVALID_KEY_BLOB`），本地软件 TA 回 `-30 VERIFICATION_FAILED` ——
+        /// 同一台机上本地/远程两边不一致就是检测器能看到的差异。所以在这里先按模长
+        /// 拦一道，行为以本地为准。
+        expected_len: Option<usize>,
     },
 }
 
@@ -420,12 +428,17 @@ impl crate::KeyMintTa {
                 alias,
                 algorithm,
                 mut data,
+                raw_digest_len,
             } => {
                 if let Some(input) = finish_data {
                     data.try_extend_from_slice(input).map_err(|_| {
                         km_err!(MemoryAllocationFailed, "remote sign buffer overflow")
                     })?;
                 }
+                let data = match raw_digest_len {
+                    Some(len) => raw_digest_fitted(&data, len),
+                    None => data,
+                };
                 let remote = self.dev.remote.as_ref().ok_or_else(|| {
                     km_err!(
                         UnknownError,
@@ -443,11 +456,23 @@ impl crate::KeyMintTa {
                 alias,
                 algorithm,
                 mut data,
+                expected_len,
             } => {
                 if let Some(input) = finish_data {
                     data.try_extend_from_slice(input).map_err(|_| {
                         km_err!(MemoryAllocationFailed, "remote decrypt buffer overflow")
                     })?;
+                }
+                if let Some(expected) = expected_len {
+                    if data.len() != expected {
+                        // 跟本地那条路回同一个类別（rsa crate 对长度不对的密文也是
+                        // 解密失败），远端压根不转发。
+                        return Err(km_err!(
+                            VerificationFailed,
+                            "RSA ciphertext is {} bytes, expected {expected}",
+                            data.len()
+                        ));
+                    }
                 }
                 let remote = self.dev.remote.as_ref().ok_or_else(|| {
                     km_err!(
@@ -670,14 +695,26 @@ impl crate::KeyMintTa {
             .unwrap(/* safe: op_index() checks */);
         let remote = match &op.crypto_op {
             CryptoOperation::RemoteSign {
-                alias, algorithm, ..
-            } => Some((true, alias.clone(), algorithm.clone())),
+                alias,
+                algorithm,
+                raw_digest_len,
+                ..
+            } => Some((
+                true,
+                alias.clone(),
+                algorithm.clone(),
+                *raw_digest_len,
+                None,
+            )),
             CryptoOperation::RemoteDecrypt {
-                alias, algorithm, ..
-            } => Some((false, alias.clone(), algorithm.clone())),
+                alias,
+                algorithm,
+                expected_len,
+                ..
+            } => Some((false, alias.clone(), algorithm.clone(), None, *expected_len)),
             _ => None,
         };
-        let Some((is_sign, alias, algorithm)) = remote else {
+        let Some((is_sign, alias, algorithm, raw_digest_len, expected_len)) = remote else {
             // 不是远程 key：放回去，让正常 finish 路径处理。
             self.operations[op_idx] = Some(op);
             return Ok(None);
@@ -693,6 +730,19 @@ impl crate::KeyMintTa {
         if let Some(input) = data {
             buf.try_extend_from_slice(input)
                 .map_err(|_| km_err!(MemoryAllocationFailed, "remote finish buffer overflow"))?;
+        }
+        if is_sign {
+            if let Some(len) = raw_digest_len {
+                buf = raw_digest_fitted(&buf, len);
+            }
+        } else if let Some(expected) = expected_len {
+            if buf.len() != expected {
+                return Err(km_err!(
+                    VerificationFailed,
+                    "RSA ciphertext is {} bytes, expected {expected}",
+                    buf.len()
+                ));
+            }
         }
         Ok(Some((is_sign, alias, algorithm, buf)))
     }
@@ -757,5 +807,43 @@ impl crate::KeyMintTa {
         } else {
             Ok(false)
         }
+    }
+}
+
+/// 把 `NONEwithECDSA` 的输入整理成正好一个域宽。
+///
+/// ECDSA 把输入当大整数：短的左边补 0、长的取最左边 `len` 字节（RFC 6979 的 bits2int）。
+/// 本地软件 TA 本来就是这个规则，但远程那条路是把原始字节直接交给 B 的真 TEE，各家的
+/// HAL 对「不是域宽」的输入表现不一致（有的直接拒），于是同一个请求本地能签、远程报错。
+/// 所以在转发前统一成域宽，两条路的语义才一致。
+fn raw_digest_fitted(data: &[u8], len: usize) -> Vec<u8> {
+    if data.len() == len {
+        return data.to_vec();
+    }
+    if data.len() > len {
+        return data[..len].to_vec();
+    }
+    let mut out = vec![0u8; len];
+    out[len - data.len()..].copy_from_slice(data);
+    out
+}
+#[cfg(test)]
+mod tests {
+    use super::raw_digest_fitted;
+
+    /// 远程的 `NONEwithECDSA` 也得跟本地一样：短的左补 0、长的取左边域宽、正好就不动。
+    #[test]
+    fn raw_digest_is_fitted_to_the_field_width() {
+        let short = [0x11u8, 0x22, 0x33, 0x44];
+        assert_eq!(
+            raw_digest_fitted(&short, 8),
+            vec![0, 0, 0, 0, 0x11, 0x22, 0x33, 0x44]
+        );
+
+        let long: Vec<u8> = (0u8..40).collect();
+        assert_eq!(raw_digest_fitted(&long, 32), long[..32].to_vec());
+
+        let exact = [7u8; 32];
+        assert_eq!(raw_digest_fitted(&exact, 32), exact.to_vec());
     }
 }

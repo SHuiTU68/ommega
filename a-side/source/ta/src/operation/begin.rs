@@ -318,15 +318,26 @@ impl crate::KeyMintTa {
                 trusted_conf_data,
                 auth_info: op_auth_info,
                 crypto_op: match purpose {
-                    KeyPurpose::Sign => CryptoOperation::RemoteSign {
-                        alias: remote.alias.clone(),
-                        algorithm: remote_sign_algorithm(key_chars, &params)?,
-                        data: Vec::new(),
-                    },
+                    KeyPurpose::Sign => {
+                        let algorithm = remote_sign_algorithm(key_chars, &params)?;
+                        // 只有在 `NONEwithECDSA`（输入就是摘要）时才有「域宽」这回事。
+                        let raw_digest_len = if algorithm.starts_with("NONEwithECDSA") {
+                            Some(ec_field_len(key_chars)?)
+                        } else {
+                            None
+                        };
+                        CryptoOperation::RemoteSign {
+                            alias: remote.alias.clone(),
+                            algorithm,
+                            data: Vec::new(),
+                            raw_digest_len,
+                        }
+                    }
                     KeyPurpose::Decrypt => CryptoOperation::RemoteDecrypt {
                         alias: remote.alias.clone(),
                         algorithm: remote_decrypt_algorithm(key_chars, &params)?,
                         data: Vec::new(),
+                        expected_len: rsa_modulus_len(key_chars)?,
                     },
                     _ => {
                         return Err(km_err!(
@@ -595,6 +606,32 @@ fn remote_sign_algorithm(chars: &[KeyParam], params: &[KeyParam]) -> Result<Stri
         Algorithm::MlDsa => Ok("ML-DSA-65".to_string()),
         _ => Err(km_err!(UnsupportedAlgorithm, "remote sign for {algo:?}")),
     }
+}
+
+/// RSA 的模长（字节）。非 RSA 密钥返回 `None`。
+fn rsa_modulus_len(chars: &[KeyParam]) -> Result<Option<usize>, Error> {
+    if get_tag_value!(chars, Algorithm, ErrorCode::UnsupportedAlgorithm)? != Algorithm::Rsa {
+        return Ok(None);
+    }
+    let bits = get_tag_value!(chars, KeySize, ErrorCode::UnsupportedKeySize)?;
+    Ok(Some((bits.0 as usize) / 8))
+}
+
+/// EC 密钥的域宽（字节）。`NONEwithECDSA` 要把输入整理成这个长度再交给对方。
+fn ec_field_len(chars: &[KeyParam]) -> Result<usize, Error> {
+    let curve = get_tag_value!(chars, EcCurve, ErrorCode::UnsupportedEcCurve)?;
+    Ok(match curve {
+        EcCurve::P224 => 28,
+        EcCurve::P256 => 32,
+        EcCurve::P384 => 48,
+        EcCurve::P521 => 66,
+        c => {
+            return Err(km_err!(
+                UnsupportedEcCurve,
+                "no ECDSA field width for {c:?}"
+            ))
+        }
+    })
 }
 
 /// Determine the remote decryption algorithm from key characteristics and begin modes.
