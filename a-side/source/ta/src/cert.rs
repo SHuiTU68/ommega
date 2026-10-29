@@ -2305,4 +2305,35 @@ mod tests {
             }
         }
     }
+
+    /// 不管签发者是谁（主 keybox / StrongBox 那份 / 服务端身份），叶子上的级别只跟
+    /// 「这次请求是什么级别」有关：传 Strongbox 进去，两个字段都必须是 2。
+    #[test]
+    fn attestation_level_follows_the_request_not_the_signer() {
+        for (level, want) in [
+            (keymint::SecurityLevel::TrustedEnvironment, 1u32),
+            (keymint::SecurityLevel::Strongbox, 2u32),
+        ] {
+            let ext = attestation_extension(
+                300,
+                b"challenge",
+                &[],
+                level,
+                None,
+                &[],
+                &[],
+                &[],
+                None,
+                &[],
+            )
+            .expect("extension encodes");
+            assert_eq!(ext.attestation_security_level as u32, want);
+            assert_eq!(ext.keymint_security_level as u32, want);
+            // 也不能因为级别不同就丢掉 hw_enforced 里的内容：级别只影响标哪个值。
+            let der = asn1_der_encode(&ext).expect("extension serializes");
+            let parsed = AttestationExtension::from_der(&der).expect("round-trips");
+            assert_eq!(parsed.attestation_security_level as u32, want);
+            assert_eq!(parsed.keymint_security_level as u32, want);
+        }
+    }
 }
