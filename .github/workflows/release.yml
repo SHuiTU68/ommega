@@ -135,12 +135,19 @@ jobs:
           distribution: temurin
           java-version: "21"
 
+      # `yes | sdkmanager` 配上 `set -o pipefail` 会因为 yes 收到 SIGPIPE 而
+      # 整条管道返回非零（日志里那句 `yes: standard output: Broken pipe`），
+      # 把 `yes` 的退出码吃掉就行。许可在 runner 上本来就已经接受过。
       - name: 装 Android SDK 平台
         run: |
-          set -euo pipefail
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
-            "platforms;android-36" "build-tools;36.0.0"
+          set -uo pipefail
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKM" ]; then
+            echo "runner 上没有 $SDKM" >&2
+            exit 1
+          fi
+          { yes 2>/dev/null || true; } | "$SDKM" --licenses >/dev/null 2>&1 || true
+          "$SDKM" "platforms;android-36" "build-tools;36.0.0"
 
       - name: 取 gradle 缓存
         uses: actions/cache@v4
