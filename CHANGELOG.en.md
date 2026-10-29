@@ -4,5 +4,6 @@
 
 ## 1.7.9
 
-- Internal clean-up and a change to how the packages are built; behaviour is the
-  same as the previous release.
+- Fingerprint state queries and enrolment work again on some devices.
+- The background check no longer restarts the fingerprint service over and
+  over, which keeps the log quiet and draws less power.
