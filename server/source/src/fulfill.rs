@@ -1534,6 +1534,9 @@ fn decrypt_data(key: &LeafKey, data: &[u8], algorithm: &str) -> anyhow::Result<V
     decrypt_oaep(rk, digest, mgf, data)
 }
 
+// 每档失败只盖写同一个 `last`、真正读在 match 之后，编译器会报 unused_assignments，
+// 这里就在函数上下方方便一下。
+#[allow(unused_assignments)]
 fn decrypt_oaep(
     rk: &RsaPrivateKey,
     digest: LeafDigest,
@@ -1541,8 +1544,7 @@ fn decrypt_oaep(
     data: &[u8],
 ) -> anyhow::Result<Vec<u8>> {
     use rsa::Oaep;
-    // 宏体里不能直接写外层的 `last`（宏卫生会把那个名字当成新绑定），所以把它当
-    // 参数传进去。
+    // 宏体里直接写 `last` 会被宏卫生当成新绑定，所以只能拿参数把 slot 传进去。
     macro_rules! try_scheme {
         ($slot:ident, $d:ty, $m:ty) => {
             match rk.decrypt(Oaep::new_with_mgf_hash::<$d, $m>(), data) {
@@ -1577,8 +1579,10 @@ fn decrypt_oaep(
     // 老调用方没带算法串时按历史上能用的两种组合再兜一遍。
     try_scheme!(last, Sha256, Sha256);
     try_scheme!(last, Sha256, Sha1);
-    let _ = last;
-    Err(anyhow::anyhow!("rsa oaep decrypt failed"))
+    match last {
+        Some(e) => Err(anyhow::anyhow!("rsa oaep decrypt failed: {e}")),
+        None => Err(anyhow::anyhow!("rsa oaep decrypt failed")),
+    }
 }
 
 /// 「年月日时」时间戳，给合成的 boot 值当种子用。
@@ -1911,10 +1915,7 @@ mod layer_crypto_tests {
 
     fn p256_leaf() -> (p256::SecretKey, LeafKey) {
         let sk = p256::SecretKey::random(&mut rand::rngs::OsRng);
-        (
-            sk.clone(),
-            LeafKey::Ec(cert::EcKey::P256(sk.clone().into())),
-        )
+        (sk.clone(), LeafKey::Ec(cert::EcKey::P256(sk.clone())))
     }
 
     /// PKCS#1 v1.5 解密：以前这条完全没实现，`RSA/ECB/PKCS1Padding` 的请求在
@@ -1963,7 +1964,6 @@ mod layer_crypto_tests {
     /// SHA384withRSA：PKCS#1 的 DigestInfo 前缀必须跟着摘要走。
     #[test]
     fn sha384_rsa_signature_verifies() {
-        use rsa::signature::Verifier as _;
         let (priv_key, leaf) = rsa_leaf();
         let msg = b"ommega-sha384-check";
         let sig = sign_data(&leaf, msg, "SHA384withRSA").expect("sign");

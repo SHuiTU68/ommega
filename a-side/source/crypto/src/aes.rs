@@ -362,10 +362,6 @@ fn gcm_decrypt(
     gcm_decrypt_raw(key, nonce, aad, ciphertext, tag)
 }
 
-/// Public AES-GCM encrypt helper (used by `km`). Emits `ciphertext || 16-byte tag`.
-
-/// Public AES-GCM decrypt helper (used by `km`). `ciphertext` and `tag` are separate.
-
 /// 按 (密钥长度, tag 长度) 分派到 `aes-gcm` 的对应实例。
 ///
 /// ring 的 `AES_*_GCM` 只认 16 字节 tag、也没有 AES-192，所以这里整段换成

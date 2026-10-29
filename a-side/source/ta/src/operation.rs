@@ -696,6 +696,7 @@ impl crate::KeyMintTa {
     /// 检测器（TrustAttestor keystore_timing）量的就是“忙时 begin 慢不慢”。
     ///
     /// 返回 `(is_sign, alias, algorithm, data)`，由调用方在锁外完成请求。
+    #[allow(clippy::type_complexity)]
     pub fn take_remote_finish(
         &mut self,
         op_handle: i64,

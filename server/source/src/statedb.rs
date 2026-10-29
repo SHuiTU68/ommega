@@ -908,11 +908,11 @@ mod tests {
         // 一条三小时前用过（活跃），两条四天前用过（真闲置）
         db.upsert_session(
             "active",
-            &row_at("c", "l", now - 3 * 3600_000, now - 3 * 3600_000),
+            &row_at("c", "l", now - 3 * 3_600_000, now - 3 * 3_600_000),
         )
         .unwrap();
         for (name, ago) in [("idle1", 4u64), ("idle2", 5u64)] {
-            let ms = now - ago * 24 * 3600_000;
+            let ms = now - ago * 24 * 3_600_000;
             db.upsert_session(name, &row_at("c", "l", ms, ms)).unwrap();
         }
 

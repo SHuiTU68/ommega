@@ -60,10 +60,10 @@ fn service_name() -> String {
 /// 回复的字节完全可控，没有 libbinder 自己的异常包装夹在中间。拿来对「真机 HAL 回的
 /// 长什么样」和「我们回的有没有对上」最直接。
 pub fn probe(service: &str, code: u32) -> anyhow::Result<String> {
-    use rsbinder::{Parcel, Transactable};
+    use rsbinder::Parcel;
     rsbinder::ProcessState::init("/dev/binder", 15)
         .map_err(|error| anyhow::anyhow!("binder init failed: {error}"))?;
-    let binder = rsbinder::hub::get_service(service)
+    let binder = rsbinder::hub::check_service(service)
         .ok_or_else(|| anyhow::anyhow!("service {service} not found"))?;
     let descriptor = descriptor_of(service);
     let mut data = Parcel::new();

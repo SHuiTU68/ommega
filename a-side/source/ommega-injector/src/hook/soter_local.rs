@@ -433,7 +433,7 @@ fn device_info() -> &'static DeviceInfo {
 
 /// 32 字符 hex 转 16 字节。真机 getDeviceId 出的是二进制，不是文本。
 fn hex_bytes(text: &str) -> Option<Vec<u8>> {
-    if text.len() % 2 != 0 {
+    if !text.len().is_multiple_of(2) {
         return None;
     }
     let bytes = text.as_bytes();
@@ -939,6 +939,7 @@ mod tests {
         }
     }
 
+    #[allow(dead_code)]
     fn as_buffer_code(answer: Option<Answer>) -> i32 {
         match answer {
             Some(Answer::Buffer { code, .. }) => code,

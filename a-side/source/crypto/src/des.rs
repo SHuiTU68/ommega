@@ -190,7 +190,7 @@ impl crypto::EmittingOperation for OmmegaDesOperation {
 #[cfg(test)]
 mod pkcs7_decrypt_tests {
     use super::*;
-    use crypto::{AccumulatingOperation as _, Des as _};
+    use crypto::Des as _;
 
     fn key() -> crypto::des::Key {
         let mut raw = [0u8; 24];

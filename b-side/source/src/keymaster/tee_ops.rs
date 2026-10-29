@@ -660,8 +660,7 @@ fn mint_attest_key_with(
     // 委派时 HAL 只回子证书（AIDL: "the returned certificate chain must contain
     // only an attestation certificate signed with the specified key"），
     // 父链由本端补上——A 端要靠它校验签发关系，校验完只把子证书交给调用方。
-    if parent.is_some() {
-        let parent = parent.as_ref().expect("checked above");
+    if let Some(parent) = parent.as_ref() {
         append_issuer_chain(&mut cert_chain, &parent.cert_chain)?;
     }
 
