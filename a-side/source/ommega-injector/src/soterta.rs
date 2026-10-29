@@ -492,3 +492,32 @@ pub fn serve(driver: &str) -> anyhow::Result<()> {
     rsbinder::ProcessState::join_thread_pool()?;
     Ok(())
 }
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    /// 布局按调用方分开记：同一台机器上两个客户端用不同号表时互不干扰。
+    ///
+    /// 以前是全局一个 AtomicU8，先到的 soterserver 把布局定成 4 槽，后到的
+    /// SoterChecker 走连号就全程调到错的方法上（MEIZU 20 Pro 实测五项全红）。
+    #[test]
+    fn layouts_are_tracked_per_caller() {
+        // 4 槽那套：hasAskAlready 是 9，号表原样不动。
+        assert_eq!(canonical_code("/test/4slot", 9, 4), 9);
+        assert_eq!(canonical_code("/test/4slot", 5, 4), 5);
+        // 连号那套：7 = hasAskAlready、9 = initSign，换算成 4 槽的 9 / 11。
+        assert_eq!(canonical_code("/test/11slot", 7, 4), 9);
+        assert_eq!(canonical_code("/test/11slot", 9, 4), 11);
+        // 两个调用方互不覆盖：先记下的 4 槽不会被后到的连号改掉。
+        assert_eq!(canonical_code("/test/4slot", 5, 4), 5);
+        assert_eq!(canonical_code("/test/11slot", 5, 4), 7);
+    }
+
+    /// 头一次就判不出来的调用方保持未知（号表原样），量一次号表也不会写脏。
+    #[test]
+    fn unknown_layout_keeps_the_raw_code() {
+        assert_eq!(canonical_code("/test/unknown", 13, 4), 13);
+        assert_eq!(layout_slot("/test/unknown"), LAYOUT_UNKNOWN);
+    }
+}
