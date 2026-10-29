@@ -1102,29 +1102,38 @@ fn patch_level_to_yyyymm(value: &str) -> Option<u32> {
 /// 链上 tag 718 就只有年到月，没那个日。
 fn patch_level_to_yyyymmdd(value: &str) -> Option<u32> {
     let s = value.trim();
+    // 带破折号的写法：给了日就用它（哪怕是 05），没给日才补 01。
     if s.as_bytes().get(4) == Some(&b'-') {
-        let year = s[0..4].parse::<u32>().ok()?;
-        let month = s[5..7].parse::<u32>().ok()?;
-        let day = s
-            .as_bytes()
-            .get(8)
-            .and_then(|_| s[8..10].parse::<u32>().ok())
-            .unwrap_or(0);
+        let mut parts = s.split('-');
+        let year = parts.next()?.parse::<u32>().ok()?;
+        let month = parts.next()?.parse::<u32>().ok()?;
+        let day = match parts.next() {
+            Some(d) => d.parse::<u32>().ok()?,
+            None => 1,
+        };
+        if parts.next().is_some() {
+            return None;
+        }
         if (1..=12).contains(&month) && (1..=31).contains(&day) {
             return Some(year * 10000 + month * 100 + day);
         }
         return None;
     }
-    // 裸 YYYYMMDD
-    if s.len() == 8 {
-        let v = s.parse::<u32>().ok()?;
-        let (month, day) = ((v / 100) % 100, v % 100);
-        if (1..=12).contains(&month) && (1..=31).contains(&day) {
-            return Some(v);
+    match s.len() {
+        // 裸 YYYYMMDD
+        8 => {
+            let v = s.parse::<u32>().ok()?;
+            let (month, day) = ((v / 100) % 100, v % 100);
+            ((1..=12).contains(&month) && (1..=31).contains(&day)).then_some(v)
         }
+        // 裸 YYYYMM：缺日，补 01
+        6 => {
+            let v = s.parse::<u32>().ok()?;
+            ((1..=12).contains(&(v % 100))).then_some(v * 100 + 1)
+        }
+        // 其它交给月级帮工（它接受 "2026-8" 这类），同样只在缺日时补 01。
+        _ => patch_level_to_yyyymm(s).map(|v| v * 100 + 1),
     }
-    // 只写到月的（"YYYY-MM" / "YYYYMM"）就补 01，跟模块里 auto 的继承口径一致。
-    patch_level_to_yyyymm(s).map(|v| v * 100 + 1)
 }
 
 /// Convenience: `true` if remote relay is enabled in config.
@@ -1472,6 +1481,18 @@ mod patch_level_tests {
         assert_eq!(patch_level_to_yyyymmdd("2026-08"), Some(2026_0801));
         assert_eq!(patch_level_to_yyyymmdd("202608"), Some(2026_0801));
         assert_eq!(patch_level_to_yyyymmdd("20260801"), Some(2026_0801));
+    }
+
+    #[test]
+    fn day_is_only_filled_when_missing() {
+        // 给了日就用它，05/15 不能被抹成 01
+        assert_eq!(patch_level_to_yyyymmdd("2026-08-15"), Some(2026_0815));
+        assert_eq!(patch_level_to_yyyymmdd("2026-08-05"), Some(2026_0805));
+        assert_eq!(patch_level_to_yyyymmdd("20260815"), Some(2026_0815));
+        assert_eq!(patch_level_to_yyyymmdd("2026-8-5"), Some(2026_0805));
+        // 缺日才补 01
+        assert_eq!(patch_level_to_yyyymmdd("2026-08"), Some(2026_0801));
+        assert_eq!(patch_level_to_yyyymmdd("202608"), Some(2026_0801));
     }
 
     #[test]
