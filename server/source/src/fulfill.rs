@@ -1057,12 +1057,32 @@ impl Fulfill {
             }));
         }
         let algorithm = Self::ctx_algorithm_str(&ctx);
-        let identity = match self.identity_for(device_id, &algorithm, prefer_slot) {
+        // 控制台可以按安全级别钉死用哪份身份（StrongBox 一份、TEE 一份）。钉了就按钉的
+        // 来，不再看这次请求的是哪台 B（也不走「黑名单先看槽位」那条）。
+        let level = ctx
+            .get("attestation_security_level")
+            .and_then(Value::as_i64)
+            .unwrap_or(1);
+        let pinned = crate::identity_policy::device_for_level(level);
+        let lookup_id = match pinned.as_deref() {
+            Some(id) => {
+                tracing::info!(
+                    "server_keybox: level={level} 按控制台指定用身份 {id}（请求 device={device_id}）"
+                );
+                id
+            }
+            None => device_id,
+        };
+        let identity = match self.identity_for(
+            lookup_id,
+            &algorithm,
+            prefer_slot && pinned.is_none(),
+        ) {
             Some(id) => id,
             None => {
                 return Some(json!({
                     "error": format!(
-                        "server_keybox: no stored server identity for device {device_id} (algorithm {algorithm})"
+                        "server_keybox: no stored server identity for device {lookup_id} (algorithm {algorithm})"
                     )
                 }));
             }

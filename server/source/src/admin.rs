@@ -1265,6 +1265,59 @@ pub async fn admin_attest_policy_status(
     .into_response()
 }
 
+/// GET /api/admin/identity_policy/ - 服务端 keybox 按安全级别用哪份身份。
+pub async fn admin_identity_policy_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(r) = check_auth(&state, &headers) {
+        return *r;
+    }
+    let (tee, strongbox) = crate::identity_policy::snapshot();
+    Json(json!({
+        "status": "ok",
+        "tee": tee,
+        "strongbox": strongbox,
+        "persisted": std::path::Path::new(crate::identity_policy::PATH).is_file(),
+        "path": crate::identity_policy::PATH,
+    }))
+    .into_response()
+}
+
+#[derive(serde::Deserialize)]
+pub struct IdentityPolicyBody {
+    /// TEE（security level 1）用哪份身份；空串 = 不指定。
+    #[serde(default)]
+    pub tee: Option<String>,
+    /// StrongBox（security level 2）用哪份身份；空串 = 不指定。
+    #[serde(default)]
+    pub strongbox: Option<String>,
+}
+
+/// POST /api/admin/identity_policy/ - 改「哪个级别用哪份身份」。
+pub async fn admin_identity_policy_set(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<IdentityPolicyBody>,
+) -> Response {
+    if let Err(r) = check_auth(&state, &headers) {
+        return *r;
+    }
+    if let Err(e) = crate::identity_policy::set(body.tee.clone(), body.strongbox.clone()) {
+        return json_err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("save identity policy: {e}"),
+        );
+    }
+    let (tee, strongbox) = crate::identity_policy::snapshot();
+    Json(json!({
+        "status": "ok",
+        "tee": tee,
+        "strongbox": strongbox,
+    }))
+    .into_response()
+}
+
 #[derive(serde::Deserialize)]
 pub struct AttestPolicyBody {
     /// `auto` | `b_first` | `keybox_first` for ordinary attest.

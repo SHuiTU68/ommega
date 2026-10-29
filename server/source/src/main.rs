@@ -262,6 +262,10 @@ fn build_router(cfg: &Arc<Config>) -> Router {
         .route("/api/admin/strongbox/", get(admin::admin_strongbox_status))
         .route("/api/admin/strongbox/", post(admin::admin_strongbox_toggle))
         .route(
+            "/api/admin/identity_policy/",
+            get(admin::admin_identity_policy_status).post(admin::admin_identity_policy_set),
+        )
+        .route(
             "/api/admin/attest_policy/",
             get(admin::admin_attest_policy_status).post(admin::admin_attest_policy_set),
         )

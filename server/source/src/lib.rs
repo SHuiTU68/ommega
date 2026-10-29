@@ -15,6 +15,7 @@ pub mod fulfill;
 pub mod geo;
 pub mod handlers;
 pub mod http;
+pub mod identity_policy;
 pub mod keybox;
 pub mod pay;
 pub mod queue;
