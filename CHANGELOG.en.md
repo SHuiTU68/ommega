@@ -4,6 +4,7 @@
 
 ## 1.7.8
 
+- Two places no longer diverge from the platform: a request whose optional argument is encoded differently, or an EC/RSA signature that asks for another digest, used to be handed to the system backend (so the key we created could not be read back and the signature would not verify). Both now follow the platform's own rules.
 - The local keys page can hold a separate keybox for the StrongBox level; without one both levels share the same file, and the leaf level always follows the request.
 - New module icon.
 - The spoof panel only syncs the boot hash and the boot patch level; nothing else
