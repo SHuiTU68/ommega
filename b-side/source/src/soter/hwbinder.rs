@@ -303,6 +303,15 @@ impl Parcel {
         addr
     }
 
+    /// 挂一段调用方自己拼好的字节，返回稳定地址。
+    ///
+    /// 给 HIDL keymaster 那条路用：它的 `KeyParameter` 数组、`hidl_vec` 头要先拿到
+    /// 内层地址再拼外层，而那个模块不在本文件里，`lash` 是私有的。只加这一个公开
+    /// 转发，SOTER 那几处调用一点没动。
+    pub fn lash_bytes(&mut self, bytes: &[u8]) -> usize {
+        self.lash(bytes.to_vec())
+    }
+
     /// 把 `n` 字节清零挂上去，同样返回稳定地址（用来放 `hidl_string` 那 16 字节头）。
     fn lash_zeroed(&mut self, n: usize) -> usize {
         self.lash(vec![0u8; n])
