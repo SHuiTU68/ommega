@@ -37,7 +37,7 @@
   /* 标签栏 */
   .tabs{display:flex;gap:4px;padding:0 14px 10px;position:relative}
   .tab-pill{position:absolute;left:0;top:0;border-radius:10px;background:var(--card);
-      border:1px solid var(--line);pointer-events:none;
+      border:1px solid var(--line);pointer-events:none;will-change:transform;
       transition:transform .26s cubic-bezier(.22,.61,.36,1),width .26s cubic-bezier(.22,.61,.36,1)}
   .tabs.dragging .tab-pill{transition:none}
   .tab{flex:1;padding:8px 4px;border-radius:10px;border:1px solid transparent;background:transparent;
@@ -46,10 +46,17 @@
   .tab.on{background:transparent;border-color:transparent;color:var(--fg);font-weight:600}
   /* 分页 */
   .pages{flex:1;position:relative;overflow:hidden;min-width:0;touch-action:pan-y}
+  /* 拖动和翻页动画期间把露出来的那几页留在合成层里，位移交给合成器。
+     翻页动画结束后再撤掉，别让大页面一直占着层。 */
+  .pages.dragging .page.on,
+  .pages.settling .page.on{will-change:transform}
   .pages.dragging .page{transition:none}
   .page{position:absolute;inset:0;overflow-y:auto;overflow-x:hidden;padding:0 14px 28px;
       opacity:0;pointer-events:none;transform:translateX(12%);
-      transition:transform .24s cubic-bezier(.22,.61,.36,1),opacity .24s ease}
+      contain:layout paint;
+      /* 只给 transform 做过渡：整页平移本来就能盖住旧页，再叠一层 opacity 透明混合
+         等于让两张大图层每帧多算一遍混合，低端 GPU 上最容易掉帧。 */
+      transition:transform .22s cubic-bezier(.22,.61,.36,1)}
   .page.on{opacity:1;pointer-events:auto;transform:translateX(0)}
   .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:12px}
   .card h2{margin:0 0 10px;font-size:14px;font-weight:600;color:var(--dim)}
@@ -91,12 +98,15 @@
   .search{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;
       background:var(--card);color:var(--fg);font-size:13px;font-family:inherit;margin-bottom:8px}
   #applist{background:var(--card);border:1px solid var(--line);border-radius:10px}
-  .app{display:flex;align-items:center;gap:10px;padding:7px 9px;border-top:1px solid var(--line)}
+  /* 行高固定：列表按窗口渲染，靠这个常量算滚动位置；行里两行文字也钉死行高，
+     免得系统字号/换行把高度撑变，窗口就对不上了。 */
+  .app{display:flex;align-items:center;gap:10px;padding:7px 9px;border-top:1px solid var(--line);
+      min-height:54px;overflow:hidden}
   .app:first-child{border-top:0}
   .app img{width:28px;height:28px;border-radius:6px;flex:0 0 28px;background:var(--line)}
   .app .meta{flex:1;min-width:0}
-  .app .meta b{display:block;font-weight:500;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .app .meta small{display:block;color:var(--dim);font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .app .meta b{display:block;font-weight:500;font-size:13.5px;line-height:20px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .app .meta small{display:block;color:var(--dim);font-size:11.5px;line-height:17px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .app select{flex:0 0 104px;padding:5px 6px;border:1px solid var(--line);border-radius:8px;
       background:var(--bg);color:var(--fg);font-size:12.5px;font-family:inherit}
   .app.on{background:rgba(56,103,214,.07)}
@@ -415,6 +425,8 @@ function applyI18n(){
   document.documentElement.lang = LANG;
   document.querySelectorAll("[data-i18n]").forEach(function(e){ e.textContent = t(e.dataset.i18n); });
   document.querySelectorAll("[data-i18n-ph]").forEach(function(e){ e.placeholder = t(e.dataset.i18nPh); });
+  /* setT 记下来的那些动态值也一起按新语言重算。 */
+  document.querySelectorAll("[data-i18n-key]").forEach(function(e){ paintT(e); });
 }
 
 /* ---------------------------- 与设备交互（ksu） ---------------------------- */
@@ -668,7 +680,17 @@ async function loadOwnPatch(){
 /* 最近一次 /api/status/ 的响应：设备信息那块用它显示配对的 B 端与版本。 */
 var LAST_STATUS = null;
 var appRows = [], appFilter = "";
+/* 应用列表当前显示的提示（载入中/为空/载入失败）。存的是 i18n 键而不是成品文字，
+   切语言时照着它重画一遍就行，不会把「载入中」误写成「载入失败」。 */
+var appHint = {key: "apps.loading", vars: null};
 var showSystem = false;   // 默认只看用户应用，点工具栏那个开关才把系统应用也列出来
+/* 应用列表按「窗口」渲染：DOM 里只保留视口附近那几十行。
+   几百行全塞进 DOM 时，滑到「作用域」这一页要整页光栅化，实测会掉二十多帧。 */
+var APP_ROW_H = 54;         // 跟 .app 的高度一致；首次渲染后按实际量到的高度修正（系统字号可能放大文字）
+var APP_OVERSCAN = 12;      // 视口上下各多渲染几行，滚动时不至于露白
+var appShown = [];          // 当前筛选后要显示的那批（数据，不是 DOM）
+var appWinStart = -1, appWinEnd = -1;   // 已渲染的区间
+var appWinRAF = 0;
 /* 伪装参数表单里每一项：输入框 id → 要写的属性名。
    手动编辑现在能改的就是模式1 会同步的那一整组（启动哈希/三处补丁/机型那几项/指纹/系统版本），
    免得只能看着摘要里的值而不能改。 */
@@ -693,6 +715,25 @@ var fpDir = "/sdcard/Download";
 
 /* -------------------------------- 小工具 --------------------------------- */
 function el(tag, cls, text){ var n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; }
+/* 动态文本（SOTER 记录、密钥状态、进程状态、应用计数…）是渲染时用 t() 算好塞进去的，
+   data-i18n 扫不到，切语言后会停在旧语言。setT 把「用的哪个键、带什么变量」记在元素上，
+   applyI18n 换语言时统一按新语言重算，不再依赖 setLang 里逐个重绘的顺序。 */
+function setT(node, key, vars){
+  if (!node) return null;
+  node.dataset.i18nKey = key;
+  node.dataset.i18nVars = vars ? JSON.stringify(vars) : "";
+  paintT(node);                  /* 统一走 paintT，翻译规则只有一份 */
+  return node;
+}
+function paintT(node){
+  if (!node || !node.dataset || !node.dataset.i18nKey) return;
+  var vars = null;
+  try { vars = node.dataset.i18nVars ? JSON.parse(node.dataset.i18nVars) : null; } catch (e){ vars = null; }
+  /* 变量里存的是原始值，不能在存的时候就把 op 翻好 —— 否则切语言又停在旧语言。
+     SOTER 记录的 op 是文件里的 selftest 这种原样字符串，显示前在这里翻。 */
+  if (vars && typeof vars.op === "string" && vars.op === "selftest") vars.op = t("soter.record.selftest");
+  node.textContent = t(node.dataset.i18nKey, vars);
+}
 function truthy(v){ v = String(v == null ? "" : v).trim().toLowerCase(); return v === "1" || v === "true" || v === "yes" || v === "on"; }
 function toast(msg, isErr, sticky){
   var e = document.getElementById("toast");
@@ -786,17 +827,28 @@ var activeTab = 0;
 function pageEls(){ return document.querySelectorAll(".page"); }
 function pageCount(){ return pageEls().length || 4; }
 
-/* dx：拖动位移（px）；dragMode：拖动中（相邻页也要露出来）。 */
+/* dx：拖动位移（px）；dragMode：拖动中（相邻页也要露出来）。
+   每帧只动当前页和左右各一页，其余页的 transform/opacity/pointer-events 不动 ——
+   以前一帧要给 4 个页面各写 4 个样式，还顺带在 pillFollow 里读 4 次 offset*，
+   等于每帧强制一次同步布局，滑到应用列表那页就明显掉帧。 */
 function layoutPages(dx, dragMode){
   var ps = pageEls();
   if (!ps.length) return;
   for (var k = 0; k < ps.length; k++){
     var rel = k - activeTab;
     var show = dragMode ? Math.abs(rel) <= 1 : rel === 0;
-    ps[k].classList.toggle("on", show);
-    ps[k].style.opacity = show ? "1" : "0";
-    ps[k].style.transform = "translateX(calc(" + (rel * 100) + "% + " + dx + "px))";
-    ps[k].style.pointerEvents = rel === 0 ? "auto" : "none";
+    var node = ps[k];
+    if (node._show !== show){
+      node._show = show;
+      node.classList.toggle("on", show);
+      node.style.opacity = show ? "1" : "0";
+    }
+    var pe = (rel === 0) ? "auto" : "none";
+    if (node._pe !== pe){ node._pe = pe; node.style.pointerEvents = pe; }
+    if (Math.abs(rel) > 1) continue;            /* 看不见的邻居不用每帧摆 */
+    var tf = dx ? "translateX(calc(" + (rel * 100) + "% + " + dx + "px))"
+                : "translateX(" + (rel * 100) + "%)";
+    if (node._tf !== tf){ node._tf = tf; node.style.transform = tf; }
   }
 }
 
@@ -805,29 +857,76 @@ function applyPage(i, animate){
   if (!ps.length) return;
   var next = Math.max(0, Math.min(ps.length - 1, i));
   var host = document.getElementById("pages");
-  if (host) host.classList.toggle("dragging", !animate);
+  /* 动画开始前还露着的页（拖动中的邻居页、上一页）先记下来，等动画走完再收。 */
+  var keep = [];
+  if (animate){
+    for (var k = 0; k < ps.length; k++){
+      if (k !== next && ps[k].classList.contains("on")) keep.push(ps[k]);
+    }
+  }
+  if (host){
+    host.classList.toggle("dragging", !animate);
+    /* 翻页动画期间别急着撤合成层，动画结束（220ms）再撤；否则动画后半段又要重绘。 */
+    if (animate){
+      host.classList.add("settling");
+      clearTimeout(applyPage._t);
+      applyPage._t = setTimeout(function(){ host.classList.remove("settling"); }, 320);
+    }
+  }
   setActiveTab(next);
   activeTab = next;
   layoutPages(0, false);
+  if (ps[next]) ps[next].style.zIndex = "2";   /* 新页盖在旧页上面滑进来 */
+  /* 页面是整屏平移的，旧页要是一直留到滑出屏幕外再隐藏，否则它一消失就露出底色闪一下。
+     （opacity 过渡去掉了，这里用定时器代替：动画走完再把非当前页统一收起来。） */
+  if (animate && keep.length){
+    keep.forEach(function(node){
+      node.classList.add("on");
+      node.style.opacity = "1";
+      node.style.zIndex = "1";
+      node._show = true;
+    });
+    clearTimeout(applyPage._o);
+    applyPage._o = setTimeout(function(){
+      if (host && host.classList.contains("dragging")) return;   /* 又开始拖了，交给拖动流程 */
+      pageEls().forEach(function(node, idx){
+        if (idx === activeTab || !node.classList.contains("on")) return;
+        node.classList.remove("on");
+        node.style.opacity = "0";
+        node.style.zIndex = "";
+        node._show = false;
+      });
+    }, 240);
+  }
   pillTo(next, animate);
 }
 /* 外部跳转（比如保存后回到某页）用这个 */
 function gotoPage(i){ applyPage(i, true); }
-/* 顶部那块高亮做成一根单独的元素，切页 / 拖动时跟着位移，而不是直接跳过去。 */
+/* 顶部那块高亮做成一根单独的元素，切页 / 拖动时跟着位移，而不是直接跳过去。
+   标签的几何值只在布局真的变了（切语言、转屏、字体大小）时量一次，拖动中直接用缓存：
+   以前每帧都读 offsetLeft/offsetWidth/offsetTop/offsetHeight，这几下读会强制同步布局。 */
+var TAB_RECTS = null;
+function measureTabs(){
+  var tb = document.querySelectorAll(".tab");
+  TAB_RECTS = [];
+  for (var i = 0; i < tb.length; i++){
+    TAB_RECTS.push({x: tb[i].offsetLeft, w: tb[i].offsetWidth, y: tb[i].offsetTop, h: tb[i].offsetHeight});
+  }
+  return TAB_RECTS;
+}
 function tabRect(i){
-  var tb = document.querySelectorAll(".tab")[i];
-  if (!tb) return null;
-  return {x: tb.offsetLeft, w: tb.offsetWidth, y: tb.offsetTop, h: tb.offsetHeight};
+  var r = TAB_RECTS || measureTabs();
+  return r[i] || null;
 }
 function movePill(x, w, y, h, animate){
   var p = document.getElementById("tabPill");
   if (!p) return;
   var tabs = document.getElementById("tabs");
   if (tabs) tabs.classList.toggle("dragging", !animate);
-  if (w) p.style.width = w + "px";
-  if (h) p.style.height = h + "px";
-  if (y || y === 0) p.style.top = y + "px";
-  p.style.transform = "translateX(" + x + "px)";
+  if (w && p._w !== w){ p._w = w; p.style.width = w + "px"; }
+  if (h && p._h !== h){ p._h = h; p.style.height = h + "px"; }
+  if ((y || y === 0) && p._y !== y){ p._y = y; p.style.top = y + "px"; }
+  if (p._x !== x){ p._x = x; p.style.transform = "translate3d(" + x + "px,0,0)"; }
 }
 function pillTo(i, animate){
   var r = tabRect(i);
@@ -845,16 +944,66 @@ function pillFollow(frac){
   movePill(a.x + (b.x - a.x) * k, a.w + (b.w - a.w) * k, a.y, a.h, false);
 }
 
+/* 切语言（或系统字体大小变化）之后，标签文字的行数、宽度都会变，页面内容也会重排。
+   高亮块是按测量值摆的、页面是 transform 定位的，WebView 又不一定马上重绘那块合成层，
+   于是会出现「上面的高亮/位置和文字对不上，手动滑一下才恢复」。
+   这里在下一帧把当前页重新摆一遍，等于替用户滑了那一下。 */
+function relayoutActivePage(){
+  var ps = pageEls();
+  if (!ps.length) return;
+  var host = document.getElementById("pages");
+  if (host && host.classList.contains("dragging")) return;   /* 正在拖动就别插手 */
+  TAB_RECTS = null;                                          /* 尺寸可能变了，下次重新量 */
+  layoutPages(0, false);
+  pillTo(activeTab, true);
+}
+function relayoutSoon(){
+  var host = document.getElementById("pages");
+  if (host && host.classList.contains("dragging")) return;   /* 正在拖动就别插手 */
+  relayoutActivePage();
+  /* 再故意偏 1px 摆一次、下一帧摆回来：让 WebView 重新合成这一层。
+     切语言后文字重排，合成层有时还留着旧位图，表现就是「内容整体偏了一点，滑一下才回来」。 */
+  layoutPages(1, false);
+  requestAnimationFrame(function(){
+    if (host && host.classList.contains("dragging")) return;
+    layoutPages(0, false);
+    pillTo(activeTab, true);
+  });
+  /* 慢设备上文字重排会晚一点（字体/换行），再补一次。 */
+  setTimeout(relayoutActivePage, 220);
+}
+
 function wireTabs(){
   var pages = document.getElementById("pages");
   if (!pages) return;
-  applyPage(activeTab, false);
+  /* 这里用 animate=true：只借用一次「摆到当前页」的流程，别把 dragging 类留在页面上
+     （那个类现在还会给 .page.on 提升合成层，留着等于一直多一层）。 */
+  applyPage(activeTab, true);
   pillTo(activeTab, false);
   requestAnimationFrame(function(){ pillTo(activeTab, false); });
+
+  /* 标签栏尺寸一变（切语言换行、系统字体大小、横竖屏），高亮块就重新量一次；
+     顺便把当前页的定位也重摆，省得停在半路。 */
+  var tabsEl = document.getElementById("tabs");
+  if (tabsEl && typeof ResizeObserver === "function"){
+    try { new ResizeObserver(function(){ relayoutActivePage(); }).observe(tabsEl); } catch (e){}
+  }
+  window.addEventListener("resize", relayoutActivePage);
+  window.addEventListener("orientationchange", function(){ setTimeout(relayoutActivePage, 250); });
 
   document.querySelectorAll(".tab").forEach(function(tb){
     tb.onclick = function(){ applyPage(parseInt(tb.dataset.tab, 10) || 0, true); };
   });
+
+  /* 作用域页滚动时换窗口，合并到每帧一次；行数一多也不会整页重排。 */
+  var scopePage = pageEls()[1];
+  if (scopePage && !scopePage._appScrollWired){
+    scopePage._appScrollWired = 1;
+    scopePage.addEventListener("scroll", function(){
+      if (appWinRAF) return;
+      appWinRAF = requestAnimationFrame(function(){ appWinRAF = 0; paintAppsWindow(false); });
+    }, {passive: true});
+  }
 
   /* 手势：拖动时跟手，松手时两种情形都翻页——
      慢慢拖要拖过一页的 1/5（至少 48px）；轻轻一甩只要 24px 往上、而且松手那一刻够快就算，
@@ -865,8 +1014,35 @@ function wireTabs(){
      layoutPages 留下的 translateX 就一直挂着 —— 表现就是「高亮在作用域，内容却
      整体偏左、只露出卡片右边」。这里定个时，700ms 没新位移就复位。 */
   var idleTimer = null;
+  /* touchmove 在 120Hz 屏上可能一帧来两次；这里把「摆位置 + 追高亮」合并成每帧一次，
+     手指移动再快也只写一遍样式。 */
+  var frame = 0;
+  var pageW = 1;                 /* 拖动开始时量一次，move 里不再读 clientWidth */
+  var lastPage = 0;              /* 同理，页数也缓存，避免每个 touchmove 都 querySelectorAll */
+  function paintDrag(){
+    frame = 0;
+    layoutPages(dx, true);
+    pillFollow(dx / pageW);
+  }
+  function queueDrag(){ if (!frame) frame = requestAnimationFrame(paintDrag); }
+  function stopFrame(){ if (frame){ cancelAnimationFrame(frame); frame = 0; } }
+  /* 兜底用的 700ms 空闲检测：以前每个 touchmove 都 clearTimeout+setTimeout 一次，
+     120Hz 屏上等于每秒建上百个定时器；现在只在拖开始时挂一个，检查时再按需续。 */
+  var lastMove = 0;
+  function armIdle(){
+    lastMove = Date.now();
+    if (!idleTimer) idleTimer = setTimeout(idleCheck, 700);
+  }
+  function idleCheck(){
+    idleTimer = null;
+    if (x0 === null) return;
+    var wait = 700 - (Date.now() - lastMove);
+    if (wait > 0){ idleTimer = setTimeout(idleCheck, wait); return; }
+    settleDrag();
+  }
   function settleDrag(){
     if (idleTimer){ clearTimeout(idleTimer); idleTimer = null; }
+    stopFrame();
     x0 = null; dx = 0; raw = 0; axis = 0; samples = [];
     pages.classList.remove("dragging");
     applyPage(activeTab, true);
@@ -875,8 +1051,9 @@ function wireTabs(){
     if (e.touches.length !== 1) return;
     if (idleTimer){ clearTimeout(idleTimer); idleTimer = null; }
     x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; dx = 0; raw = 0; axis = 0;
+    pageW = pages.clientWidth || 1;
+    lastPage = pageCount() - 1;
     samples = [{t: Date.now(), x: 0}];
-    pages.classList.add("dragging");
   }, {passive: true});
   pages.addEventListener("touchmove", function(e){
     if (x0 === null || e.touches.length !== 1) return;
@@ -885,7 +1062,10 @@ function wireTabs(){
     if (!axis){
       if (Math.abs(nx) < 8 && Math.abs(ny) < 8) return;
       axis = Math.abs(nx) > Math.abs(ny) ? 1 : 2;
-      if (axis === 2){ x0 = null; pages.classList.remove("dragging"); return; }
+      if (axis === 2){ x0 = null; return; }
+      /* 确定是横向滑动才关过渡、提合成层；纵向滚页面时完全不动这些。 */
+      pages.classList.remove("settling");
+      pages.classList.add("dragging");
     }
     raw = nx;
     var now = Date.now();
@@ -893,11 +1073,9 @@ function wireTabs(){
     while (samples.length > 2 && now - samples[0].t > 220) samples.shift();
     dx = nx;
     /* 到头的方向阻尼一下，避免拉出去一屏空白 */
-    if ((activeTab === 0 && dx > 0) || (activeTab === pageCount() - 1 && dx < 0)) dx = dx / 3;
-    layoutPages(dx, true);
-    pillFollow(dx / (pages.clientWidth || 1));
-    if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = setTimeout(function(){ idleTimer = null; if (x0 !== null) settleDrag(); }, 700);
+    if ((activeTab === 0 && dx > 0) || (activeTab === lastPage && dx < 0)) dx = dx / 3;
+    queueDrag();
+    armIdle();
     if (e.cancelable) e.preventDefault();
   }, {passive: false});
   function endDrag(e){
@@ -908,7 +1086,6 @@ function wireTabs(){
       raw = e.changedTouches[0].clientX - x0;
       samples.push({t: Date.now(), x: raw});
     }
-    pages.classList.remove("dragging");
     var w = pages.clientWidth || 1;
     var now = Date.now();
     /* 取 90ms 往前的那个采样点算平均速度（px/ms，正数=往右滑），太近的点抖动大 */
@@ -923,6 +1100,9 @@ function wireTabs(){
     var next = activeTab;
     if (dx <= -th || (v <= -0.18 && raw <= -flick)) next = activeTab + 1;
     else if (dx >= th || (v >= 0.18 && raw >= flick)) next = activeTab - 1;
+    /* 把还没画出去的那一帧补上，翻页动画才能从手指松开时的真实位置接着走。 */
+    if (frame){ cancelAnimationFrame(frame); frame = 0; layoutPages(dx, true); }
+    pages.classList.remove("dragging");
     x0 = null; dx = 0; raw = 0; axis = 0; samples = [];
     applyPage(next, true);
   }
@@ -932,6 +1112,7 @@ function wireTabs(){
 function setActiveTab(i){
   if (i === activeTab) return;      // 同一个就别重写 class，免得闪
   activeTab = i;
+  TAB_RECTS = null;                 // 加粗态换了标签，宽度/行高可能变，下次重新量
   document.querySelectorAll(".tab").forEach(function(tb, idx){
     tb.className = "tab" + (idx === i ? " on" : "");
   });
@@ -1032,48 +1213,122 @@ function visibleApps(){
     return a.pkg.toLowerCase().indexOf(kw) >= 0 || (a.label || "").toLowerCase().indexOf(kw) >= 0;
   });
 }
+function paintAppHint(){
+  var box = document.getElementById("applist");
+  if (!box || !appHint) return;
+  if (box.querySelector(".app")) return;   // 已经有列表行就不覆盖
+  box.innerHTML = "";
+  var p = el("p", "hint");
+  setT(p, appHint.key, appHint.vars);
+  box.appendChild(p);
+}
+/* 一行应用。抽出来是为了窗口渲染时能按需建/删，不用每次都重写一遍字段。 */
+function appRowEl(a){
+  var row = el("div", "app" + (a.checked ? " on" : " off"));
+  var img = document.createElement("img");
+  if (a.icon) img.src = a.icon;
+  img.loading = "lazy";
+  img.decoding = "async";
+  img.alt = "";
+  row.appendChild(img);
+  var meta = el("div", "meta");
+  meta.appendChild(el("b", null, a.label || a.pkg));
+  meta.appendChild(el("small", null, a.system ? (a.pkg + " · " + t("apps.sysTag")) : a.pkg));
+  row.appendChild(meta);
+  var sel = document.createElement("select");
+  [["off", "pick.off"], ["normal", "pick.normal"], ["generate", "pick.generate"], ["hack", "pick.hack"]]
+    .forEach(function(pair){
+      var op = el("option", null, t(pair[1]));
+      op.value = pair[0];
+      if ((a.checked ? a.mode : "off") === pair[0]) op.selected = true;
+      sel.appendChild(op);
+    });
+  sel.onchange = function(){
+    a.checked = sel.value !== "off";
+    a.mode = sel.value === "off" ? "normal" : sel.value;
+    row.className = "app" + (a.checked ? " on" : " off");
+    updateCount();
+  };
+  row.appendChild(sel);
+  return row;
+}
+/* 按滚动位置算「该渲染哪一段」。visStart/visEnd 是视口里的行，start/end 多带一圈缓冲。 */
+function appWindowRange(){
+  var page = pageEls()[1];
+  var box = document.getElementById("applist");
+  var total = appShown.length;
+  var r = {start: 0, end: total, visStart: 0, visEnd: total};
+  if (!page || !box || !total) return r;
+  var h = page.clientHeight || 600;
+  var top = page.scrollTop - box.offsetTop;   /* 列表顶部相对滚动视口的位置 */
+  if (top < 0) top = 0;
+  r.visStart = Math.min(total, Math.floor(top / APP_ROW_H));
+  r.visEnd = Math.min(total, Math.ceil((top + h) / APP_ROW_H));
+  r.start = Math.max(0, r.visStart - APP_OVERSCAN);
+  r.end = Math.min(total, r.visEnd + APP_OVERSCAN);
+  return r;
+}
+function paintAppsWindow(force){
+  var box = document.getElementById("applist");
+  if (!box) return;
+  var total = appShown.length;
+  if (!total){
+    appWinStart = appWinEnd = -1;
+    /* 正在重载时列表是空的，但提示得留着「载入中」，别被换成「列表为空」。 */
+    if (appHint && appHint.key === "apps.loading") return;
+    appHint = appRows.length ? {key: "apps.empty"} : {key: "toast.appsFail", vars: {msg: "-"}};
+    paintAppHint();
+    return;
+  }
+  appHint = null;
+  /* 整个列表都已经在 DOM 里（小列表），怎么滚都不用重建。 */
+  if (!force && appWinStart === 0 && appWinEnd >= total) return;
+  var r = appWindowRange();
+  /* 视口还稳稳落在已渲染区间的中间时不动 DOM，只有快露出边界才重建。 */
+  if (!force && appWinStart >= 0 &&
+      r.visStart >= appWinStart + 2 && r.visEnd <= appWinEnd - 2) return;
+  appWinStart = r.start; appWinEnd = r.end;
+  var frag = document.createDocumentFragment();
+  if (r.start > 0){
+    var padA = el("div", "pad");
+    padA.style.height = (r.start * APP_ROW_H) + "px";
+    frag.appendChild(padA);
+  }
+  for (var i = r.start; i < r.end; i++) frag.appendChild(appRowEl(appShown[i]));
+  if (r.end < total){
+    var padB = el("div", "pad");
+    padB.style.height = ((total - r.end) * APP_ROW_H) + "px";
+    frag.appendChild(padB);
+  }
+  box.innerHTML = "";
+  box.appendChild(frag);
+  /* 行高按实际量到的修正一次：系统字号设得大时文字会把行撑高，估值就对不上滚动位置了。 */
+  if (force){
+    var probe = box.querySelector(".app");
+    var real = probe ? probe.offsetHeight : 0;
+    if (real > 0 && Math.abs(real - APP_ROW_H) > 0.5){
+      APP_ROW_H = real;
+      paintAppsWindow(true);
+    }
+  }
+}
 function renderApps(){
   var box = document.getElementById("applist");
-  box.innerHTML = "";
-  var shown = visibleApps();
-  if (!shown.length) box.appendChild(el("p", "hint", appRows.length ? t("apps.empty") : t("toast.appsFail", {msg: "-"})));
-  shown.forEach(function(a){
-    var row = el("div", "app" + (a.checked ? " on" : " off"));
-    var img = document.createElement("img");
-    if (a.icon) img.src = a.icon;
-    row.appendChild(img);
-    var meta = el("div", "meta");
-    meta.appendChild(el("b", null, a.label || a.pkg));
-    meta.appendChild(el("small", null, a.system ? (a.pkg + " · " + t("apps.sysTag")) : a.pkg));
-    row.appendChild(meta);
-    var sel = document.createElement("select");
-    [["off", "pick.off"], ["normal", "pick.normal"], ["generate", "pick.generate"], ["hack", "pick.hack"]]
-      .forEach(function(pair){
-        var op = el("option", null, t(pair[1]));
-        op.value = pair[0];
-        if ((a.checked ? a.mode : "off") === pair[0]) op.selected = true;
-        sel.appendChild(op);
-      });
-    sel.onchange = function(){
-      a.checked = sel.value !== "off";
-      a.mode = sel.value === "off" ? "normal" : sel.value;
-      row.className = "app" + (a.checked ? " on" : " off");
-      updateCount();
-    };
-    row.appendChild(sel);
-    box.appendChild(row);
-  });
+  if (box) box.innerHTML = "";
+  appShown = visibleApps();
+  appWinStart = appWinEnd = -1;
+  paintAppsWindow(true);
   updateCount();
 }
 function updateCount(){
   var n = appRows.filter(function(a){ return a.checked; }).length;
   var e = document.getElementById("app-count2");
-  if (e) e.textContent = n ? t("apps.selected", {n:n}) : t("apps.none");
+  if (e) setT(e, n ? "apps.selected" : "apps.none", n ? {n: n} : null);
 }
 async function refreshCount(){
   var r = await exec("cat " + TARGET + " 2>/dev/null");
   var n = (r.stdout || "").split("\n").filter(function(l){ return l.trim(); }).length;
-  document.getElementById("app-count").textContent = n ? t("apps.n", {n:n}) : t("apps.none");
+  setT(document.getElementById("app-count"), n ? "apps.n" : "apps.none", n ? {n: n} : null);
 }
 var __pkgCache = null, __pkgAt = 0;
 function loadPackages(){
@@ -1149,8 +1404,10 @@ async function defaultScopePackages(){
   return out;
 }
 async function loadApps(){
-  var hint = document.getElementById("applist-hint");
   document.getElementById("applist").innerHTML = '<p class="hint">' + t("apps.loading") + "</p>";
+  appHint = {key: "apps.loading", vars: null};
+  appShown = [];                       /* 载入期间别让滚动事件拿旧数据重建列表 */
+  appWinStart = appWinEnd = -1;
   var sysSet = {};
   try { sysSet = await reloadAppFiles(); } catch (e){}
   var pkgs;
@@ -1177,6 +1434,9 @@ async function loadApps(){
    就有结论的那一条，不用等新调用。本机没记录才退回看跟随设备上报的能力。 */
 var soterState = "unknown";
 var soterRecord = null;
+/* soter_ask.pem 是否存在。缓存成布尔值，切语言时直接拿它重绘「目前」那一行，
+   不必再跑一次 shell；refreshAsk 每次读完文件都会同步它。 */
+var askCustom = false;
 
 async function readSoterRecord(){
   var r = await exec("tail -n 1 /data/misc/ommega/soter_ok 2>/dev/null");
@@ -1191,13 +1451,13 @@ async function readSoterRecord(){
 function paintSoterRecord(){
   var e = document.getElementById("soter-record");
   if (!e) return;
-  if (!soterRecord){ e.textContent = t("soter.record.none"); return; }
+  if (!soterRecord){ setT(e, "soter.record.none"); return; }
   var d = new Date(soterRecord.epoch * 1000);
   function pad(n){ return (n < 10 ? "0" : "") + n; }
   var when = d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) +
              " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
-  var op = (soterRecord.op === "selftest") ? t("soter.record.selftest") : soterRecord.op;
-  e.textContent = t("soter.record.last", {time: when, op: op});
+  /* 变量里放原样 op（selftest），显示文本由 paintT 按当前语言翻，切语言才跟得上。 */
+  setT(e, "soter.record.last", {time: when, op: soterRecord.op});
 }
 
 async function refreshStatus(){
@@ -1207,20 +1467,20 @@ async function refreshStatus(){
   [["keymint", first(p[0])], ["keystore", first(p[1])], ["adbr", first(p[2])]].forEach(function(pair){
     var on = !!pair[1];
     document.getElementById("dot-" + pair[0]).className = "dot " + (on ? "on" : "off");
-    document.getElementById("st-" + pair[0]).textContent = on ? t("status.running") : t("status.stopped");
+    setT(document.getElementById("st-" + pair[0]), on ? "status.running" : "status.stopped");
   });
   paintSoter();
 }
 function paintSoter(){
-  var cls, text;
-  if (soterState === "local"){ cls = "dot on"; text = t("soter.ok"); }
-  else if (soterState === "ok"){ cls = "dot on"; text = t("soter.ok"); }
-  else if (soterState === "nosign"){ cls = "dot warn"; text = t("soter.nosign"); }
-  else if (soterState === "stuck"){ cls = "dot off"; text = t("soter.stuck"); }
-  else if (soterState === "off"){ cls = "dot off"; text = t("soter.off"); }
-  else { cls = "dot"; text = t("status.unknown"); }
+  var cls, key;
+  if (soterState === "local"){ cls = "dot on"; key = "soter.ok"; }
+  else if (soterState === "ok"){ cls = "dot on"; key = "soter.ok"; }
+  else if (soterState === "nosign"){ cls = "dot warn"; key = "soter.nosign"; }
+  else if (soterState === "stuck"){ cls = "dot off"; key = "soter.stuck"; }
+  else if (soterState === "off"){ cls = "dot off"; key = "soter.off"; }
+  else { cls = "dot"; key = "status.unknown"; }
   document.getElementById("dot-soter").className = cls;
-  document.getElementById("st-soter").textContent = text;
+  setT(document.getElementById("st-soter"), key);
 }
 /* 顺带把 /api/status/ 拉一次：本机没记录时才用它。 */
 async function refreshSoter(){
@@ -1340,15 +1600,20 @@ async function autoKeybox(){
   if (!xml){ await writeKeybox(builtinXml("kb-aosp-xml"), ""); return; }
   await writeKeybox(xml, src);
 }
+function paintAsk(){
+  var e = document.getElementById("sk-state");
+  if (e) setT(e, askCustom ? "sk.custom" : "sk.builtin");
+}
 async function refreshAsk(){
   var r = await exec("[ -f " + ASKPEM + " ] && echo yes || echo no");
-  document.getElementById("sk-state").textContent = (r.stdout || "").trim() === "yes" ? t("sk.custom") : t("sk.builtin");
+  askCustom = (r.stdout || "").trim() === "yes";
+  paintAsk();
 }
 
 /* ------------------------------- 选文件窗 ------------------------------- */
 function fpOpen(kind){
   fpTarget = kind;
-  document.getElementById("fp-title").textContent = (kind === "keybox") ? t("kb.fromFile") : t("sk.fromFile");
+  setT(document.getElementById("fp-title"), (kind === "keybox") ? "kb.fromFile" : "sk.fromFile");
   document.getElementById("fp-modal").className = "modal";
   fpList();
 }
@@ -1736,15 +2001,32 @@ function setLang(code){
   if (!I18N[code]) code = "zh-CN";
   LANG = code;
   try { localStorage.setItem("ommega.lang", code); } catch (e){}
-  capturePatchInputs();
+  /* 伪装参数那几个输入框还没保存的值先收进 patchValues，重建后再由 fillPatchInputs 填回去。 */
+  try { capturePatchInputs(); } catch (e){}
+  /* applyI18n 除了静态的 data-i18n，还会把 setT 记下来的动态值（SOTER 记录、
+     密钥状态、进程状态、计数）一起按新语言重算，不再依赖后面某一步有没有跑到。 */
   applyI18n();
-  renderRemote(parseKV(curConfText, true));
-  fillPatchInputs();
-  refreshPatchSummary();
-  if (appRows.length) renderApps();
-  paintSoter();
-  refreshStatus().catch(function(){});
-  refreshCount().catch(function(){});
+  /* 下面几个是「拿缓存数据重建整块 UI」：任何一块出问题（比如某个元素还没渲染）
+     都不该把后面的重绘一起带走 —— 以前 SOTER 记录停在旧语言就是这么来的。 */
+  [
+    function(){ renderRemote(parseKV(curConfText, true)); },
+    fillPatchInputs,
+    refreshPatchSummary,
+    function(){ if (appRows.length) renderApps(); else paintAppHint(); },
+    updateCount,
+    paintSoterRecord,
+    paintAsk,
+    paintSoter,
+    function(){
+      var sysBtn = document.getElementById("toggle-system");
+      if (sysBtn) sysBtn.textContent = showSystem ? t("apps.hideSys") : t("apps.showSys");
+    },
+    /* 异步刷新完再摆一次：状态条文字换语言后宽度会变，标签栏跟着挪，高亮块不能停在旧位置。 */
+    function(){ refreshStatus().catch(function(){}).then(relayoutActivePage); },
+    function(){ refreshCount().catch(function(){}).then(relayoutActivePage); }
+  ].forEach(function(fn){ try { fn(); } catch (e){} });
+  /* 文字换完、重排稳定之后，把当前页和高亮块重新摆正（不用再靠手动滑动刷新）。 */
+  relayoutSoon();
   document.getElementById("lang").value = code;
 }
 
@@ -1840,8 +2122,8 @@ document.addEventListener("change", function(ev){ if (!(ev && ev.target && ev.ta
     document.querySelectorAll("[data-open]").forEach(function(n){
       n.onclick = function(){ openExternal(n.dataset.open, n.dataset.openFallback); };
     });
-    document.getElementById("about-close").onclick = function(){ document.getElementById("about-modal").className = "modal hidden"; };
-    document.getElementById("about-modal").onclick = function(ev){ if (ev.target.id === "about-modal") this.className = "modal hidden"; };
+    document.getElementById("about-close").onclick = function(){ document.getElementById("about-modal").className = "modal hidden"; relayoutSoon(); };
+    document.getElementById("about-modal").onclick = function(ev){ if (ev.target.id === "about-modal"){ this.className = "modal hidden"; relayoutSoon(); } };
     document.getElementById("fp-close").onclick = fpClose;
     document.getElementById("fp-modal").onclick = function(ev){ if (ev.target.id === "fp-modal") fpClose(); };
     document.getElementById("fp-up").onclick = function(){
@@ -1872,7 +2154,14 @@ document.addEventListener("change", function(ev){ if (!(ev && ev.target && ev.ta
     document.getElementById("open-status").onclick = function(){ openStatus().catch(function(){}); };
     /* 作用域页 */
     document.getElementById("app-reload").onclick = function(){ appRows = []; loadApps().catch(function(e){ toast(t("toast.appsFail", {msg: e.message}), true); }); };
-    document.getElementById("app-search").oninput = function(ev){ appFilter = ev.target.value || ""; renderApps(); };
+    document.getElementById("app-search").oninput = function(ev){
+      appFilter = ev.target.value || "";
+      /* 列表变短后旧滚动位置会落到内容外，先回顶部再按窗口重画。 */
+      var sp = pageEls()[1];
+      if (sp) sp.scrollTop = 0;
+      appWinStart = appWinEnd = -1;
+      renderApps();
+    };
     document.getElementById("pick-all").onclick = function(){ visibleApps().forEach(function(a){ a.checked = true; }); renderApps(); };
     document.getElementById("pick-none").onclick = function(){ visibleApps().forEach(function(a){ a.checked = false; }); renderApps(); };
     document.getElementById("save-apps").onclick = function(){ saveApps().catch(function(e){ toast(t("toast.saveFail", {msg: e.message}), true); }); };
@@ -1963,6 +2252,8 @@ document.addEventListener("change", function(ev){ if (!(ev && ev.target && ev.ta
     /* 首屏先出来，状态/密钥信息在后台补 */
     document.getElementById("boot").className = "hidden";
     document.getElementById("pages").className = "pages";
+    /* 应用列表在 loadApps 里渲染，这时 pages 已经可见，量到的是真实高度，
+       不需要额外重算窗口。 */
     refreshStatus().catch(function(){});
     refreshSoter().catch(function(){});
     refreshCount().catch(function(){});
