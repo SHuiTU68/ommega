@@ -4,6 +4,8 @@
 
 ## 1.7.8
 
+- The local keys page can hold a separate keybox for the StrongBox level; without one both levels share the same file, and the leaf level always follows the request.
+- New module icon.
 - The spoof panel only syncs the boot hash and the boot patch level; nothing else
   is synced automatically.
 - The spoof panel's manual editor covers every item (three patch levels, the
