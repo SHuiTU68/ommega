@@ -27,10 +27,16 @@ use x509_cert::Certificate;
 
 pub const KEYBOX_PATH: &str = "/data/misc/keystore/ommega/keybox.xml";
 
+/// StrongBox 级别单独的一份 keybox（可选）。文件不存在或解析不了就沿用 `KEYBOX_PATH`
+/// 那份 —— 跟以前一样，不会因为多了一层而少出链。
+pub const STRONGBOX_KEYBOX_PATH: &str = "/data/misc/keystore/ommega/keybox_strongbox.xml";
+
 const BUNDLED_KEYBOX_XML: &str = include_str!("../template/keybox.xml");
 
 lazy_static::lazy_static! {
     pub static ref KEYBOX: RwLock<KeyBox> = RwLock::new(KeyBox::new());
+    /// StrongBox 级别的 keybox；`None` = 没配（回落 `KEYBOX`）。
+    pub static ref KEYBOX_SB: RwLock<Option<KeyBox>> = RwLock::new(None);
     static ref KEYBOX_IO_LOCK: Mutex<()> = Mutex::new(());
     static ref KEY_BLOCK_RE: Regex =
         Regex::new(r#"(?s)<Key\s+algorithm="([^"]+)">\s*(.*?)\s*</Key>"#).unwrap();
@@ -662,6 +668,11 @@ fn reload_from_disk_inner(retire_db_entries: bool) -> Result<bool> {
     let _io_guard = KEYBOX_IO_LOCK.lock().unwrap();
     let (keybox, used_fallback) = load_keybox_with_fallback(KEYBOX_PATH)?;
     let changed = install_keybox(keybox, retire_db_entries, !used_fallback);
+    // StrongBox 那份是可选层：没有文件就是「没配」，读坏了也不影响主 keybox。
+    let sb = load_strongbox_keybox();
+    if let Ok(mut guard) = KEYBOX_SB.write() {
+        *guard = sb;
+    }
     if changed {
         info!(
             "active keybox identity updated from {} (fallback={})",
@@ -719,6 +730,39 @@ pub fn current_identity_digest() -> [u8; 32] {
     KEYBOX.read().unwrap().identity_digest()
 }
 
+/// 按级别取身份摘要：StrongBox 配了单独 keybox 就用它的，否则回到主 keybox。
+pub fn current_identity_digest_for(strongbox: bool) -> [u8; 32] {
+    if strongbox {
+        if let Ok(guard) = KEYBOX_SB.read() {
+            if let Some(kb) = guard.as_ref() {
+                return kb.identity_digest();
+            }
+        }
+    }
+    current_identity_digest()
+}
+
+/// 读 StrongBox 那份 keybox（可选）。不存在 = `None`；解析失败只告警，不影响主 keybox。
+fn load_strongbox_keybox() -> Option<KeyBox> {
+    match std::fs::read_to_string(STRONGBOX_KEYBOX_PATH) {
+        Ok(xml) => match KeyBox::from_xml_str(&xml) {
+            Ok(keybox) => {
+                info!("strongbox keybox loaded from {STRONGBOX_KEYBOX_PATH}");
+                Some(keybox)
+            }
+            Err(error) => {
+                warn!("invalid strongbox keybox at {STRONGBOX_KEYBOX_PATH}: {error:#}; falling back to the main keybox");
+                None
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            warn!("failed to read {STRONGBOX_KEYBOX_PATH}: {error:#}; falling back to the main keybox");
+            None
+        }
+    }
+}
+
 pub(crate) fn signing_certificate_ders_from_disk() -> Result<Vec<Vec<u8>>> {
     let _io_guard = KEYBOX_IO_LOCK.lock().unwrap();
     let (keybox, _) = load_keybox_with_fallback(KEYBOX_PATH)?;
@@ -732,10 +776,20 @@ pub(crate) fn signing_certificate_ders_from_disk() -> Result<Vec<Vec<u8>>> {
     Ok(certs)
 }
 
-pub struct KeyboxManager;
+pub struct KeyboxManager {
+    /// STRONGBOX 级别的 TA 用单独那份 keybox（若已配置）。
+    pub strongbox: bool,
+}
 
 impl RetrieveCertSigningInfo for KeyboxManager {
     fn signing_info(&self, key_type: SigningKeyType) -> Result<SigningInfoSnapshot, Error> {
+        if self.strongbox {
+            if let Ok(guard) = KEYBOX_SB.read() {
+                if let Some(keybox) = guard.as_ref() {
+                    return keybox.signing_info(key_type);
+                }
+            }
+        }
         let keybox = KEYBOX
             .read()
             .map_err(|_| kmr_common::km_err!(UnknownError, "failed to lock KEYBOX"))?;

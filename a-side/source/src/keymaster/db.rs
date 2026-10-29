@@ -337,7 +337,10 @@ impl Deref for Uuid {
 
 impl From<SecurityLevel> for Uuid {
     fn from(sec_level: SecurityLevel) -> Self {
-        Self::from_keybox_digest(sec_level, crate::keybox::current_identity_digest())
+        Self::from_keybox_digest(
+            sec_level,
+            crate::keybox::current_identity_digest_for(sec_level == SecurityLevel::STRONGBOX),
+        )
     }
 }
 
@@ -3899,7 +3902,7 @@ mod tests {
             *byte = index as u8;
         }
 
-        let uuid = Uuid::from_keybox_digest(SecurityLevel::STRONGBOX, digest);
+        let uuid = Uuid::from_keybox_digest(SecurityLevel::Strongbox, digest);
 
         assert_eq!(
             &uuid.0[..KEYBOX_UUID_DIGEST_BYTES],
@@ -3907,9 +3910,9 @@ mod tests {
         );
         assert_eq!(
             &uuid.0[KEYBOX_UUID_DIGEST_BYTES..],
-            &(SecurityLevel::STRONGBOX.0 as u32).to_be_bytes()
+            &(SecurityLevel::Strongbox.0 as u32).to_be_bytes()
         );
-        assert_eq!(uuid.to_security_level(), Some(SecurityLevel::STRONGBOX));
+        assert_eq!(uuid.to_security_level(), Some(SecurityLevel::Strongbox));
         assert!(uuid.is_keybox_bound());
         assert!(uuid.is_bound_to_keybox_digest(digest));
 
@@ -3926,7 +3929,7 @@ mod tests {
             Uuid::from_keybox_digest(SecurityLevel::TRUSTED_ENVIRONMENT, current_digest);
         let stale_tee_uuid =
             Uuid::from_keybox_digest(SecurityLevel::TRUSTED_ENVIRONMENT, stale_digest);
-        let stale_strongbox_uuid = Uuid::from_keybox_digest(SecurityLevel::STRONGBOX, stale_digest);
+        let stale_strongbox_uuid = Uuid::from_keybox_digest(SecurityLevel::Strongbox, stale_digest);
         let mut db = make_test_db();
 
         {

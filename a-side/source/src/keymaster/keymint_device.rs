@@ -1338,8 +1338,9 @@ fn init_keymint_ta(security_level: SecurityLevel, config: &Config) -> Result<Key
     // (`RemoteRelayBackend`) when `[remote].enabled` is set, otherwise through
     // the local software keybox (`sign_info` above). The requesting security
     // level is forwarded to the relay (`attestation_security_level`) so the
-    // minted chain is tagged TEE vs StrongBox correctly. STRONGBOX is not
-    // routed through a dedicated backend — driving the real `/strongbox` HAL
+    // minted chain is tagged TEE vs StrongBox correctly. Local minting picks the
+    // StrongBox keybox file when one is configured for this level. STRONGBOX is
+    // not routed through a dedicated backend — driving the real `/strongbox` HAL
     // from the keystore context failed on devices where that HAL is declared
     // but not servable, so it is not wired in.
     let remote: Option<Box<dyn kmr_ta::device::RemoteBackend>> = {
@@ -1351,7 +1352,9 @@ fn init_keymint_ta(security_level: SecurityLevel, config: &Config) -> Result<Key
 
     let dev = kmr_ta::device::Implementation {
         keys,
-        sign_info: Some(Box::new(crate::keybox::KeyboxManager {})),
+        sign_info: Some(Box::new(crate::keybox::KeyboxManager {
+            strongbox: security_level == kmr_wire::keymint::SecurityLevel::Strongbox,
+        })),
         remote,
         // HAL populates attestation IDs from properties.
         attest_ids: Some(Box::new(crate::att_mgr::AttestationIdMgr {})),

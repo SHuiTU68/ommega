@@ -229,6 +229,17 @@
         <button class="btn sm" id="rkp-fix" data-i18n="kb.rkp.btn"></button></div>
     </div>
 
+    <!-- StrongBox 级别单独的一份 keybox（可选）；不配就沿用上面那份 -->
+    <div class="card">
+      <h2 data-i18n="sbkb.title"></h2>
+      <div class="kv"><span data-i18n="sbkb.current"></span><span id="sbkb-state">-</span></div>
+      <div class="row"><div class="name"><b data-i18n="sbkb.fromFile"></b><small data-i18n="sbkb.fromFile.hint"></small></div>
+        <button class="btn sm" id="sbkb-file" data-i18n="act.use"></button></div>
+      <div class="row"><div class="name"><b data-i18n="sbkb.clear"></b><small data-i18n="sbkb.clear.hint"></small></div>
+        <button class="btn sm" id="sbkb-clear" data-i18n="act.clear"></button></div>
+      <p class="hint" data-i18n="sbkb.hint"></p>
+    </div>
+
     <div class="card">
       <h2 data-i18n="sk.title"></h2>
       <div class="kv"><span data-i18n="soter.record"></span><span id="soter-record">-</span></div>
@@ -451,6 +462,8 @@ var CONF     = DATA + "/config";
 var TARGET   = DATA + "/target.txt";
 var SYSTEMAPP= DATA + "/system_app";
 var KEYBOX   = DATA + "/keybox.xml";
+/* StrongBox 级别的单独 keybox（可选）：文件不存在就沿用 KEYBOX。 */
+var KEYBOX_SB = DATA + "/keybox_strongbox.xml";
 var ASKPEM   = DATA + "/soter_ask.pem";
 var PROPS    = STATE + "/conf/props.conf";      // 面板写的伪装项（不写进模块脚本）
 var RESETPROP= STATE + "/bin/resetprop";
@@ -677,6 +690,73 @@ async function loadOwnPatch(){
   A_PATCH.os = (l[0] || "").trim();
   A_PATCH.vendor = (l[1] || "").trim();
 }
+/* StrongBox 级别单独一份 keybox 的文案。没配就沿用「本地密钥」那份，行为跟以前一致。 */
+var SBKB_TEXT = {
+  "zh-CN": { title: "StrongBox 级别密钥（可选）", current: "当前",
+    fromFile: "自定义（StrongBox）", fromFileHint: "选一份 keybox XML，只给 StrongBox 级别（security level 2）用",
+    clear: "清除", clearHint: "删掉这份，StrongBox 级别回到沿用上面那份",
+    hint: "写入 keybox_strongbox.xml。两份分开之后，TEE 请求用上面那份、StrongBox 请求用这份；没有这份时两个级别共用同一份。",
+    written: "已写入 StrongBox 级别的 keybox", cleared: "已清除，StrongBox 回到沿用上面那份",
+    set: "已配置", unset: "未配置（沿用上面那份）" },
+  "zh-TW": { title: "StrongBox 級別密鑰（可選）", current: "目前",
+    fromFile: "自訂（StrongBox）", fromFileHint: "選一份 keybox XML，只給 StrongBox 級別用",
+    clear: "清除", clearHint: "刪掉這份，StrongBox 回到沿用上面那份",
+    hint: "寫入 keybox_strongbox.xml。兩份分開之後，TEE 請求用上面那份、StrongBox 請求用這份。",
+    written: "已寫入 StrongBox 級別的 keybox", cleared: "已清除，StrongBox 回到沿用上面那份",
+    set: "已設定", unset: "未設定（沿用上面那份）" },
+  "en": { title: "StrongBox keybox (optional)", current: "Current",
+    fromFile: "Custom (StrongBox)", fromFileHint: "Pick a keybox XML used only for the StrongBox level (security level 2)",
+    clear: "Clear", clearHint: "Remove it so the StrongBox level falls back to the keybox above",
+    hint: "Written to keybox_strongbox.xml. With both files set, TEE requests use the one above and StrongBox requests use this one; without this file both levels share the same keybox.",
+    written: "StrongBox keybox written", cleared: "Cleared; the StrongBox level falls back to the keybox above",
+    set: "Configured", unset: "Not configured (uses the keybox above)" },
+  "ja": { title: "StrongBox 用キーボックス（任意）", current: "現在",
+    fromFile: "カスタム（StrongBox）", fromFileHint: "StrongBox レベル専用の keybox XML を選ぶ",
+    clear: "消去", clearHint: "削除すると StrongBox は上のキーボックスを使う",
+    hint: "keybox_strongbox.xml に書き込みます。両方あるときは TEE が上、StrongBox がこちらを使います。",
+    written: "StrongBox 用キーボックスを書き込みました", cleared: "消去しました（上のキーボックスを使用）",
+    set: "設定済み", unset: "未設定（上のキーボックスを使用）" },
+  "ko": { title: "StrongBox 전용 키박스(선택)", current: "현재",
+    fromFile: "사용자 지정(StrongBox)", fromFileHint: "StrongBox 레벨에만 쓸 keybox XML을 고르세요",
+    clear: "지우기", clearHint: "지우면 StrongBox는 위 키박스를 사용합니다",
+    hint: "keybox_strongbox.xml에 기록합니다. 둘 다 있으면 TEE는 위, StrongBox는 이 파일을 씁니다.",
+    written: "StrongBox 키박스를 기록했습니다", cleared: "지웠습니다(위 키박스 사용)",
+    set: "설정됨", unset: "설정 안 됨(위 키박스 사용)" },
+  "ru": { title: "Keybox для StrongBox (необязательно)", current: "Текущий",
+    fromFile: "Свой (StrongBox)", fromFileHint: "Выберите keybox XML только для уровня StrongBox",
+    clear: "Очистить", clearHint: "Удалить файл, чтобы StrongBox использовал keybox выше",
+    hint: "Пишется в keybox_strongbox.xml. Если заданы оба, TEE берёт верхний, StrongBox — этот.",
+    written: "Keybox для StrongBox записан", cleared: "Очищено; StrongBox использует keybox выше",
+    set: "Настроен", unset: "Не настроен (используется keybox выше)" }
+};
+Object.keys(SBKB_TEXT).forEach(function(code){
+  if (!I18N[code]) return;
+  var s = SBKB_TEXT[code];
+  I18N[code]["sbkb.title"] = s.title;
+  I18N[code]["sbkb.current"] = s.current;
+  I18N[code]["sbkb.fromFile"] = s.fromFile;
+  I18N[code]["sbkb.fromFile.hint"] = s.fromFileHint;
+  I18N[code]["sbkb.clear"] = s.clear;
+  I18N[code]["sbkb.clear.hint"] = s.clearHint;
+  I18N[code]["sbkb.hint"] = s.hint;
+  I18N[code]["sbkb.written"] = s.written;
+  I18N[code]["sbkb.cleared"] = s.cleared;
+  I18N[code]["sbkb.set"] = s.set;
+  I18N[code]["sbkb.unset"] = s.unset;
+});
+
+/* 看一眼那份 StrongBox keybox 在不在，顺手把 DeviceID 读出来。 */
+async function refreshStrongboxKeybox(){
+  var el = document.getElementById("sbkb-state");
+  if (!el) return;
+  var r = await exec("[ -f " + KEYBOX_SB + " ] && { echo SET; grep -o 'DeviceID=\"[^\"]*\"' " + KEYBOX_SB +
+                     " 2>/dev/null | head -1; } || echo UNSET");
+  var out = String(r.stdout || "");
+  if (out.indexOf("SET") < 0){ setT(el, "sbkb.unset"); return; }
+  var m = /DeviceID="([^"]+)"/.exec(out);
+  el.textContent = t("sbkb.set") + (m ? " · " + m[1] : "");
+}
+
 /* 最近一次 /api/status/ 的响应：设备信息那块用它显示配对的 B 端与版本。 */
 var LAST_STATUS = null;
 var appRows = [], appFilter = "";
@@ -1613,7 +1693,8 @@ async function refreshAsk(){
 /* ------------------------------- 选文件窗 ------------------------------- */
 function fpOpen(kind){
   fpTarget = kind;
-  setT(document.getElementById("fp-title"), (kind === "keybox") ? "kb.fromFile" : "sk.fromFile");
+  setT(document.getElementById("fp-title"), (kind === "keybox") ? "kb.fromFile"
+      : (kind === "sbkeybox") ? "sbkb.fromFile" : "sk.fromFile");
   document.getElementById("fp-modal").className = "modal";
   fpList();
 }
@@ -1643,11 +1724,14 @@ async function fpList(){
 }
 async function fpPick(path){
   if (!path){ toast(t("toast.noFile"), true); return; }
-  var dst = (fpTarget === "keybox") ? KEYBOX : ASKPEM;
+  var dst = (fpTarget === "keybox") ? KEYBOX
+          : (fpTarget === "sbkeybox") ? KEYBOX_SB
+          : ASKPEM;
   var r = await exec("cp -f '" + path.replace(/'/g, "'\\''") + "' '" + dst + "' 2>/dev/null && chmod 0644 '" + dst + "' && echo ok");
   if (r.errno !== 0 || (r.stdout || "").indexOf("ok") < 0){ toast(t("toast.fileFail", {msg: r.stderr || r.errno}), true); return; }
   fpClose();
   if (fpTarget === "keybox"){ toast(t("toast.kbFile")); }
+  else if (fpTarget === "sbkeybox"){ toast(t("sbkb.written")); refreshStrongboxKeybox(); }
   else { toast(t("toast.skWritten")); refreshAsk(); }
 }
 
@@ -2170,6 +2254,14 @@ document.addEventListener("change", function(ev){ if (!(ev && ev.target && ev.ta
     };
     /* 本地密钥页 */
     document.getElementById("kb-file").onclick = function(){ fpOpen("keybox"); };
+    /* StrongBox 级别单独那份 keybox（可选） */
+    document.getElementById("sbkb-file").onclick = function(){ fpOpen("sbkeybox"); };
+    document.getElementById("sbkb-clear").onclick = function(){
+      exec("rm -f " + KEYBOX_SB).then(function(){
+        toast(t("sbkb.cleared"));
+        refreshStrongboxKeybox();
+      });
+    };
     document.getElementById("kb-auto").onclick = function(){
       runBusy("kb-auto", t("kb.auto.working"), function(){ return autoKeybox(); });
     };
@@ -2258,6 +2350,7 @@ document.addEventListener("change", function(ev){ if (!(ev && ev.target && ev.ta
     refreshSoter().catch(function(){});
     refreshCount().catch(function(){});
     refreshAsk().catch(function(){});
+    refreshStrongboxKeybox().catch(function(){});
     paintSoterRecord();
     loadApps().catch(function(){});
   } catch (e){
