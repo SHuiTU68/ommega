@@ -112,6 +112,9 @@ jobs:
         with:
           name: ${{ matrix.name }}-zip
           path: ${{ matrix.ws }}/target/ommega-*-release-*.zip
+          # A 端 zip 里夹着内置兜底 ASK，少留一份副本（公开仓库的 artifact
+          # 对登录用户可下，默认存 90 天）。
+          retention-days: 1
 
   server:
     runs-on: ubuntu-24.04
@@ -145,9 +148,12 @@ jobs:
         run: find dist -type f | sort
 
       # 用 gh 直接把附件挂到已有 release 上（同名附件会被替换）。
+      # `GH_REPO` 必需：这个 job 没 checkout，gh 否则会去猜当前目录属于哪个仓库，
+      # 报 `fatal: not a git repository`。
       - name: 上传到 release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
