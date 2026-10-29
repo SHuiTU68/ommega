@@ -1675,14 +1675,7 @@ async fn run_soter_task_inner(state: &AppState, body: &Value) -> Response {
         consistent_soter_target(requested_online, requested, None, resolved)
     };
 
-    // 点名那台不在线时：优先用配置的兜底 B；兜底那台也不可用（离线 / 不支持 SOTER）
-    // 就退回上面算好的 `resolved`（替身 / 按负载挑）。
-    //
-    // 以前这里无条件是 `b_target = fallback_target`，兜底不可用时就把 `resolved` 一起丢成
-    // None —— 而写操作（建料 / 删）不走这条分支、照旧用 `resolved` 的替身。结果是同一个
-    // alias 建料落在替身真机上、`has_auth_key` / `export_*` 却因为 b 层“一台都没有”落到
-    // 服务端自签层：刚建好的钥匙立刻查不到，SOTER 检测器的 T10 就是这么红的
-    // （2026-10-30，NX721J 远程）。
+    // 点名那台不在线时：只用配置的兜底 B（不按负载乱挑），兜底也不可用才走服务端。
     // 只对非写操作生效 —— 写操作（建料/导出/删）必须在点名那台上做，换设备会把
     // 钥匙状态挪到别处（见下面 `soter_mutation_cross_served` 那段说明）。
     let fallback_wanted = !requested_online
@@ -1700,7 +1693,11 @@ async fn run_soter_task_inner(state: &AppState, body: &Value) -> Response {
     } else {
         None
     };
-    let b_target = merge_fallback_target(fallback_wanted, fallback_target, b_target);
+    let b_target = if fallback_wanted {
+        fallback_target
+    } else {
+        b_target
+    };
 
     // 点名的 B 端能用就先走它，物理 / serverbox 两种模式一样：服务端那两层只在
     // 这台接不了（离线、能力不足、或这一笔做不下去）时才接管。没点名、或点名那台
@@ -1717,15 +1714,8 @@ async fn run_soter_task_inner(state: &AppState, body: &Value) -> Response {
     } else {
         None
     };
-    // 完全不认识的句柄：跟真机一样答 -1000（SOTER_ERROR_UNKNOWN）。
-    //
-    // 这里以前答 -204（OPERATEID_NULL，就是 App 自己会算出来的“会话不在了”），
-    // 用来让“本地答了 init、finish 跑错地方”那一类回放早点收场。但走到这条分支
-    // 的只剩“我们压根没记过这个句柄”（真正过期的那些还在 sign_sessions 里按
-    // TTL 存活，照样走 B 端由真 TA 自己判），而真 TA 对陌生句柄就是 -1000。
-    // SOTER 检测器拿一个随机句柄问一轮（T6），答 -204 会被记一笔语义偏差。
     if op == "finish_sign" && remembered.is_none() && server_owner.is_none() {
-        return Json(json!({"error_code": -1000, "relay_error_kind": "soter_session_unknown"}))
+        return Json(json!({"error_code": -204, "relay_error_kind": "soter_session_expired"}))
             .into_response();
     }
 
@@ -2270,24 +2260,6 @@ fn device_soter_body(body: &Value) -> Option<Value> {
 
 /// 一台都没有不算"这层不管这个 op"，而是这层没做成，所以返回带 `error` 的对象，
 /// 让上层接着试服务端那两层。
-/// 点名那台不在线时的目标合并。
-///
-/// 配置的兜底 B 可用就用它；兜底那台也不可用（离线 / 不支持 SOTER）时保留
-/// `resolved`（替身 / 负载均衡挑出来的那台），不能一起丢成 `None`。丢掉的后果：
-/// 写操作走替身，`has_auth_key` / `export_*` 却因为 b 层一台都没有落到服务端
-/// 自签层，刚建好的钥匙立刻查不到。
-fn merge_fallback_target(
-    fallback_wanted: bool,
-    fallback_target: Option<String>,
-    resolved: Option<String>,
-) -> Option<String> {
-    if fallback_wanted {
-        fallback_target.or(resolved)
-    } else {
-        resolved
-    }
-}
-
 async fn try_b_soter_layer(
     state: &AppState,
     body: &Value,
@@ -3684,44 +3656,5 @@ mod soter_slot_miss_tests {
             server_layer_missed_the_slot("keybox", "init_sign", &json!({ "op": "init_sign" })),
             None
         );
-    }
-}
-
-#[cfg(test)]
-mod fallback_target_tests {
-    use super::*;
-
-    /// 兜底 B 可用时用它；不可用时必须保留替身/负载均衡挑出来的那台。
-    ///
-    /// 以前兜底不可用会把 resolved 一起丢成 None：写操作照旧落替身真机、查询类却落到
-    /// 服务端自签层，刚建好的 AuthKey 立刻查不到（SOTER 检测器 T10）。
-    #[test]
-    fn a_missing_fallback_keeps_the_resolved_target() {
-        let resolved = Some("device-b-sub".to_string());
-        assert_eq!(
-            merge_fallback_target(true, Some("device-b-fb".into()), resolved.clone()),
-            Some("device-b-fb".to_string()),
-            "兜底可用就用兜底"
-        );
-        assert_eq!(
-            merge_fallback_target(true, None, resolved.clone()),
-            resolved,
-            "兜底不可用时不能把替身一起丢掉"
-        );
-        assert_eq!(
-            merge_fallback_target(true, None, None),
-            None,
-            "真的没有设备才返回 None"
-        );
-    }
-
-    /// 不需要兜底时原样返回。
-    #[test]
-    fn without_fallback_the_resolved_target_is_untouched() {
-        assert_eq!(
-            merge_fallback_target(false, Some("device-b-fb".into()), Some("device-b-x".into())),
-            Some("device-b-x".to_string())
-        );
-        assert_eq!(merge_fallback_target(false, None, None), None);
     }
 }
