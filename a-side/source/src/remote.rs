@@ -974,12 +974,14 @@ impl RemoteRelay {
         // keybox layer fail STRONG integrity checks that expect them.
         // Prefer the device's real partition patch props; the resolved config
         // `[trust]` values can be stale/malformed (e.g. a bogus "2026-30").
+        // 718 / 719 是 YYYYMMDD（带日），别再过 patch_level_to_yyyymm —— 那会把
+        // 2026-08-01 截成 202608，A 本地出的链和走远程的链就对不上。
         let vendor_patch_level =
             crate::plat::resetprop::read_string_property("ro.vendor.build.security_patch")
                 .as_deref()
                 .and_then(patch_level_to_yyyymmdd)
                 .or_else(|| match config::config().read() {
-                    Ok(g) => patch_level_to_yyyymm(&g.trust.vendor_patchlevel),
+                    Ok(g) => patch_level_to_yyyymmdd(&g.trust.vendor_patchlevel),
                     Err(_) => None,
                 })
                 .or(os_patch_level);
@@ -991,7 +993,7 @@ impl RemoteRelay {
                 .as_deref()
                 .and_then(patch_level_to_yyyymmdd)
                 .or_else(|| match config::config().read() {
-                    Ok(g) => patch_level_to_yyyymm(&g.trust.boot_patchlevel),
+                    Ok(g) => patch_level_to_yyyymmdd(&g.trust.boot_patchlevel),
                     Err(_) => None,
                 })
                 .or(os_patch_level);
@@ -1454,5 +1456,28 @@ mod iface_choice_tests {
         let probe: Arc<dyn Fn(&str) -> bool + Send + Sync> =
             Arc::new(|_: &str| panic!("an empty race must not probe"));
         assert_eq!(race_with(&[], probe), None::<String>);
+    }
+}
+
+#[cfg(test)]
+mod patch_level_tests {
+    use super::*;
+
+    /// 706 是 YYYYMM，718/719 是 YYYYMMDD。给 718/719 用错帮工就会把「日」吃掉：
+    /// A 本地出链是 2026-08-01，走远程变成 202608，两边对不上。
+    #[test]
+    fn month_level_and_day_level_stay_apart() {
+        assert_eq!(patch_level_to_yyyymm("2026-08-01"), Some(202608));
+        assert_eq!(patch_level_to_yyyymmdd("2026-08-01"), Some(2026_0801));
+        assert_eq!(patch_level_to_yyyymmdd("2026-08"), Some(2026_0801));
+        assert_eq!(patch_level_to_yyyymmdd("202608"), Some(2026_0801));
+        assert_eq!(patch_level_to_yyyymmdd("20260801"), Some(2026_0801));
+    }
+
+    #[test]
+    fn garbage_patch_levels_are_rejected() {
+        assert_eq!(patch_level_to_yyyymmdd("auto"), None);
+        assert_eq!(patch_level_to_yyyymmdd("2026-30"), None);
+        assert_eq!(patch_level_to_yyyymmdd(""), None);
     }
 }
