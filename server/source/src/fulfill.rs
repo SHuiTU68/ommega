@@ -530,7 +530,7 @@ impl Fulfill {
     }
 
     /// Parse the A-side `device_attest_context` object into AttestationParams.
-    fn parse_ctx(&self, ctx: &Value, challenge: &[u8]) -> AttestationParams {
+    fn parse_ctx(&self, ctx: &Value, challenge: &[u8], device_id: &str) -> AttestationParams {
         let mut p = AttestationParams {
             challenge: challenge.to_vec(),
             ..Default::default()
@@ -762,25 +762,19 @@ impl Fulfill {
             .and_then(Value::as_i64)
             .unwrap_or(p.attestation_version);
 
-        let vb_key = b64("verified_boot_key");
-        let vb_hash = b64("verified_boot_hash");
-        // Always set RootOfTrust — matches Django's default bytes(32)
-        let vb_key = vb_key
-            .map(|mut k| {
-                if k.len() != 32 {
-                    k.resize(32, 0);
-                }
-                k
-            })
-            .unwrap_or_else(|| vec![0u8; 32]);
-        let vb_hash = vb_hash
-            .map(|mut h| {
-                if h.len() != 32 {
-                    h.resize(32, 0);
-                }
-                h
-            })
-            .unwrap_or_else(|| vec![0u8; 32]);
+        // verified_boot_key / verified_boot_hash 应当是 32 字节。A 端没带、或者带过来的
+        // 解不出 32 字节时，不要发全 0（看着像没锁，而且所有机器都是同一串 0），按
+        // 「设备 + 当前年月日时」派生一个：同一小时里稳定，换小时才换。精确到分换得太勤，
+        // 同一轮会话里前后两笔就对不上。
+        let stamp = boot_value_stamp();
+        let vb_key = match b64("verified_boot_key") {
+            Some(k) if k.len() == 32 => k,
+            _ => boot_value_seed(device_id, "bootkey", &stamp).to_vec(),
+        };
+        let vb_hash = match b64("verified_boot_hash") {
+            Some(h) if h.len() == 32 => h,
+            _ => boot_value_seed(device_id, "boothash", &stamp).to_vec(),
+        };
         p.root_of_trust = Some(RootOfTrust {
             verified_boot_key: vb_key,
             device_locked: ctx
@@ -861,7 +855,7 @@ impl Fulfill {
         ctx: &Value,
         challenge: &[u8],
     ) -> anyhow::Result<(String, String)> {
-        let params = self.parse_ctx(ctx, challenge);
+        let params = self.parse_ctx(ctx, challenge, &identity.device_id);
         // 调用方带了证明密钥（App AttestKey 委派）：若那把 key 就在本服务端
         // （serverbox 模式下的 session），就用它自己签发子证书；不在本端则交给
         // 下一层（真机 B），**不**改用身份自带的签发密钥冒充。
@@ -1344,6 +1338,32 @@ fn decrypt_data(key: &LeafKey, data: &[u8]) -> anyhow::Result<Vec<u8>> {
     }
 }
 
+/// 「年月日时」时间戳，给合成的 boot 值当种子用。
+///
+/// 到小时为止：分/秒级会让同一轮会话里前后两笔的 boot key 不一样，看着更像假的。
+fn boot_value_stamp() -> String {
+    chrono::Utc::now().format("%Y%m%d%H").to_string()
+}
+
+/// 按 (用途, 设备, 时间戳) 派生一个 32 字节值。
+///
+/// 同一台设备、同一个小时内结果相同；换小时或换设备都会变。`kind` 把 boot key 和
+/// boot hash 分开，避免两者变成同一串。
+fn boot_value_seed(device_id: &str, kind: &str, stamp: &str) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"ommega-boot-value|");
+    hasher.update(kind.as_bytes());
+    hasher.update(b"|");
+    hasher.update(device_id.as_bytes());
+    hasher.update(b"|");
+    hasher.update(stamp.as_bytes());
+    let digest = hasher.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1615,5 +1635,22 @@ mod tests {
             assert!(!map.contains_key(&format!("al{i}")), "al{i} 该被淘汰");
         }
         assert!(map.contains_key(&format!("al{}", crate::statedb::SESSION_MEMORY_HOT + 4)));
+    }
+}
+
+#[cfg(test)]
+mod boot_value_tests {
+    use super::*;
+
+    /// 合成的 boot 值要「同一小时内稳定、换小时/换设备/换用途就变」，长度必须 32。
+    #[test]
+    fn synthesized_boot_values_are_stable_within_the_hour() {
+        let a = boot_value_seed("device-b-x", "bootkey", "2026102903");
+        assert_eq!(a.len(), 32);
+        assert_eq!(a, boot_value_seed("device-b-x", "bootkey", "2026102903"));
+        assert_ne!(a, boot_value_seed("device-b-x", "bootkey", "2026102904"));
+        assert_ne!(a, boot_value_seed("device-b-y", "bootkey", "2026102903"));
+        assert_ne!(a, boot_value_seed("device-b-x", "boothash", "2026102903"));
+        assert_ne!(a, [0u8; 32]);
     }
 }
