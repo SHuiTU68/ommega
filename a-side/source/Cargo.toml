@@ -1,7 +1,7 @@
 [package]
 name = "ommega"
 authors = ["jiyin004"]
-version = "1.7.8"
+version = "1.7.9"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 
@@ -82,11 +82,9 @@ members = [
 ]
 
 [patch.crates-io]
-# rsbinder 只改一处：nullable 的存在标记。AOSP 是“非 0 即存在”（Java
-# `readInt() != 0`、C++ `readInt32() != 0`），上游只认 1，于是同一个请求把标记换
-# 成 2 / -1 / INT_MAX 就在我们这边解析失败、被当陌生流量转发出去（KEY_NOT_FOUND），
-# 检测器一测一个准。改动在 vendor/rsbinder/src/{parcelable,macros}.rs。
-rsbinder = { path = "vendor/rsbinder" }
+# rsbinder 鍙敼涓€澶勶細nullable 鐨勫瓨鍦ㄦ爣璁般€侫OSP 鏄€滈潪 0 鍗冲瓨鍦ㄢ€濓紙Java
+# `readInt() != 0`銆丆++ `readInt32() != 0`锛夛紝涓婃父鍙 1锛屼簬鏄悓涓€涓姹傛妸鏍囪鎹?# 鎴?2 / -1 / INT_MAX 灏卞湪鎴戜滑杩欒竟瑙ｆ瀽澶辫触銆佽褰撻檶鐢熸祦閲忚浆鍙戝嚭鍘伙紙KEY_NOT_FOUND锛夛紝
+# 妫€娴嬪櫒涓€娴嬩竴涓噯銆傛敼鍔ㄥ湪 vendor/rsbinder/src/{parcelable,macros}.rs銆?rsbinder = { path = "vendor/rsbinder" }
 kmr-derive = { path = "derive" }
 kmr-common = { path = "common" }
 kmr-crypto-ommega = { path = "crypto" }
