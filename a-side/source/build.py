@@ -139,6 +139,37 @@ def run(cmd: list[str], *, env: dict[str, str] | None = None) -> None:
         raise RuntimeError(f"command failed: {' '.join(cmd)}")
 
 
+def ndk_roots() -> list[Path]:
+    """所有可能的 NDK 根。
+
+    只修 `ANDROID_NDK_ROOT` 那一个是不够的：cc-rs 给 lsplt 这类带 build.rs 的
+    依赖定 sysroot 时看的是它自己那套环境变量（Runner 上预装的
+    `/usr/local/lib/android/sdk/ndk/27.3.13750724`），结果链接时 `-L` 指的是预装
+    那个 NDK、clang 却是 `.cargo/config.toml` 里指定的 r27d —— 修了一份没用。
+    """
+    roots: list[Path] = []
+    for key in (
+        "ANDROID_NDK_ROOT",
+        "ANDROID_NDK_HOME",
+        "ANDROID_NDK",
+        "ANDROID_NDK_LATEST_HOME",
+    ):
+        value = os.environ.get(key)
+        if value:
+            roots.append(Path(value))
+    for key in ("ANDROID_HOME", "ANDROID_SDK_ROOT"):
+        value = os.environ.get(key)
+        if value:
+            roots.extend(sorted((Path(value) / "ndk").glob("*")))
+    # GitHub 的 Linux 镜像把 NDK 预装在这儿，那边不一定设 ANDROID_HOME。
+    roots.extend(sorted(Path("/usr/local/lib/android/sdk/ndk").glob("*")))
+    seen: list[Path] = []
+    for root in roots:
+        if root.is_dir() and root not in seen:
+            seen.append(root)
+    return seen
+
+
 def ensure_x86_builtins() -> None:
     """给 i686 目标补一份 `libclang_rt.builtins-x86-android.a`。
 
@@ -146,28 +177,26 @@ def ensure_x86_builtins() -> None:
     而 NDK 里那份资源库在某些版本/某些宿主包里只叫 `-i686-`（本地 27.3 两份都有，
     CI 的 r27d 只有 i686，于是 `ld.lld: unable to find library
     -lclang_rt.builtins-x86-android`）。缺了就从 i686 那份复制一份，两边都齐的时候
-    这一步什么也不做。
+    这一步什么也不做。所有能看到的 NDK 都补一遍，谁被拿去当 sysroot 都能找到。
     """
-    ndk = os.environ.get("ANDROID_NDK_ROOT") or os.environ.get("ANDROID_NDK_HOME")
-    if not ndk:
-        return
-    for host in ("linux-x86_64", "darwin-x86_64", "windows-x86_64"):
-        base = Path(ndk) / "toolchains" / "llvm" / "prebuilt" / host / "lib" / "clang"
-        if not base.is_dir():
-            continue
-        for ver in base.iterdir():
-            linux_dir = ver / "lib" / "linux"
-            if not linux_dir.is_dir():
+    for ndk in ndk_roots():
+        for host in ("linux-x86_64", "darwin-x86_64", "windows-x86_64"):
+            base = ndk / "toolchains" / "llvm" / "prebuilt" / host / "lib" / "clang"
+            if not base.is_dir():
                 continue
-            want = linux_dir / "libclang_rt.builtins-x86-android.a"
-            src = linux_dir / "libclang_rt.builtins-i686-android.a"
-            if want.is_file() or not src.is_file():
-                continue
-            try:
-                shutil.copyfile(src, want)
-                print(f"补上 {want}")
-            except OSError as exc:
-                print(f"补 {want} 失败（继续，交给链接器报错）: {exc}")
+            for ver in base.iterdir():
+                linux_dir = ver / "lib" / "linux"
+                if not linux_dir.is_dir():
+                    continue
+                want = linux_dir / "libclang_rt.builtins-x86-android.a"
+                src = linux_dir / "libclang_rt.builtins-i686-android.a"
+                if want.is_file() or not src.is_file():
+                    continue
+                try:
+                    shutil.copyfile(src, want)
+                    print(f"补上 {want}", flush=True)
+                except OSError as exc:
+                    print(f"补 {want} 失败（继续，交给链接器报错）: {exc}", flush=True)
 
 
 def ensure_rust_targets(targets: list[str]) -> None:
