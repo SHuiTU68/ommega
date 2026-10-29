@@ -397,6 +397,21 @@ fn ec_digest_bytes(digest: Digest, data: &[u8]) -> Result<Vec<u8>, Error> {
     Ok(out)
 }
 
+/// 把比域窄的摘要左边补 0（P-224 只剩 28 字节的域）。
+fn left_pad(data: &[u8], len: usize, curve: ec::NistCurve) -> Result<Vec<u8>, Error> {
+    if data.len() > len {
+        return Err(km_err!(
+            InvalidInputLength,
+            "{:?} digest is {} bytes, field is {len}",
+            curve,
+            data.len()
+        ));
+    }
+    let mut out = vec![0u8; len];
+    out[len - data.len()..].copy_from_slice(data);
+    Ok(out)
+}
+
 /// Sign a digest directly with ECDSA, returning a DER signature.
 ///
 /// 必须用 `sign_prehash`：`sign()` 会按曲线默认摘要（P-256 是 SHA-256）把输入
@@ -405,6 +420,17 @@ fn ec_digest_bytes(digest: Digest, data: &[u8]) -> Result<Vec<u8>, Error> {
 fn sign_ecdsa_prehashed(key: &Key, curve: ec::NistCurve, msg: &[u8]) -> Result<Vec<u8>, Error> {
     use ecdsa::signature::hazmat::PrehashSigner as _;
     let priv_bytes = nist_priv_bytes(key)?;
+    // 比域短的输入要左边补 0（跟 ECDSA 把输入当大整数的做法一致）。RustCrypto 的
+    // `bits2field` 只接受「至少半个域宽」，再短就直接报错 —— 以前我们把摘要交给
+    // `sign()` 时永远不会踩到，改成 prehash 后短摘要（比如 8 字节）会莫名其妙失败。
+    // 长的输入由 `bits2field` 按位截断（SHA-512 配 P-256 就是这种）。
+    let padded;
+    let msg = if msg.len() < curve.coord_len() {
+        padded = left_pad(msg, curve.coord_len(), curve)?;
+        padded.as_slice()
+    } else {
+        msg
+    };
     let sig = match curve {
         // P-224 只有工程模式那类自检会要（`KeyAttestationTest.testEcAttestation` 用的就是
         // secp224r1）。以前这里直接回 UnsupportedEcCurve，于是工程模式的
@@ -533,6 +559,31 @@ mod signing_tests {
             err.kind(),
             kmr_common::ErrorKind::Hal(kmr_wire::keymint::ErrorCode::InvalidInputLength, _)
         ));
+    }
+
+    /// 短摘要（比域窄）：左边补 0 再签，不能直接报错。
+    #[test]
+    fn undigest_pads_a_short_digest_on_the_left() {
+        let key = p256_key();
+        let short = [0x11u8; 8];
+        let mut op = OmmegaEcUndigestSignOperation::new(
+            match &key {
+                Key::P256(k) => k.clone(),
+                _ => unreachable!(),
+            },
+            ec::NistCurve::P256,
+        )
+        .unwrap();
+        op.update(&short).unwrap();
+        let sig = Box::new(op).finish().unwrap();
+
+        let mut padded = [0u8; 32];
+        padded[24..].copy_from_slice(&short);
+        let verifier = p256_verifier(&key);
+        let sig = SigP256::from_der(&sig).unwrap();
+        verifier
+            .verify_prehash(&padded, &sig)
+            .unwrap_or_else(|e| panic!("短摘要应当左补 0 后验得过: {e:?}"));
     }
 
     /// 带摘要的请求：算的必须是请求指定的摘要，不是曲线默认的 SHA-256。
