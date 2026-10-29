@@ -139,6 +139,31 @@ def run(cmd: list[str], *, env: dict[str, str] | None = None) -> None:
         raise RuntimeError(f"command failed: {' '.join(cmd)}")
 
 
+def ensure_rust_targets(targets: list[str]) -> None:
+    """缺哪个 Rust target 就现装哪个。
+
+    CI 那边以前只在 workflow 里列了三个 target，A 端要出四个 ABI，跑到 i686 就
+    `can't find crate for core`；本地新机器同理。装不上不算错（比如离线），让
+    后面真正的编译去报错，信息更直接。
+    """
+    try:
+        listed = subprocess.run(
+            ["rustup", "target", "list", "--installed"],
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return
+    if listed.returncode != 0:
+        return
+    installed = {line.strip() for line in listed.stdout.splitlines() if line.strip()}
+    missing = [t for t in targets if t not in installed]
+    if not missing:
+        return
+    print(f"安装缺失的 Rust target: {' '.join(missing)}")
+    subprocess.run(["rustup", "target", "add", *missing], check=False)
+
+
 def get_version() -> str:
     """版本号唯一来源 = 仓库根的 VERSION；顺带强制 Cargo.toml 与它一致。"""
     version = VERSION_FILE.read_text(encoding="utf-8").strip()
@@ -573,6 +598,12 @@ def build_combined_package(
 
 
 def main() -> None:
+
+    # 四个 ABI 都要：arm64 / armv7 / x86_64 / x86。缺 target 就现装，别让 CI 的
+    # workflow 里那份清单成为唯一的真源。
+    ensure_rust_targets(
+        ["aarch64-linux-android", "armv7-linux-androideabi", "x86_64-linux-android", "i686-linux-android"]
+    )
     parser = argparse.ArgumentParser(description="Build ommega-a Magisk packages for Android")
     parser.add_argument("--release", action="store_true", help="Build in release mode")
     parser.add_argument("--debug", action="store_true", help="Build in debug mode (default)")
