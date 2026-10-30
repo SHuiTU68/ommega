@@ -1,6 +1,6 @@
 #!/system/bin/sh
 
-MODDIR=${0%/*}
+MODDIR=${OMMEGA_MODDIR:-${0%/*}}
 STATE_DIR=/data/adb/ommega
 BIN_DIR=$STATE_DIR/bin
 CONF_DIR=$STATE_DIR/conf
