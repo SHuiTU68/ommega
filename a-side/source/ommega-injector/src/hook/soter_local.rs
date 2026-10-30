@@ -1102,13 +1102,18 @@ mod tests {
         assert!(answer(&c).is_none(), "only the HAL side is ours to answer");
     }
 
+    /// 2 号（exportAttkPublicKey）现在由我们自己答（产线 provisioning 三兄弟之一），
+    /// 不再透传；只有真没实现的号才交给真 HAL。
     #[test]
-    fn unknown_codes_fall_through_to_the_real_hal() {
+    fn unimplemented_codes_fall_through_to_the_real_hal() {
         assert!(
-            answer(&call(2, Some(1), None)).is_none(),
-            "code 2 is reserved"
+            answer(&call(2, Some(1), None)).is_some(),
+            "exportAttkPublicKey 是我们自己答的"
         );
-        assert!(answer(&call(99, Some(1), None)).is_none());
+        assert!(
+            answer(&call(99, Some(1), None)).is_none(),
+            "99 号没人实现，得透传"
+        );
     }
 
     #[test]
