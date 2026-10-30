@@ -544,7 +544,9 @@ while true; do
   sync_soter_ask
   sync_soter_cpu_id
   if [ "$soter_ask_changed" = "1" ]; then
-    # ASK 换了不用再踢宿主：宿主里的载荷已经不注了，服务端自己的进程每次签都现读。
+    # ASK/ATTK 换了：keystore2 里那份 payload 的 state（ATTK 与已加载的 ASK）是启动时
+    # 一次性加载的，只踢 SOTER 宿主不会重读，必须让 keystore2 重新注入一次。
+    : > "$RESTART_FILE"
     run_soter_selftest
   fi
 
