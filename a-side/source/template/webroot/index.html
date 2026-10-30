@@ -692,41 +692,41 @@ async function loadOwnPatch(){
 }
 /* StrongBox 级别单独一份 keybox 的文案。没配就沿用「本地密钥」那份，行为跟以前一致。 */
 var SBKB_TEXT = {
-  "zh-CN": { title: "StrongBox 级别密钥（可选）", current: "当前",
+  "zh-CN": { title: "StrongBox 级别密钥", current: "当前",
     fromFile: "自定义（StrongBox）", fromFileHint: "选一份 keybox XML，只给 StrongBox 级别（security level 2）用",
-    clear: "清除", clearHint: "删掉这份，StrongBox 级别回到沿用上面那份",
-    hint: "写入 keybox_strongbox.xml。两份分开之后，TEE 请求用上面那份、StrongBox 请求用这份；没有这份时两个级别共用同一份。",
-    written: "已写入 StrongBox 级别的 keybox", cleared: "已清除，StrongBox 回到沿用上面那份",
+    clear: "恢复内置自签", clearHint: "把这份换回内置的 StrongBox 自签 keybox",
+    hint: "写入 keybox_strongbox.xml，只给 StrongBox 级别用。TEE 那份在上面，两份互不共用。这里没有在线来源：只能选文件或恢复内置。",
+    written: "已写入 StrongBox 级别的 keybox", cleared: "已恢复内置的 StrongBox keybox",
     set: "已配置", setId: "已配置 · {id}", unset: "未配置（沿用上面那份）" },
-  "zh-TW": { title: "StrongBox 級別密鑰（可選）", current: "目前",
+  "zh-TW": { title: "StrongBox 級別密鑰", current: "目前",
     fromFile: "自訂（StrongBox）", fromFileHint: "選一份 keybox XML，只給 StrongBox 級別用",
-    clear: "清除", clearHint: "刪掉這份，StrongBox 回到沿用上面那份",
-    hint: "寫入 keybox_strongbox.xml。兩份分開之後，TEE 請求用上面那份、StrongBox 請求用這份。",
-    written: "已寫入 StrongBox 級別的 keybox", cleared: "已清除，StrongBox 回到沿用上面那份",
+    clear: "恢復內建自簽", clearHint: "把這份換回內建的 StrongBox 自簽 keybox",
+    hint: "寫入 keybox_strongbox.xml，只給 StrongBox 級別用。TEE 那份在上面，兩份互不共用。這裡沒有線上來源：只能選檔案或恢復內建。",
+    written: "已寫入 StrongBox 級別的 keybox", cleared: "已恢復內建的 StrongBox keybox",
     set: "已設定", setId: "已設定 · {id}", unset: "未設定（沿用上面那份）" },
-  "en": { title: "StrongBox keybox (optional)", current: "Current",
+  "en": { title: "StrongBox keybox", current: "Current",
     fromFile: "Custom (StrongBox)", fromFileHint: "Pick a keybox XML used only for the StrongBox level (security level 2)",
-    clear: "Clear", clearHint: "Remove it so the StrongBox level falls back to the keybox above",
-    hint: "Written to keybox_strongbox.xml. With both files set, TEE requests use the one above and StrongBox requests use this one; without this file both levels share the same keybox.",
-    written: "StrongBox keybox written", cleared: "Cleared; the StrongBox level falls back to the keybox above",
+    clear: "Restore built-in", clearHint: "Put the bundled StrongBox keybox back",
+    hint: "Written to keybox_strongbox.xml and used only for the StrongBox level. TEE uses the keybox above; the two never share. There is no online source here: pick a file or restore the built-in one.",
+    written: "StrongBox keybox written", cleared: "Bundled StrongBox keybox restored",
     set: "Configured", setId: "Configured · {id}", unset: "Not configured (uses the keybox above)" },
-  "ja": { title: "StrongBox 用キーボックス（任意）", current: "現在",
+  "ja": { title: "StrongBox 用キーボックス", current: "現在",
     fromFile: "カスタム（StrongBox）", fromFileHint: "StrongBox レベル専用の keybox XML を選ぶ",
-    clear: "消去", clearHint: "削除すると StrongBox は上のキーボックスを使う",
-    hint: "keybox_strongbox.xml に書き込みます。両方あるときは TEE が上、StrongBox がこちらを使います。",
-    written: "StrongBox 用キーボックスを書き込みました", cleared: "消去しました（上のキーボックスを使用）",
+    clear: "内蔵に戻す", clearHint: "同梱の StrongBox キーボックスに戻す",
+    hint: "keybox_strongbox.xml に書き込み、StrongBox レベルだけで使います。TEE は上のキーボックスを使い、二つは共用しません。ここにオンライン取得はありません。",
+    written: "StrongBox 用キーボックスを書き込みました", cleared: "同梱の StrongBox キーボックスに戻しました",
     set: "設定済み", setId: "設定済み · {id}", unset: "未設定（上のキーボックスを使用）" },
-  "ko": { title: "StrongBox 전용 키박스(선택)", current: "현재",
+  "ko": { title: "StrongBox 전용 키박스", current: "현재",
     fromFile: "사용자 지정(StrongBox)", fromFileHint: "StrongBox 레벨에만 쓸 keybox XML을 고르세요",
-    clear: "지우기", clearHint: "지우면 StrongBox는 위 키박스를 사용합니다",
-    hint: "keybox_strongbox.xml에 기록합니다. 둘 다 있으면 TEE는 위, StrongBox는 이 파일을 씁니다.",
-    written: "StrongBox 키박스를 기록했습니다", cleared: "지웠습니다(위 키박스 사용)",
+    clear: "내장으로 복귀", clearHint: "내장 StrongBox 키박스로 되돌립니다",
+    hint: "keybox_strongbox.xml에 기록하며 StrongBox 레벨에만 씁니다. TEE는 위 키박스를 쓰고 둘은 공유하지 않습니다. 여기에는 온라인 소스가 없습니다.",
+    written: "StrongBox 키박스를 기록했습니다", cleared: "내장 StrongBox 키박스로 복귀했습니다",
     set: "설정됨", setId: "설정됨 · {id}", unset: "설정 안 됨(위 키박스 사용)" },
-  "ru": { title: "Keybox для StrongBox (необязательно)", current: "Текущий",
+  "ru": { title: "Keybox для StrongBox", current: "Текущий",
     fromFile: "Свой (StrongBox)", fromFileHint: "Выберите keybox XML только для уровня StrongBox",
-    clear: "Очистить", clearHint: "Удалить файл, чтобы StrongBox использовал keybox выше",
-    hint: "Пишется в keybox_strongbox.xml. Если заданы оба, TEE берёт верхний, StrongBox — этот.",
-    written: "Keybox для StrongBox записан", cleared: "Очищено; StrongBox использует keybox выше",
+    clear: "Вернуть встроенный", clearHint: "Вернуть встроенный keybox StrongBox",
+    hint: "Пишется в keybox_strongbox.xml и используется только уровнем StrongBox. TEE берёт верхний keybox; они не совмещаются. Онлайн-источников здесь нет.",
+    written: "Keybox для StrongBox записан", cleared: "Встроенный keybox StrongBox восстановлен",
     set: "Настроен", setId: "Настроен · {id}", unset: "Не настроен (используется keybox выше)" }
 };
 Object.keys(SBKB_TEXT).forEach(function(code){
@@ -744,6 +744,59 @@ Object.keys(SBKB_TEXT).forEach(function(code){
   I18N[code]["sbkb.set"] = s.set;
   I18N[code]["sbkb.setId"] = s.setId;
   I18N[code]["sbkb.unset"] = s.unset;
+});
+
+/* 主 keybox 那份的文案：它就是 TEE 级别用的，跟上面 StrongBox 那份彻底分开。
+   在线源（服务器公开库、Yuri、AOSP）只能写这份 —— 它们都是 TEE/软件链，
+   写进 StrongBox 那份就是又一个级别串了的坑。 */
+var TEEKB_TEXT = {
+  "zh-CN": { title: "TEE 级别密钥（主 keybox）", self: "内置 TEE 自签",
+    selfHint: "内置的 TEE 自签三级链（DeviceID=c3315922…），跟本机 TEE 级别对应",
+    autoHint: "依次试：服务器公开库 → Yuri 源 → 内置 TEE 自签；只更新这一份（TEE）",
+    yuriHint: "从 GitHub 抓取，含镜像回退；只更新这一份（TEE）",
+    ommegaHint: "取服务器上的公开密钥库；只更新这一份（TEE）",
+    pathHint: "写入 /data/misc/keystore/ommega/keybox.xml，TEE 级别专用。StrongBox 那份在下面的卡片里单独设，旧档会备份为 .bak。" },
+  "zh-TW": { title: "TEE 級別密鑰（主 keybox）", self: "內建 TEE 自簽",
+    selfHint: "內建的 TEE 自簽三級鏈（DeviceID=c3315922…），跟本機 TEE 級別對應",
+    autoHint: "依序試：伺服器公開庫 → Yuri 來源 → 內建 TEE 自簽；只更新這一份（TEE）",
+    yuriHint: "從 GitHub 抓取，含鏡像回退；只更新這一份（TEE）",
+    ommegaHint: "取伺服器上的公開金鑰庫；只更新這一份（TEE）",
+    pathHint: "寫入 /data/misc/keystore/ommega/keybox.xml，TEE 級別專用。StrongBox 那份在下面的卡片單獨設定，舊檔備份為 .bak。" },
+  "en": { title: "TEE keybox (primary)", self: "Built-in TEE",
+    selfHint: "Bundled self-signed TEE chain (DeviceID=c3315922…), matching this device's TEE level",
+    autoHint: "Tries in order: server public keybox → Yuri source → built-in TEE; updates only this one (TEE)",
+    yuriHint: "Fetched from GitHub with a mirror fallback; updates only this one (TEE)",
+    ommegaHint: "Fetches the public keybox from the server; updates only this one (TEE)",
+    pathHint: "Written to /data/misc/keystore/ommega/keybox.xml, TEE level only. The StrongBox keybox is set in the card below; the old file is kept as .bak." },
+  "ja": { title: "TEE 用キーボックス（メイン）", self: "内蔵 TEE 自前署名",
+    selfHint: "同梱の TEE 自前署名チェーン（DeviceID=c3315922…）。本機の TEE レベルに対応",
+    autoHint: "サーバー公開庫 → Yuri ソース → 内蔵 TEE 自前署名の順に試し、この 1 つ（TEE）だけを更新します",
+    yuriHint: "GitHub から取得（ミラーへ退避）。この 1 つ（TEE）だけを更新します",
+    ommegaHint: "サーバーの公開キーボックスを取得。この 1 つ（TEE）だけを更新します",
+    pathHint: "/data/misc/keystore/ommega/keybox.xml に書き込み、TEE レベル専用。StrongBox は下のカードで別に設定します。" },
+  "ko": { title: "TEE 키박스(기본)", self: "내장 TEE 자체 서명",
+    selfHint: "내장 TEE 자체 서명 체인(DeviceID=c3315922…), 이 기기의 TEE 레벨에 대응",
+    autoHint: "서버 공개 키박스 → Yuri 소스 → 내장 TEE 자체 서명 순으로 시도하며 이 파일(TEE)만 갱신합니다",
+    yuriHint: "GitHub에서 가져옵니다(미러 대체). 이 파일(TEE)만 갱신합니다",
+    ommegaHint: "서버의 공개 키박스를 가져옵니다. 이 파일(TEE)만 갱신합니다",
+    pathHint: "/data/misc/keystore/ommega/keybox.xml에 기록하며 TEE 레벨 전용입니다. StrongBox는 아래 카드에서 따로 설정합니다." },
+  "ru": { title: "Keybox уровня TEE (основной)", self: "Встроенный TEE",
+    selfHint: "Встроенная самоподписанная цепочка TEE (DeviceID=c3315922…), соответствует уровню TEE",
+    autoHint: "По порядку: публичный keybox сервера → источник Yuri → встроенный TEE; обновляет только этот (TEE)",
+    yuriHint: "Загружается с GitHub с зеркалом; обновляет только этот (TEE)",
+    ommegaHint: "Берёт публичный keybox с сервера; обновляет только этот (TEE)",
+    pathHint: "Пишется в /data/misc/keystore/ommega/keybox.xml, только для уровня TEE. StrongBox задаётся в карточке ниже." }
+};
+Object.keys(TEEKB_TEXT).forEach(function(code){
+  if (!I18N[code]) return;
+  var s = TEEKB_TEXT[code];
+  I18N[code]["kb.title"] = s.title;
+  I18N[code]["kb.self"] = s.self;
+  I18N[code]["kb.self.hint"] = s.selfHint;
+  I18N[code]["kb.auto.hint"] = s.autoHint;
+  I18N[code]["kb.yuri.hint"] = s.yuriHint;
+  I18N[code]["kb.ommega.hint"] = s.ommegaHint;
+  I18N[code]["kb.path.hint"] = s.pathHint;
 });
 
 /* 看一眼那份 StrongBox keybox 在不在，顺手把 DeviceID 读出来。 */
@@ -1669,7 +1722,8 @@ async function fetchKeybox(urls, src){
 const YURI_URLS = ["https://raw.githubusercontent.com/Yurii0307/yurikey/main/key",
                    "https://hub.gitmirror.com/raw.githubusercontent.com/Yurii0307/yurikey/main/key"];
 /* 「自动获取」：用户不关心来源，只想拿到能用的密钥库 —— 依次试服务器公开库、
-   Yuri 源，都不行就上内置的 AOSP（本地就有的东西）。 */
+   Yuri 源，都不行就上内置的 TEE 自签（本地就有的东西，而且级别对得上）。
+   不退回 AOSP：那是软件链，TEE 请求拿它出去就又串了。 */
 async function autoKeybox(){
   toast(t("kb.auto.working"));
   var xml = null, src = "";
@@ -1680,7 +1734,7 @@ async function autoKeybox(){
   if (!xml){
     try { xml = await tryFetchKeybox(YURI_URLS); if (xml) src = "Yurikey"; } catch (e){}
   }
-  if (!xml){ await writeKeybox(builtinXml("kb-aosp-xml"), ""); return; }
+  if (!xml){ await writeKeybox(builtinXml("kb-self-xml"), ""); return; }
   await writeKeybox(xml, src);
 }
 function paintAsk(){
@@ -2257,13 +2311,18 @@ document.addEventListener("change", function(ev){ if (!(ev && ev.target && ev.ta
     };
     /* 本地密钥页 */
     document.getElementById("kb-file").onclick = function(){ fpOpen("keybox"); };
-    /* StrongBox 级别单独那份 keybox（可选） */
+    /* StrongBox 那份 keybox：只有两个来源 —— 设备上选文件、或者恢复内置自签。
+       这里没有在线源，也不该有：源里那些是 TEE 链，拿过来就是级别串了。 */
     document.getElementById("sbkb-file").onclick = function(){ fpOpen("sbkeybox"); };
     document.getElementById("sbkb-clear").onclick = function(){
-      exec("rm -f " + KEYBOX_SB).then(function(){
-        toast(t("sbkb.cleared"));
-        refreshStrongboxKeybox();
-      });
+      exec("cp -f " + KEYBOX_SB + " " + KEYBOX_SB + ".bak 2>/dev/null")
+        .then(function(){ return writeFile(KEYBOX_SB, builtinXml("kb-strongbox-xml"), "0644"); })
+        .then(function(r){
+          if (r && r.errno !== 0){ toast(t("toast.saveFail", {msg: r.stderr || r.errno}), true); return; }
+          toast(t("sbkb.cleared"));
+          refreshStrongboxKeybox();
+        })
+        .catch(function(e){ toast(String(e.message), true); });
     };
     document.getElementById("kb-auto").onclick = function(){
       runBusy("kb-auto", t("kb.auto.working"), function(){ return autoKeybox(); });
@@ -2663,5 +2722,173 @@ function builtinXml(id){
         </Key>
     </Keybox>
 </AndroidAttestation></script>
+<script type="text/plain" id="kb-strongbox-xml"><?xml version="1.0" encoding="UTF-8"?>
+<AndroidAttestation>
+    <NumberOfKeyboxes>1</NumberOfKeyboxes>
+    <Keybox DeviceID="96c56c3f85719d397335355d0b5cc18c">
+        <Key algorithm="ecdsa">
+            <PrivateKey format="pem">
+                -----BEGIN EC PRIVATE KEY-----
+                MHcCAQEEIP0vN2te0NCM8BGyo0dmLZ1mO/hhFJc2mpWGa1APlB/noAoGCCqGSM49
+                AwEHoUQDQgAEBR7fyh2C3vTh7Ox9eBRASHWkb4+qpRmxRcz7SOIpTGdRb0/IvAzu
+                sqfkA5U1EFKZnRr2S2HANlSx3LLjsFca7A==
+                -----END EC PRIVATE KEY-----
+            </PrivateKey>
+            <CertificateChain>
+                <NumberOfCertificates>3</NumberOfCertificates>
+                <Certificate format="pem">
+                    -----BEGIN CERTIFICATE-----
+                    MIIBojCCAUmgAwIBAgIUAKgVSM/H6+hGkTPQWbzTINwDJXEwCgYIKoZIzj0EAwIw
+                    PzEpMCcGA1UEBRMgMGYyYTUzNjcxYjM5YmVkNjI0MjYzNzhhOGJmZTY0OTIxEjAQ
+                    BgNVBAwMCVN0cm9uZ0JveDAeFw0yNjEwMjAwMDAwMDBaFw0zNjEwMTgwMDAwMDBa
+                    MD8xKTAnBgNVBAUTIDgzZGEyMWY1YWQxNjJkNmE0MTA0YzNjZjIxOTEwMzYwMRIw
+                    EAYDVQQMDAlTdHJvbmdCb3gwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQFHt/K
+                    HYLe9OHs7H14FEBIdaRvj6qlGbFFzPtI4ilMZ1FvT8i8DO6yp+QDlTUQUpmdGvZL
+                    YcA2VLHcsuOwVxrsoyMwITAPBgNVHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQEAwIB
+                    BjAKBggqhkjOPQQDAgNHADBEAiBnbIOqH1rNmM9DcKHj83lHWnR46ou0nycYZ1nJ
+                    0IfmygIgNdvpB0yo3vE7zZsQIus3apGoPYQXGO9yD5h1XY5W/4U=
+                    -----END CERTIFICATE-----
+                </Certificate>
+                <Certificate format="pem">
+                    -----BEGIN CERTIFICATE-----
+                    MIICWDCCAUCgAwIBAgIUAMKFE4kJpt4km5+z9xaP0UViCcMwDQYJKoZIhvcNAQEL
+                    BQAwMzExMC8GA1UEBRMoZDJmOTQ2OGNmZDljYzdlMTVkNDc3YmQ4Y2UyYWJhMDZm
+                    YWFkYWQ5ZTAeFw0yNjEwMjAwMDAwMDBaFw0zNjEwMTgwMDAwMDBaMD8xKTAnBgNV
+                    BAUTIDBmMmE1MzY3MWIzOWJlZDYyNDI2Mzc4YThiZmU2NDkyMRIwEAYDVQQMDAlT
+                    dHJvbmdCb3gwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATxqwUWz8mLrBfXH3cE
+                    /IlMhl44yHkNgkktOxUX/pY2HcUlP3ITFiJbS4PvMumBXPjKvsi+Qw0FcHTU+LZq
+                    mDjOoyMwITAPBgNVHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQEAwIBBjANBgkqhkiG
+                    9w0BAQsFAAOCAQEAmHRnPoAwmLx2eCwCzDceeOraBw57GBWsC1I5FgrCpL3+jqty
+                    BlXenm3mHVCzWvAGmditP433rSGm2rRbrbTZw3RXlezvabIzA42oEXwhIk0bd//R
+                    CTUtr8o5fFAQh4nxstwL+eU9BK7nZ/1l30wPROxpZyu2VGcX9m03IfO85hj3iDhF
+                    pPRe3Vl6+ZVhnhzeP2CSp/21xCZJhOksYHl6DfAMsqLTUIc+GG2zsBCIaOW4/gEG
+                    vVCq30S5ZtNdVmSauE73bKLeoC67s+j04YPNLMUJxFPPyC8Lsa+zKtA6T0X8f32s
+                    BNH0SQcNk4FNBIO9ShLeNO6WeiJYF7QPh7SGvg==
+                    -----END CERTIFICATE-----
+                </Certificate>
+                <Certificate format="pem">
+                    -----BEGIN CERTIFICATE-----
+                    MIIDFzCCAf+gAwIBAgIUAN4/0pUrZfN+N+lcmst/SZpXsf0wDQYJKoZIhvcNAQEL
+                    BQAwMzExMC8GA1UEBRMoZDJmOTQ2OGNmZDljYzdlMTVkNDc3YmQ4Y2UyYWJhMDZm
+                    YWFkYWQ5ZTAeFw0yNjEwMjAwMDAwMDBaFw00NjEwMTYwMDAwMDBaMDMxMTAvBgNV
+                    BAUTKGQyZjk0NjhjZmQ5Y2M3ZTE1ZDQ3N2JkOGNlMmFiYTA2ZmFhZGFkOWUwggEi
+                    MA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDA34M0mvPLLWQNmI+Ce5kY5JfL
+                    l/+wIJ/j8HEqczqSLO0RxRx/2hqrxli8pyxynZMxSHKkK2TskW4X2pR39aJy7ddV
+                    Q3pcO/0pqI0Frxwyi+nRJT1vTSIhHUg+7yhoAlypfdpgT3LC1hjlSZ5qxsh7mHAV
+                    /2HhNaGE2IJX2pS+iDbaJpNUD+ceun27g+A1nRbIQubSypw+JEs4DZ3x3W7EdTi/
+                    0XfQsdbayZVbCc1FJjXMAO1x0l6fvKP/tyYtmuRAT8hVf+T5p16FojRJkOZtbYfP
+                    bd0qFkMHmre5KaEiu2cf82cAbOckHulpYRXbG1oW+8SRfN9NHEvWzoyjkyNpAgMB
+                    AAGjIzAhMA8GA1UdEwEB/wQFMAMBAf8wDgYDVR0PAQH/BAQDAgEGMA0GCSqGSIb3
+                    DQEBCwUAA4IBAQCL29KE8plesIjGI8nsAwpc/q9ekAqNYsL9i/ghErPTqgvW+6JC
+                    aILibYjIupMra8sn5aXKyNqd2I0JqaqD7bKct08MaPw7lB78mepoRPuPRpy7t+q/
+                    ePQBVbBX8V2k9eZFJOWzhxacXt4xadDKMD+9Q1RvJmrGCcdJsvXaCq+92cpkfoa2
+                    64e2IeM1HV3eSTGBJ9N8nDaqdQLAhgAIOrwZAMjwObWURbFteJhj+6xGSUZpT+nS
+                    2Zq8eeZULIkt8gct/ay8OS/soQMwm4mIgBGWT8D9Vau0NCQleQ/BgInWfNUtYO2E
+                    Q2KjzSXRrZQzo+mcZXsRRwglsy8TXdgHTiXc
+                    -----END CERTIFICATE-----
+                </Certificate>
+            </CertificateChain>
+        </Key>
+        <Key algorithm="rsa">
+            <PrivateKey format="pem">
+                -----BEGIN RSA PRIVATE KEY-----
+                MIIEpAIBAAKCAQEAv0YvDgK74gX4M9L7zSOLiYRaPPlszqfUiZ10rvSuljYWhlXa
+                f40xBUJqhzESGJxB4nfCfGvRkNfzHl/JBpnCjjVB64EK3PpBwqUmBkjHch2kGn/u
+                4ExYYlIhhbZr2enfdWWW9ruVqkv2ce7JTu6uFIbYNeNw3psQxQXL329RrVxNqEj7
+                fl1CVEOu5d2Hy2HGRKiUZbDvte1Zq8HsnVScnV892aIbl1ChZgxEq0tZYx4CgSLM
+                m89Qm0nIKjIzm/t8q9Hsb4eyvg7BM592K+vptIHkReJqEz0mF89iLD0LxWRNVEFo
+                Mnr2FTCnGQ52Y6sh8fCtAByAULCqh4a9Ms9aqwIDAQABAoIBADNTEFZImoS0SF0T
+                nJh3lL4yQwqAfVdYhnnkw8Ychupsmg+y4t3+E2zPXQlou+vZpf4wV4IOZl3g7G42
+                kpkQUjnZhZY9ep5AErw5l2HxTn9K/9lSgdUy9zZuxmr8P6VqEZmNSHxtamQXXQpG
+                YkMpXZHJeyO+o29AGbhcbU/HrZmAJ9mtT5omiCRmNUwtyTO9PxXBtiXS8qyqHUSg
+                xt+pesS0TvrU+7DYzhi5gDPEMe3aQHwYMa3uamwyihFPbLIhF4f37UJcHTm4g6Gc
+                EGaYQzGgs0/SoDbguNzm3zbrXQN/0vVKgJnnsKsekg/cWEVedFKf54uZy6S+HAql
+                aTCmkGECgYEA4Xpq24HVlR+ncFikHYD5IDj/DVt9HEH3tytIHjRg9Yh3ju018A5W
+                IaWwAHBEOqmLmUcnIh95isrT6HgJGhFLeIjvVKEitZ4qHmfOSmpVz7EXjbPBoFPS
+                IEIqnt+mgRlqurE3Ei1pTdKeTI5bLkmFXGHglxTg/3s74V7aujISuMsCgYEA2Sp7
+                EJIXXJKjmasaK1vDEyOXINa51agi8EOju1Gaj+VweDyGgu0IK1bw9RXKllmbSUK1
+                KQZD9rui9i6em37MFn4JhgjhgTEw7wRkSdCkxXU/tv+/HyJnAF3No3Ux5lWx/Lcf
+                eZl8NZ2abFMg7Sp6S/hzc8kEePjkgpLIJ1ZeCaECgYEAlxzGFMrU65ZFT0P46VUQ
+                oYnRVZBlLtT/QaEeOi/8c1G8XuuXZIUXMIGsjP6wm2gZiOZo0bOqb1wz3O7lmrTQ
+                kb2kOGGts26G583GMZVGYWVcVbmNIPhMMRZnHgbhvk/cebZfJC2PD3sCYGhfr4vS
+                dvGZ5Wc2y8I5hXdeu77nUTUCgYEAkYS4wCrUwrB0NgWEXKd5eTqxC003a2bmOo9o
+                iJ2u71t0WO1dyR+iCMCSZ/g5LzROLPIpSJstMYkcMtCccV+uzCeapBkRWqumuZL8
+                zMWlk7b0geCvpeI8mO9CW5StYkXsJYZj7eyeYaMBFjNB7go3tu5+FokNmS5WmPRY
+                cJucGeECgYBDadQ6zU5yus6dVsto+Om3/0IPur/SapT3WeoGooIMkn8kUx0sB88r
+                MSOTPO4WXufpZ8Nv8ZiHvjAaHx2AVgbR5eaNk63k9m0uecH0T+NSOMVVIMkrcrv4
+                3A5uU/+/oaoDwqbJlqsDvZH7RuaZteLGAF3CtEU4Ne1GafL2FfiqQw==
+                -----END RSA PRIVATE KEY-----
+            </PrivateKey>
+            <CertificateChain>
+                <NumberOfCertificates>3</NumberOfCertificates>
+                <Certificate format="pem">
+                    -----BEGIN CERTIFICATE-----
+                    MIIDLjCCAhagAwIBAgITeOlmeSONk1E7mna5pjD/sbE+ojANBgkqhkiG9w0BAQsF
+                    ADA/MSkwJwYDVQQFEyA3ZTA2MmFmMjk2ZjYzZGJkNzcyNmEyYWE3NmEwYTg1ZjES
+                    MBAGA1UEDAwJU3Ryb25nQm94MB4XDTI2MTAyMDAwMDAwMFoXDTM2MTAxODAwMDAw
+                    MFowPzEpMCcGA1UEBRMgMWRlZWMwNTk4ZjkyOWFkMDJhZDUwYTQ5ZWE4YzRmZTEx
+                    EjAQBgNVBAwMCVN0cm9uZ0JveDCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoC
+                    ggEBAL9GLw4Cu+IF+DPS+80ji4mEWjz5bM6n1ImddK70rpY2FoZV2n+NMQVCaocx
+                    EhicQeJ3wnxr0ZDX8x5fyQaZwo41QeuBCtz6QcKlJgZIx3IdpBp/7uBMWGJSIYW2
+                    a9np33Vllva7lapL9nHuyU7urhSG2DXjcN6bEMUFy99vUa1cTahI+35dQlRDruXd
+                    h8thxkSolGWw77XtWavB7J1UnJ1fPdmiG5dQoWYMRKtLWWMeAoEizJvPUJtJyCoy
+                    M5v7fKvR7G+Hsr4OwTOfdivr6bSB5EXiahM9JhfPYiw9C8VkTVRBaDJ69hUwpxkO
+                    dmOrIfHwrQAcgFCwqoeGvTLPWqsCAwEAAaMjMCEwDwYDVR0TAQH/BAUwAwEB/zAO
+                    BgNVHQ8BAf8EBAMCAQYwDQYJKoZIhvcNAQELBQADggEBALX49+eRGp3bfdHepkUj
+                    WYOEAMhMDtJ0jfNFmj8oemiDqzI0rB2eF4J1NzGJcz2sgQ32w6a7+rj1rAncNepB
+                    ER68tTYhgt6cQ4towNguNPoR7Qen5MybooDmyGwQfqjBWezLr8W9dxL+AUX0OcvI
+                    J9mShVKOR8Eu3LDqLA6BHezQyCWrClrPNuE7b9DGRYk41eg1T+FXplVBDkFl18kA
+                    uZQxnx2KNmxFdbzVzRC3OI6f07yJvqARpH12w3nRZD5xvG9ZklGIAvfFa14l/j88
+                    A49inacSDRLX31J8ZfK3vtW5t/trHp912WLxtGDaUDUz84xk/M6mxRKy5f+B3h86
+                    Jzc=
+                    -----END CERTIFICATE-----
+                </Certificate>
+                <Certificate format="pem">
+                    -----BEGIN CERTIFICATE-----
+                    MIIDIjCCAgqgAwIBAgITRAWIF7WF0xl1KvHiZqogfcsmBjANBgkqhkiG9w0BAQsF
+                    ADAzMTEwLwYDVQQFEyhkMmY5NDY4Y2ZkOWNjN2UxNWQ0NzdiZDhjZTJhYmEwNmZh
+                    YWRhZDllMB4XDTI2MTAyMDAwMDAwMFoXDTM2MTAxODAwMDAwMFowPzEpMCcGA1UE
+                    BRMgN2UwNjJhZjI5NmY2M2RiZDc3MjZhMmFhNzZhMGE4NWYxEjAQBgNVBAwMCVN0
+                    cm9uZ0JveDCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBALcJyYabJxYp
+                    qO7DeWX/E7VW9PBUzXmiwo87CKFq8TgsmiZuLny/W+4QoBeZItEMsPQB14060iO+
+                    RLlz01iIXt+oLTza7eQJoU3NZP+J3pTm/kors3RrVoDy0fFvlPNCUEiEYD6xQA6K
+                    Jt5AR8ByPczPKC9/H55aOmy86A9CuynvWgN8VZHiTFp7imGINpH0CABsf+9sOIkm
+                    46rCi3VZpFB7mWCsRZnPUwFKcGpQe6MDCMd75zL+7Po3ynj4HouhE9IhAIiwtzqg
+                    VlAaB7zQUGXb2egYeIG3+lY7z1/M/HPcZX1M475fV0/li7qkrb8NWWJi4OCKuy2e
+                    NEDgVt26zC0CAwEAAaMjMCEwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMC
+                    AQYwDQYJKoZIhvcNAQELBQADggEBAHnm81Nf6yyNIcZu2aGiEoIi7TKH2nGaIIzr
+                    HIOKwNr46r+UhB4GYHDkMR+jHdGBHP/XZWgeDvaoTTuNhDy/tXiWNOLx3eQcsnKV
+                    ng5hBSeWfqRWKsZFbgo4CG4YDNacwiBbAmmR0e6li8cNAn3dQHx0WoyrMG5ASKc2
+                    KaLbh3uQn7sfE/vNe4QDtRtZUz8s9n6eHi2PWayISCXziHOVJYCP2Xp1Lk73G4H9
+                    lHdV6Hvt17hn0BYBKmoQRV4z+Zh6HJ02PrFUJ+yFG219+TSw2duWi1ZfWp4CE0W7
+                    8uaqIzwdNSWYI16BsYAvagbIsGMI1cgCirtkpXij2dsCwC+EXD8=
+                    -----END CERTIFICATE-----
+                </Certificate>
+                <Certificate format="pem">
+                    -----BEGIN CERTIFICATE-----
+                    MIIDFzCCAf+gAwIBAgIUAN4/0pUrZfN+N+lcmst/SZpXsf0wDQYJKoZIhvcNAQEL
+                    BQAwMzExMC8GA1UEBRMoZDJmOTQ2OGNmZDljYzdlMTVkNDc3YmQ4Y2UyYWJhMDZm
+                    YWFkYWQ5ZTAeFw0yNjEwMjAwMDAwMDBaFw00NjEwMTYwMDAwMDBaMDMxMTAvBgNV
+                    BAUTKGQyZjk0NjhjZmQ5Y2M3ZTE1ZDQ3N2JkOGNlMmFiYTA2ZmFhZGFkOWUwggEi
+                    MA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDA34M0mvPLLWQNmI+Ce5kY5JfL
+                    l/+wIJ/j8HEqczqSLO0RxRx/2hqrxli8pyxynZMxSHKkK2TskW4X2pR39aJy7ddV
+                    Q3pcO/0pqI0Frxwyi+nRJT1vTSIhHUg+7yhoAlypfdpgT3LC1hjlSZ5qxsh7mHAV
+                    /2HhNaGE2IJX2pS+iDbaJpNUD+ceun27g+A1nRbIQubSypw+JEs4DZ3x3W7EdTi/
+                    0XfQsdbayZVbCc1FJjXMAO1x0l6fvKP/tyYtmuRAT8hVf+T5p16FojRJkOZtbYfP
+                    bd0qFkMHmre5KaEiu2cf82cAbOckHulpYRXbG1oW+8SRfN9NHEvWzoyjkyNpAgMB
+                    AAGjIzAhMA8GA1UdEwEB/wQFMAMBAf8wDgYDVR0PAQH/BAQDAgEGMA0GCSqGSIb3
+                    DQEBCwUAA4IBAQCL29KE8plesIjGI8nsAwpc/q9ekAqNYsL9i/ghErPTqgvW+6JC
+                    aILibYjIupMra8sn5aXKyNqd2I0JqaqD7bKct08MaPw7lB78mepoRPuPRpy7t+q/
+                    ePQBVbBX8V2k9eZFJOWzhxacXt4xadDKMD+9Q1RvJmrGCcdJsvXaCq+92cpkfoa2
+                    64e2IeM1HV3eSTGBJ9N8nDaqdQLAhgAIOrwZAMjwObWURbFteJhj+6xGSUZpT+nS
+                    2Zq8eeZULIkt8gct/ay8OS/soQMwm4mIgBGWT8D9Vau0NCQleQ/BgInWfNUtYO2E
+                    Q2KjzSXRrZQzo+mcZXsRRwglsy8TXdgHTiXc
+                    -----END CERTIFICATE-----
+                </Certificate>
+            </CertificateChain>
+        </Key>
+    </Keybox>
+</AndroidAttestation>
+</script>
 </body>
 </html>

@@ -4,6 +4,16 @@
 
 ## 1.7.11
 
+- Ship two built-in keyboxes: `keybox.xml` for the TEE level (the 001 three-level
+  chain) and `keybox_strongbox.xml` for the StrongBox level, both installed on the
+  device. The levels no longer share a key, so a TEE request can no longer end up
+  signed by the StrongBox self-signed chain.
+- Online sources (server public pool, Yuri, AOSP) only update the TEE keybox; the
+  StrongBox one can only be replaced from a file or restored from the bundle.
+- Server-side minting: a security-level-2 request only uses the StrongBox identity
+  pinned in the console and is refused when none is pinned instead of borrowing a
+  TEE identity; source collectors never write the StrongBox identity.
+
 - The local SOTER fallback now matches a real device: one ATTK, one ASK per uid
   (generated on first use and persisted), each ASK carrying its own AuthKeys.
   Previously every app shared a single ASK.

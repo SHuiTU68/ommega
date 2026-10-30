@@ -1090,27 +1090,52 @@ impl Fulfill {
             .and_then(Value::as_i64)
             .unwrap_or(1);
         let pinned = crate::identity_policy::device_for_level(level);
-        let lookup_id = match pinned.as_deref() {
-            Some(id) => {
-                tracing::info!(
-                    "server_keybox: level={level} 按控制台指定用身份 {id}（请求 device={device_id}）"
+        let identity = if level >= 2 {
+            // StrongBox 只认控制台钉死的那份。没钉、或钉的那份不在库里，就报错——
+            // 不能退到 `identity_for` 的「随便一份能用身份」：那个池子里放的是源采集和
+            // 真机 TEE 的材料，链上标的是 TEE / 软件，拿到 level=2 的请求上就是级别串了。
+            let Some(id) = pinned.as_deref() else {
+                tracing::warn!(
+                    "server_keybox: level=2 请求没有钉死 StrongBox 身份，拒绝出链（请求 device={device_id}）"
                 );
-                id
-            }
-            None => device_id,
-        };
-        let identity = match self.identity_for(
-            lookup_id,
-            &algorithm,
-            prefer_slot && pinned.is_none(),
-        ) {
-            Some(id) => id,
-            None => {
                 return Some(json!({
-                    "error": format!(
-                        "server_keybox: no stored server identity for device {lookup_id} (algorithm {algorithm})"
-                    )
+                    "error": "server_keybox: strongbox identity is not pinned in the console",
+                    "relay_error_kind": "strongbox_identity_unpinned",
                 }));
+            };
+            tracing::info!(
+                "server_keybox: level=2 按控制台指定用 StrongBox 身份 {id}（请求 device={device_id}）"
+            );
+            match self.identity_for_id(id, &algorithm) {
+                Some(identity) => identity,
+                None => {
+                    return Some(json!({
+                        "error": format!(
+                            "server_keybox: no stored strongbox identity for {id} (algorithm {algorithm})"
+                        ),
+                        "relay_error_kind": "strongbox_identity_missing",
+                    }));
+                }
+            }
+        } else {
+            let lookup_id = match pinned.as_deref() {
+                Some(id) => {
+                    tracing::info!(
+                        "server_keybox: level={level} 按控制台指定用身份 {id}（请求 device={device_id}）"
+                    );
+                    id
+                }
+                None => device_id,
+            };
+            match self.identity_for(lookup_id, &algorithm, prefer_slot && pinned.is_none()) {
+                Some(identity) => identity,
+                None => {
+                    return Some(json!({
+                        "error": format!(
+                            "server_keybox: no stored server identity for device {lookup_id} (algorithm {algorithm})"
+                        )
+                    }));
+                }
             }
         };
         self.attest_from_identity(body, &identity, "server_keybox")

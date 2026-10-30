@@ -32,6 +32,9 @@ pub const KEYBOX_PATH: &str = "/data/misc/keystore/ommega/keybox.xml";
 pub const STRONGBOX_KEYBOX_PATH: &str = "/data/misc/keystore/ommega/keybox_strongbox.xml";
 
 const BUNDLED_KEYBOX_XML: &str = include_str!("../template/keybox.xml");
+/// 内置的 StrongBox 级 keybox。文件丢了或读坏了就用它，不再退回 TEE 那份 ——
+/// 退回主 keybox 就是「StrongBox 请求拿 TEE 链」，证书标签和叶子级别直接对不上。
+const BUNDLED_STRONGBOX_KEYBOX_XML: &str = include_str!("../template/keybox_strongbox.xml");
 
 lazy_static::lazy_static! {
     pub static ref KEYBOX: RwLock<KeyBox> = RwLock::new(KeyBox::new());
@@ -550,6 +553,17 @@ pub fn ensure_keybox_file(path: &str) -> Result<()> {
     write_bundled_keybox(path)
 }
 
+/// StrongBox 那份也补盘：文件不在就写内置的，不然面板上看不到，重启后又被当成没配。
+fn ensure_strongbox_keybox_file() {
+    if Path::new(STRONGBOX_KEYBOX_PATH).exists() {
+        return;
+    }
+    info!("keybox_strongbox.xml missing at {STRONGBOX_KEYBOX_PATH}; seeding bundled strongbox template");
+    if let Err(error) = write_keybox_xml(STRONGBOX_KEYBOX_PATH, BUNDLED_STRONGBOX_KEYBOX_XML) {
+        warn!("failed to seed {STRONGBOX_KEYBOX_PATH}: {error:#}");
+    }
+}
+
 fn is_bundled_keybox_xml(xml: &str) -> bool {
     xml.trim() == BUNDLED_KEYBOX_XML.trim()
 }
@@ -689,6 +703,7 @@ fn reload_from_disk_inner(retire_db_entries: bool) -> Result<bool> {
 
 pub fn initialize() -> Result<()> {
     ensure_keybox_file(KEYBOX_PATH)?;
+    ensure_strongbox_keybox_file();
     reload_from_disk_inner(false)?;
     KEYBOX_WATCHER.get_or_init(|| {
         if let Err(error) = kmr_common::runtime::file_watch::spawn_path_watcher(
@@ -743,7 +758,7 @@ pub fn current_identity_digest() -> [u8; 32] {
     KEYBOX.read().unwrap().identity_digest()
 }
 
-/// 按级别取身份摘要：StrongBox 配了单独 keybox 就用它的，否则回到主 keybox。
+/// 按级别取身份摘要：StrongBox 用它自己那份（文件或内置），TEE 用主 keybox。
 pub fn current_identity_digest_for(strongbox: bool) -> [u8; 32] {
     if strongbox {
         if let Ok(guard) = KEYBOX_SB.read() {
@@ -755,7 +770,8 @@ pub fn current_identity_digest_for(strongbox: bool) -> [u8; 32] {
     current_identity_digest()
 }
 
-/// 读 StrongBox 那份 keybox（可选）。不存在 = `None`；解析失败只告警，不影响主 keybox。
+/// 读 StrongBox 那份 keybox。文件不存在或解析失败都退回**内置的 StrongBox 模板**，
+/// 绝不回落到主 keybox（那样 StrongBox 请求会拿着 TEE 的链出去）。
 fn load_strongbox_keybox() -> Option<KeyBox> {
     match std::fs::read_to_string(STRONGBOX_KEYBOX_PATH) {
         Ok(xml) => match KeyBox::from_xml_str(&xml) {
@@ -764,16 +780,24 @@ fn load_strongbox_keybox() -> Option<KeyBox> {
                 Some(keybox)
             }
             Err(error) => {
-                warn!("invalid strongbox keybox at {STRONGBOX_KEYBOX_PATH}: {error:#}; falling back to the main keybox");
-                None
+                warn!("invalid strongbox keybox at {STRONGBOX_KEYBOX_PATH}: {error:#}; using the bundled one");
+                Some(bundled_strongbox_keybox())
             }
         },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            debug!("{STRONGBOX_KEYBOX_PATH} not found; using the bundled strongbox keybox");
+            Some(bundled_strongbox_keybox())
+        }
         Err(error) => {
-            warn!("failed to read {STRONGBOX_KEYBOX_PATH}: {error:#}; falling back to the main keybox");
-            None
+            warn!("failed to read {STRONGBOX_KEYBOX_PATH}: {error:#}; using the bundled one");
+            Some(bundled_strongbox_keybox())
         }
     }
+}
+
+fn bundled_strongbox_keybox() -> KeyBox {
+    KeyBox::from_xml_str(BUNDLED_STRONGBOX_KEYBOX_XML)
+        .expect("bundled keybox_strongbox.xml must be valid")
 }
 
 pub(crate) fn signing_certificate_ders_from_disk() -> Result<Vec<Vec<u8>>> {
@@ -790,7 +814,7 @@ pub(crate) fn signing_certificate_ders_from_disk() -> Result<Vec<Vec<u8>>> {
 }
 
 pub struct KeyboxManager {
-    /// STRONGBOX 级别的 TA 用单独那份 keybox（若已配置）。
+    /// STRONGBOX 级别的 TA 用 StrongBox 自己那份 keybox。
     pub strongbox: bool,
 }
 
@@ -802,6 +826,8 @@ impl RetrieveCertSigningInfo for KeyboxManager {
                     return keybox.signing_info(key_type);
                 }
             }
+            // 初始化还没跑完（或锁被毒了）也不能退回 TEE：直接用内置那份。
+            return bundled_strongbox_keybox().signing_info(key_type);
         }
         let keybox = KEYBOX
             .read()
@@ -825,9 +851,39 @@ mod tests {
     #[test]
     fn parses_bundled_template() {
         let keybox = KeyBox::from_xml_str(BUNDLED_KEYBOX_XML).unwrap();
-        assert_eq!(keybox.ec_info.as_ref().unwrap().chain.len(), 2);
-        assert_eq!(keybox.rsa_info.as_ref().unwrap().chain.len(), 2);
+        // 内置的是 TEE 那份：叶子 + 中间 CA + 根，RSA / EC 各一条。
+        assert_eq!(keybox.ec_info.as_ref().unwrap().chain.len(), 3);
+        assert_eq!(keybox.rsa_info.as_ref().unwrap().chain.len(), 3);
         assert_ne!(keybox.identity_digest(), [0u8; 32]);
+    }
+
+    #[test]
+    fn bundled_strongbox_keybox_is_separate_from_the_tee_one() {
+        let tee = KeyBox::from_xml_str(BUNDLED_KEYBOX_XML).unwrap();
+        let sb = bundled_strongbox_keybox();
+        assert_eq!(sb.ec_info.as_ref().unwrap().chain.len(), 3);
+        assert_eq!(sb.rsa_info.as_ref().unwrap().chain.len(), 3);
+        // 两份内置材料必须不同：共用一份就是「TEE 请求拿 StrongBox 链」的根。
+        assert_ne!(sb.identity_digest(), tee.identity_digest());
+        // 链上标签也要对：TEE 那份标 TEE，StrongBox 那份标 StrongBox。
+        assert!(chain_has_label(&sb, KeyAlgorithm::Ec, b"StrongBox"));
+        assert!(!chain_has_label(&sb, KeyAlgorithm::Ec, b"TEE"));
+        assert!(chain_has_label(&tee, KeyAlgorithm::Ec, b"TEE"));
+        assert!(!chain_has_label(&tee, KeyAlgorithm::Ec, b"StrongBox"));
+    }
+
+    /// 链里有没有某个明文标签（title 2.5.4.12 的值直接以 ASCII 进 DER）。
+    fn chain_has_label(keybox: &KeyBox, algorithm: KeyAlgorithm, label: &[u8]) -> bool {
+        let info = match algorithm {
+            KeyAlgorithm::Ec => keybox.ec_info.as_ref(),
+            KeyAlgorithm::Rsa => keybox.rsa_info.as_ref(),
+        };
+        let Some(info) = info else { return false };
+        info.chain.iter().any(|cert| {
+            cert.encoded_certificate
+                .windows(label.len())
+                .any(|w| w == label)
+        })
     }
 
     #[test]

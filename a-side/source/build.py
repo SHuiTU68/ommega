@@ -81,6 +81,8 @@ REQUIRED_TEMPLATE_FILES = (
     "service.sh",
     "verify.sh",
     "adbr-daemon.sh",
+    "keybox.xml",
+    "keybox_strongbox.xml",
 )
 
 MODULE_TEXT_FILES = (
@@ -92,6 +94,7 @@ MODULE_TEXT_FILES = (
     "daemon-injector",
     "injector.toml",
     "keybox.xml",
+    "keybox_strongbox.xml",
     "layout.sh",
     "module.prop",
     "post-fs-data.sh",

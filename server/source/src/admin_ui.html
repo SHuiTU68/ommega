@@ -536,7 +536,7 @@ h3.sec-title { font-size: 13px; color: var(--muted); text-transform: uppercase; 
 
 <!-- 服务端身份分级（StrongBox / TEE 各用哪份 keybox 身份） -->
 <div class="panel">
-  <h2>服务端身份分级 <span class="hint">用服务端 keybox 出链时，StrongBox 请求（security level 2）和 TEE 请求（1）各自用哪一份存好的身份。留空 = 维持旧行为（用请求里那台 B 的 id，找不到再借一份可用的）</span></h2>
+  <h2>服务端身份分级 <span class="hint">用服务端 keybox 出链时，StrongBox 请求（security level 2）和 TEE 请求（1）各自用哪一份存好的身份。StrongBox 必须钉死（留空则 level=2 请求直接拒绝，不会借用 TEE 身份）；TEE 留空 = 用请求里那台 B 的 id，找不到再借一份可用的</span></h2>
   <div class="body">
     <div class="token-gen" style="display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
       <span style="flex:0 0 104px;color:var(--muted);font-size:13px;">TEE 身份</span>
