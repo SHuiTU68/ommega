@@ -640,7 +640,7 @@ fn load_keybox_with_fallback(path: &str) -> Result<(KeyBox, bool)> {
             }
             Err(error) => {
                 // Do not overwrite the on-disk file here. The webroot UI writes
-                // keybox.xml via `mv` + `cat << EOF`, and the inotify watcher can
+                // the keybox via `mv` + `cat << EOF`, and the inotify watcher can
                 // observe an empty/partial file while the new contents are still
                 // being written. Overwriting it with the bundled template here
                 // would destroy a just-written valid keybox. Instead we fall back
