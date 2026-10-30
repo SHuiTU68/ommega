@@ -48,6 +48,9 @@ SOTER_ASK_DST=/data/misc/ommega/soter_ask.pem
 # daemon 学到的真机 cpu_id：它自己那份写在 keystore 域（它跑在 keystore uid 里，别处
 # 写不动），这里抄到 app 域给宿主里那份 payload 读。内容就一行 `soter_cpu_id: <32 hex>`。
 SOTER_CPU_ID_DST=/data/misc/ommega/soter_cpu_id
+# ATTK 文件里可以带一行 `cpu_id: 09000000…`：导入时顺手写这里，
+# 免得 ATTK 换了、cpu_id 还是上一台的，腾讯一对不上就拒。
+SOTER_CPU_FORCE_DST=/data/misc/ommega/soter_cpu_id.force
 SOTER_PKG=com.tencent.soter.soterserver
 SOTER_ACTION=$SOTER_PKG.ISoterService
 # daemon 判出「SOTER 宿主哑了」时写的标记。它跑在 keystore uid，只写得动自己那个目录
@@ -260,6 +263,18 @@ sync_soter_ask() {
     chmod 0640 "$SOTER_ASK_DST" 2>/dev/null
     soter_ask_changed=1
     log "[injector-daemon] local soter ask updated from $src"
+    # 文件里带了 cpu_id 就跟着设 force：ATTK 和 cpu_id 必须是同一台设备的，
+    # 不然腾讯验 ASK 时对不上直接拒（2026-10-30 实测）。
+    cpu=$(sed -n 's/^[[:space:]]*#\{0,1\}[[:space:]]*cpu_id:[[:space:]]*\(0900[0-9a-fA-F]\{28\}\)[[:space:]]*$/\1/p' "$src" 2>/dev/null | head -n 1)
+    if [ -n "$cpu" ]; then
+      if printf '%s\n' "$cpu" > "$SOTER_CPU_FORCE_DST" 2>/dev/null; then
+        chown 0:0 "$SOTER_CPU_FORCE_DST" 2>/dev/null
+        chmod 0644 "$SOTER_CPU_FORCE_DST" 2>/dev/null
+        log "[injector-daemon] cpu_id forced from $src: $cpu"
+      else
+        log "[injector-daemon] failed to write $SOTER_CPU_FORCE_DST"
+      fi
+    fi
   else
     log "[injector-daemon] failed to copy $src to $SOTER_ASK_DST"
   fi

@@ -89,6 +89,28 @@ const CPU_ID_OVERRIDE: &str = "/data/misc/ommega/soter_cpu_id.force";
 /// 读不到就不报，绝不编一个（见 [`cpu_id`]）。
 const FALLBACK_SEED: &str = "ommega-a-side-local";
 
+/// 从一段可能夹着注释的文件里抽出 PEM 本体（`-----BEGIN` 到 `-----END`）。
+///
+/// WebUI 导入的 ATTK 文件可以在里面写一行 `cpu_id: 09000000…`，daemon 会拿它设
+/// `soter_cpu_id.force`；这里把这些非 PEM 行滤掉再交给解析器。
+fn pem_block(pem: &str) -> String {
+    let mut out = String::with_capacity(pem.len());
+    let mut inside = false;
+    for line in pem.lines() {
+        if line.contains("-----BEGIN") {
+            inside = true;
+        }
+        if inside {
+            out.push_str(line);
+            out.push('\n');
+        }
+        if line.contains("-----END") {
+            inside = false;
+        }
+    }
+    out
+}
+
 /// 一对 RSA，加它的公钥 PEM（SOTER 里的"证书"就是拿这个验的）。
 #[derive(Clone)]
 struct Key {
@@ -99,7 +121,10 @@ struct Key {
 
 impl Key {
     fn from_pem(pem: &str) -> Option<Self> {
-        let private = RsaPrivateKey::from_pkcs8_pem(pem.trim()).ok()?;
+        // 文件里允许带 `cpu_id: 09000000…` 这类注释行（WebUI 导入时 daemon 靠它设 force），
+        // PEM 解析器不认那些行，先只取 BEGIN…END 之间那段。
+        let block = pem_block(pem);
+        let private = RsaPrivateKey::from_pkcs8_pem(block.trim()).ok()?;
         let pem = rsa::RsaPublicKey::from(&private)
             .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
             .ok()?;
