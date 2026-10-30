@@ -37,7 +37,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 
-use rsa::pkcs8::{DecodePrivateKey, EncodePublicKey};
+use rsa::pkcs8::{DecodePrivateKey, EncodePrivateKey, EncodePublicKey, LineEnding};
 use rsa::pss::SigningKey as PssSigningKey;
 use rsa::pss::VerifyingKey as PssVerifyingKey;
 use rsa::rand_core::OsRng;
@@ -132,12 +132,12 @@ pub(crate) fn selftest() -> anyhow::Result<()> {
     let state = state().ok_or_else(|| anyhow::anyhow!("soter local state unavailable"))?;
     let message: &[u8] = b"ommega-soter-selftest";
     let raw = state
-        .ask
+        .attk
         .sign(message)
-        .ok_or_else(|| anyhow::anyhow!("the local ASK could not sign"))?;
+        .ok_or_else(|| anyhow::anyhow!("the local ATTK could not sign"))?;
     let signature = rsa::pss::Signature::try_from(raw.as_slice())
         .map_err(|error| anyhow::anyhow!("malformed signature: {error}"))?;
-    let public = rsa::RsaPublicKey::from(&state.ask.private);
+    let public = rsa::RsaPublicKey::from(&state.attk.private);
     PssVerifyingKey::<PssSha256>::new(public)
         .verify(message, &signature)
         .map_err(|error| anyhow::anyhow!("the signature did not verify: {error}"))
@@ -154,10 +154,10 @@ struct SignSession {
 
 /// 后端状态。签发用的 key 一开始就加载好（编译进来的，失败就是编坏了）。
 struct State {
-    /// 签名根（ATTK）。本地模式里它就是 `exportAttkPublicKey` 吐的那把。
+    /// 签名根（ATTK）。本地模式里它就是 `exportAttkPublicKey` 吐的那把，全设备只有一把。
     attk: Key,
-    /// 对外导出的 ASK。有独立文件时是另一把，否则等于 attk（旧行为）。
-    ask: Key,
+    /// 对外导出的 ASK。真机是一把 ATTK 挂 N 把 ASK、每个 uid 一把，这里按 uid 存。
+    asks: Mutex<HashMap<i32, Key>>,
     /// `{uid}|{alias}` -> AuthKey。
     auth: Mutex<HashMap<String, Key>>,
     /// uid -> 签名计数器（ASK JSON 里的 counter）。
@@ -174,13 +174,29 @@ struct State {
     next_session: Mutex<i64>,
 }
 
-/// 这把 ASK 到底从哪儿来的（换 key 之后一眼看得出生效没有）。
-static ASK_ORIGIN: OnceLock<String> = OnceLock::new();
+/// ATTK 到底从哪儿来的（换 key 之后一眼看得出生效没有）。
+static ATTK_ORIGIN: OnceLock<String> = OnceLock::new();
+/// uid -> 该 uid 的 ASK 来自哪里（per-uid 文件 / 旧全局文件 / 现生成）。
+static ASK_ORIGINS: std::sync::LazyLock<Mutex<HashMap<i32, String>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// 本地这把 ASK 的来源描述，`state()` 初始化之前是 `None`。
+/// ATTK 和已经加载过的 ASK 的来源描述，`state()` 初始化之前是 `None`。
 #[cfg(test)]
-pub(crate) fn ask_origin() -> Option<&'static str> {
-    ASK_ORIGIN.get().map(String::as_str)
+pub(crate) fn ask_origin() -> Option<String> {
+    let attk = ATTK_ORIGIN.get()?;
+    let mut parts: Vec<String> = match ASK_ORIGINS.lock() {
+        Ok(map) => map
+            .iter()
+            .map(|(uid, origin)| format!("uid={uid}:{origin}"))
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    parts.sort();
+    if parts.is_empty() {
+        Some(format!("attk={attk}"))
+    } else {
+        Some(format!("attk={attk}; {}", parts.join(", ")))
+    }
 }
 
 /// 按候选顺序找一把可用的 ASK：环境变量指定的文件 → 两个候选文件 → 编进来的那把。
@@ -219,26 +235,96 @@ fn load_ask_key() -> Option<(Key, String)> {
 
 /// 再找一把「独立的 ASK」。找到就能把 ASK 和 ATTK 分开，找不到就返回 None
 /// （调用方拿 ATTK 自己顶）。
-fn load_independent_ask() -> Option<(Key, String)> {
-    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
-    if let Some(path) = std::env::var_os(ASK_KEY_FILE_ENV) {
-        candidates.push(std::path::PathBuf::from(path));
-    }
-    candidates.extend(ASK_KEY_FILE_PATHS.iter().map(std::path::PathBuf::from));
+/// 某个 uid 的 ASK 文件位置（keystore 域优先，app 域兜底）。
+fn ask_file_paths(uid: i32) -> [String; 2] {
+    [
+        format!("/data/misc/keystore/ommega/soter_ask_{uid}.pem"),
+        format!("/data/misc/ommega/soter_ask_{uid}.pem"),
+    ]
+}
 
-    for path in candidates {
+/// 取（必要时造）某个 uid 的 ASK。
+///
+/// 真机的形状是一把 ATTK 下挂 N 把 ASK、每个 uid 一把，这里照做：
+/// 先看内存，再按 uid 读文件，再兼容旧的全局文件，最后现生成一对并落盘。
+fn ask_for(state: &State, uid: i32) -> Option<Key> {
+    if let Some(key) = state.asks.lock().ok()?.get(&uid).cloned() {
+        return Some(key);
+    }
+
+    let (key, origin) = load_or_generate_ask(uid)?;
+    if let Ok(mut map) = state.asks.lock() {
+        map.insert(uid, key.clone());
+    }
+    if let Ok(mut map) = ASK_ORIGINS.lock() {
+        map.insert(uid, origin.clone());
+    }
+    if let Ok(mut set) = state.ask_built.lock() {
+        set.insert(uid);
+    }
+    log::info!("soter local ASK for uid {uid} loaded from {origin}");
+    Some(key)
+}
+
+/// 读某个 uid 的 ASK：环境变量 → per-uid 文件 → 旧的全文件 → 现生成并落盘。
+fn load_or_generate_ask(uid: i32) -> Option<(Key, String)> {
+    if let Some(path) = std::env::var_os(ASK_KEY_FILE_ENV) {
+        let path = std::path::PathBuf::from(path);
+        if let Ok(pem) = std::fs::read_to_string(&path) {
+            if let Some(key) = Key::from_pem(&pem) {
+                return Some((key, path.display().to_string()));
+            }
+        }
+    }
+
+    for path in ask_file_paths(uid) {
         let Ok(pem) = std::fs::read_to_string(&path) else {
             continue;
         };
         match Key::from_pem(&pem) {
-            Some(key) => return Some((key, path.display().to_string())),
+            Some(key) => return Some((key, path)),
             None => log::warn!(
-                "soter local independent ask at {} is not a usable PKCS#8 PEM; ignoring it",
-                path.display()
+                "soter local ask for uid {uid} at {path} is not a usable PKCS#8 PEM; ignoring it"
             ),
         }
     }
-    None
+
+    // 兼容旧版：全局那一把（所有 uid 共用）。升级上来的设备先跑这里，
+    // 以后重新建料时自然收敛到 per-uid 文件。
+    for path in ASK_KEY_FILE_PATHS {
+        let Ok(pem) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        match Key::from_pem(&pem) {
+            Some(key) => return Some((key, format!("legacy:{path}"))),
+            None => log::warn!(
+                "soter local legacy ask at {path} is not a usable PKCS#8 PEM; ignoring it"
+            ),
+        }
+    }
+
+    generate_ask_for(uid)
+}
+
+/// 给某个 uid 现生成一把 ASK，写进 [`ask_file_paths`] 里第一个可写的位置。
+/// 落盘失败就只在内存里用（重启会换新，App 会当 ASK 变了把本地钥匙清掉），所以告警。
+fn generate_ask_for(uid: i32) -> Option<(Key, String)> {
+    let key = Key::generate()?;
+    let private_pem = key.private.to_pkcs8_pem(LineEnding::LF).ok()?;
+
+    for path in ask_file_paths(uid) {
+        if let Some(dir) = std::path::Path::new(&path).parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if std::fs::write(&path, private_pem.as_bytes()).is_ok() {
+            log::info!("soter local generated a new ASK for uid {uid} at {path}");
+            return Some((key, format!("generated:{path}")));
+        }
+        log::warn!("soter local cannot persist the generated ASK at {path}");
+    }
+
+    log::warn!("soter local is using an in-memory ASK for uid {uid}; it changes after restart");
+    Some((key, format!("generated:memory:{uid}")))
 }
 
 fn state() -> Option<&'static State> {
@@ -247,17 +333,10 @@ fn state() -> Option<&'static State> {
         .get_or_init(|| {
             let (attk, origin) = load_ask_key()?;
             log::info!("soter local ATTK loaded from {origin}");
-            let (ask, ask_origin) = match load_independent_ask() {
-                Some((key, path)) => {
-                    log::info!("soter local ASK loaded from {path} (independent)");
-                    (key, format!("ask={path}; attk={origin}"))
-                }
-                None => (attk.clone(), format!("ask=attk={origin}")),
-            };
-            let _ = ASK_ORIGIN.set(ask_origin);
+            let _ = ATTK_ORIGIN.set(origin);
             Some(State {
                 attk,
-                ask,
+                asks: Mutex::new(HashMap::new()),
                 auth: Mutex::new(HashMap::new()),
                 counters: Mutex::new(HashMap::new()),
                 ask_built: Mutex::new(HashSet::new()),
@@ -624,11 +703,12 @@ fn answer_inner(call: &soter::SoterCall) -> Option<Answer> {
         return None;
     }
     match call.code {
-        // exportAskPublicKey(uid) —— ASK 的自描述，拿 ASK 自己签（本地 ASK 兼 ATTK）
+        // exportAskPublicKey(uid) —— 这个 uid 的 ASK 自描述，由 ATTK 签（ATTK 是 ASK 的根）
         1 => {
             let uid = call.uid?;
             let counter = bump_counter(state, uid);
-            let document = ask_json(&state.ask.pem, uid, counter).ok()?;
+            let ask = ask_for(state, uid)?;
+            let document = ask_json(&ask.pem, uid, counter).ok()?;
             let signature = state.attk.sign(&document)?;
             Some(Answer::Buffer {
                 code: OK,
@@ -643,9 +723,9 @@ fn answer_inner(call: &soter::SoterCall) -> Option<Answer> {
                 Some(key) => {
                     let counter = bump_counter(state, uid);
                     let document = auth_json(&key, uid, counter);
-                    // 这层必须用 **ASK** 签：App 手里只有 ASK 公钥，拿它验这个信封。
+                    // 这层必须用 **该 uid 的 ASK** 签：App 手里只有这个 uid 的 ASK 公钥。
                     // （ASK 自己那一层才是 ATTK 签的，两者别搞混。）
-                    let signature = state.ask.sign(&document)?;
+                    let signature = ask_for(state, uid)?.sign(&document)?;
                     Some(Answer::Buffer {
                         code: OK,
                         data: Some(envelope(&document, &signature)),
@@ -679,12 +759,12 @@ fn answer_inner(call: &soter::SoterCall) -> Option<Answer> {
                 None => None,
             }
         }
-        // generateAskKeyPair(uid) —— 真机上这是建 ASK，我们这把一开始就在，回成功就行。
+        // generateAskKeyPair(uid) —— 真机上这是给这个 uid 建 ASK，这里按需生成并落盘。
         // **不要重置 counter**：重置就回退了，App 会当重放把钥匙删掉。
         5 => {
             let uid = call.uid?;
-            // 记下来，下一次 9 号就要答「有」。以前不记，9 号又写死答没有，
-            // App 就会在这两步之间无限循环（Duck 的 keyPrep ask 永远是 false）。
+            // 先把该 uid 的 ASK 备好（必要时现生成），下一次 9 号才能答「有」。
+            ask_for(state, uid)?;
             if let Ok(mut set) = state.ask_built.lock() {
                 set.insert(uid);
             }
@@ -755,14 +835,23 @@ fn answer_inner(call: &soter::SoterCall) -> Option<Answer> {
                 session,
             })
         }
-        // removeAllUidKey(uid)
+        // removeAllUidKey(uid) —— 连同该 uid 的 ASK 一起删（ASK 是 per-uid 的），
+        // 下次 9 号就答「没有」，App 重建料并重新上报。
         12 => {
             let uid = call.uid?;
             let prefix = format!("{uid}|");
             if let Ok(mut map) = state.auth.lock() {
                 map.retain(|k, _| !k.starts_with(&prefix));
             }
-            // 删干净了，下次 9 号就得答「没有」，让 App 重新走一遍建料。
+            if let Ok(mut map) = state.asks.lock() {
+                map.remove(&uid);
+            }
+            if let Ok(mut map) = ASK_ORIGINS.lock() {
+                map.remove(&uid);
+            }
+            for path in ask_file_paths(uid) {
+                let _ = std::fs::remove_file(path);
+            }
             if let Ok(mut set) = state.ask_built.lock() {
                 set.remove(&uid);
             }
@@ -992,11 +1081,11 @@ mod tests {
             assert!(text.contains(field), "ASK json is missing {field}: {text}");
         }
 
-        // 签名拿自己的公钥验得过（这就是"自洽"的含义）
+        // 文档是 ASK 的自描述，签名那把是 ATTK（ATTK 签 ASK 的认证）
         use rsa::pss::{Signature as PssSignature, VerifyingKey as PssVerifyingKey};
         use rsa::signature::Verifier;
         let verifying = PssVerifyingKey::<PssSha256>::new(rsa::RsaPublicKey::from(
-            &state().unwrap().ask.private,
+            &state().unwrap().attk.private,
         ));
         verifying
             .verify(
@@ -1129,7 +1218,7 @@ mod tests {
         );
         // 反过来，拿 ASK 的公钥是验不过的（签名那把确实是 AuthKey）
         assert!(
-            !verifies(&ask_pem(), &document, &signature),
+            !verifies(&ask_pem(uid), &document, &signature),
             "the sign document must not verify with the ASK key"
         );
     }
@@ -1184,9 +1273,12 @@ mod tests {
             .is_ok()
     }
 
-    /// 本机 ASK 的公钥 PEM。
-    fn ask_pem() -> String {
-        state().unwrap().ask.pem.clone()
+    /// 某个 uid 的 ASK 公钥 PEM。
+    fn ask_pem(uid: i32) -> String {
+        ask_for(state().unwrap(), uid)
+            .expect("the uid has an ASK")
+            .pem
+            .clone()
     }
 
     #[test]
@@ -1211,7 +1303,7 @@ mod tests {
 
         // App 是拿 ASK 公钥验这个信封的 —— 这一步验得过，AuthKey 这条链才算自洽
         assert!(
-            verifies(&ask_pem(), &document, &signature),
+            verifies(&ask_pem(uid), &document, &signature),
             "the AuthKey document must verify with the ASK key"
         );
     }
