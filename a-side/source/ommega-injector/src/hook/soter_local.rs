@@ -241,11 +241,20 @@ fn legacy_ask_file_paths(uid: i32) -> [String; 2] {
     ]
 }
 
-/// 所有 uid 的 ASK 存在这一个文件里，不要按 uid 散成一堆 pem。
+/// 所有 uid 的 ASK 和 AuthKey 存在这一个文件里，不要按 uid/alias 散成一堆 pem。
+/// 结构是两层：
+///
+/// ```json
+/// { "asks": { "10496": "<pem>" }, "authkeys": { "10496|SoterAuthKey": "<pem>" } }
+/// ```
+///
+/// 旧版只有一层（`{ "10496": "<pem>" }`），读的时候当成 `asks` 处理。
 const ASK_STORE_PATHS: [&str; 2] = [
     "/data/misc/keystore/ommega/soter_asks.json",
     "/data/misc/ommega/soter_asks.json",
 ];
+const ASK_SECTION: &str = "asks";
+const AUTH_SECTION: &str = "authkeys";
 
 /// 落盘那一瞬间的互斥：读改写不是原子操作，两个 uid 同时进来会互相盖掉。
 static ASK_STORE_LOCK: std::sync::LazyLock<Mutex<()>> = std::sync::LazyLock::new(|| Mutex::new(()));
@@ -256,7 +265,17 @@ fn read_ask_store() -> serde_json::Map<String, serde_json::Value> {
             continue;
         };
         match serde_json::from_str::<serde_json::Value>(&text) {
-            Ok(serde_json::Value::Object(map)) => return map,
+            Ok(serde_json::Value::Object(mut map)) => {
+                // 旧版扁平格式：顶层全是 uid，整个当成 asks。
+                let flat = !map.is_empty() && map.keys().all(|key| key.parse::<i32>().is_ok());
+                if flat {
+                    let mut wrapped = serde_json::Map::new();
+                    wrapped.insert(ASK_SECTION.to_string(), serde_json::Value::Object(map));
+                    return wrapped;
+                }
+                map.retain(|key, _| key == ASK_SECTION || key == AUTH_SECTION);
+                return map;
+            }
             _ => log::warn!("soter local ask store at {path} is not a json object; ignoring it"),
         }
     }
@@ -280,21 +299,59 @@ fn write_ask_store(map: &serde_json::Map<String, serde_json::Value>) -> Option<S
     None
 }
 
-fn store_ask(uid: i32, pem: &str) -> Option<String> {
+fn section_of<'a>(
+    map: &'a mut serde_json::Map<String, serde_json::Value>,
+    section: &str,
+) -> &'a mut serde_json::Map<String, serde_json::Value> {
+    let entry = map
+        .entry(section.to_string())
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    if !entry.is_object() {
+        *entry = serde_json::Value::Object(serde_json::Map::new());
+    }
+    entry
+        .as_object_mut()
+        .expect("the section was just replaced with an object")
+}
+
+fn read_store_pem(section: &str, key: &str) -> Option<String> {
+    let map = read_ask_store();
+    let table = map.get(section)?.as_object()?;
+    match table.get(key)? {
+        serde_json::Value::String(pem) => Some(pem.clone()),
+        _ => None,
+    }
+}
+
+fn store_pem(section: &str, key: &str, pem: &str) -> Option<String> {
     let _guard = ASK_STORE_LOCK.lock().ok()?;
     let mut map = read_ask_store();
-    map.insert(uid.to_string(), serde_json::Value::String(pem.to_string()));
+    section_of(&mut map, section)
+        .insert(key.to_string(), serde_json::Value::String(pem.to_string()));
     write_ask_store(&map)
 }
 
-fn forget_ask(uid: i32) {
+fn forget_pem(section: &str, key: &str) {
     let Ok(_guard) = ASK_STORE_LOCK.lock() else {
         return;
     };
     let mut map = read_ask_store();
-    if map.remove(&uid.to_string()).is_some() {
+    let removed = section_of(&mut map, section).remove(key).is_some();
+    if removed {
         write_ask_store(&map);
     }
+}
+
+/// 删掉某个 uid 的全部东西：ASK、这个 uid 名下所有 AuthKey、以及旧版散落的 pem。
+fn forget_uid_keys(uid: i32) {
+    let Ok(_guard) = ASK_STORE_LOCK.lock() else {
+        return;
+    };
+    let mut map = read_ask_store();
+    section_of(&mut map, ASK_SECTION).remove(&uid.to_string());
+    let prefix = format!("{uid}|");
+    section_of(&mut map, AUTH_SECTION).retain(|key, _| !key.starts_with(&prefix));
+    write_ask_store(&map);
     for path in legacy_ask_file_paths(uid) {
         let _ = std::fs::remove_file(path);
     }
@@ -335,7 +392,7 @@ fn load_or_generate_ask(uid: i32) -> Option<(Key, String)> {
         }
     }
 
-    if let Some(serde_json::Value::String(pem)) = read_ask_store().get(&uid.to_string()).cloned() {
+    if let Some(pem) = read_store_pem(ASK_SECTION, &uid.to_string()) {
         match Key::from_pem(&pem) {
             Some(key) => return Some((key, format!("store:uid={uid}"))),
             None => log::warn!(
@@ -355,7 +412,7 @@ fn load_or_generate_ask(uid: i32) -> Option<(Key, String)> {
             );
             continue;
         };
-        let origin = match store_ask(uid, &pem) {
+        let origin = match store_pem(ASK_SECTION, &uid.to_string(), &pem) {
             Some(store) => {
                 let _ = std::fs::remove_file(&path);
                 format!("migrated:{path}->{store}")
@@ -388,7 +445,7 @@ fn generate_ask_for(uid: i32) -> Option<(Key, String)> {
     let key = Key::generate()?;
     let private_pem = key.private.to_pkcs8_pem(LineEnding::LF).ok()?;
 
-    if let Some(store) = store_ask(uid, &private_pem) {
+    if let Some(store) = store_pem(ASK_SECTION, &uid.to_string(), &private_pem) {
         log::info!("soter local generated a new ASK for uid {uid} in {store}");
         return Some((key, format!("generated:{store}#uid={uid}")));
     }
@@ -844,6 +901,10 @@ fn answer_inner(call: &soter::SoterCall) -> Option<Answer> {
         7 => {
             let (uid, alias) = (call.uid?, call.alias.as_deref()?);
             let key = Key::generate()?;
+            // 落盘：真机的 AuthKey 重启还在，我们也不能只吊在内存里。
+            if let Ok(private_pem) = key.private.to_pkcs8_pem(LineEnding::LF) {
+                store_pem(AUTH_SECTION, &auth_id(uid, alias), &private_pem);
+            }
             state.auth.lock().ok()?.insert(auth_id(uid, alias), key);
             Some(Answer::Code(OK))
         }
@@ -919,7 +980,7 @@ fn answer_inner(call: &soter::SoterCall) -> Option<Answer> {
             if let Ok(mut map) = ASK_ORIGINS.lock() {
                 map.remove(&uid);
             }
-            forget_ask(uid);
+            forget_uid_keys(uid);
             if let Ok(mut set) = state.ask_built.lock() {
                 set.remove(&uid);
             }
@@ -931,6 +992,7 @@ fn answer_inner(call: &soter::SoterCall) -> Option<Answer> {
             if let Ok(mut map) = state.auth.lock() {
                 map.remove(&auth_id(uid, alias));
             }
+            forget_pem(AUTH_SECTION, &auth_id(uid, alias));
             Some(Answer::Code(OK))
         }
         _ => None,
@@ -957,13 +1019,20 @@ fn auth_id(uid: i32, alias: &str) -> String {
     format!("{uid}|{alias}")
 }
 
+/// 取某个 uid 的 AuthKey。内存里没有（payload 重新注入过）就从 store 读回来，
+/// 读到了缓进内存，下次不用再碰磁盘。
 fn auth_key(state: &State, uid: i32, alias: &str) -> Option<Key> {
-    let map = state.auth.lock().ok()?;
-    let key = map.get(&auth_id(uid, alias))?;
-    Some(Key {
-        private: key.private.clone(),
-        pem: key.pem.clone(),
-    })
+    let id = auth_id(uid, alias);
+    if let Some(key) = state.auth.lock().ok()?.get(&id).cloned() {
+        return Some(key);
+    }
+
+    let pem = read_store_pem(AUTH_SECTION, &id)?;
+    let key = Key::from_pem(&pem)?;
+    if let Ok(mut map) = state.auth.lock() {
+        map.insert(id, key.clone());
+    }
+    Some(key)
 }
 
 fn bump_counter(state: &State, uid: i32) -> u64 {
