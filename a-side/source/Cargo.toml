@@ -1,7 +1,7 @@
 [package]
 name = "ommega"
 authors = ["jiyin004"]
-version = "1.7.9"
+version = "1.7.10"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 
@@ -27,7 +27,7 @@ prost-types = "0.14.4"
 hex = "0.4.3"
 log4rs = "1.4.0"
 log = "0.4.33"
-rsbinder = { version = "0.10.0", features = ["android_12_plus", "rpc"] }
+rsbinder = { path = "vendor/rsbinder", features = ["android_12_plus", "rpc"] }
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 anyhow = "1.0.104"
 async-trait = "0.1.91"
@@ -82,9 +82,10 @@ members = [
 ]
 
 [patch.crates-io]
-# rsbinder 鍙敼涓€澶勶細nullable 鐨勫瓨鍦ㄦ爣璁般€侫OSP 鏄€滈潪 0 鍗冲瓨鍦ㄢ€濓紙Java
-# `readInt() != 0`銆丆++ `readInt32() != 0`锛夛紝涓婃父鍙 1锛屼簬鏄悓涓€涓姹傛妸鏍囪鎹?# 鎴?2 / -1 / INT_MAX 灏卞湪鎴戜滑杩欒竟瑙ｆ瀽澶辫触銆佽褰撻檶鐢熸祦閲忚浆鍙戝嚭鍘伙紙KEY_NOT_FOUND锛夛紝
-# 妫€娴嬪櫒涓€娴嬩竴涓噯銆傛敼鍔ㄥ湪 vendor/rsbinder/src/{parcelable,macros}.rs銆?rsbinder = { path = "vendor/rsbinder" }
+# rsbinder 用 vendor/rsbinder 这份带补丁的副本：依赖里直接写 path，不靠 [patch.crates-io]。
+# （以前写成 patch，而且那行被注释吞掉了，结果 injector 一直链的是 crates.io 原版。）
+# 补丁改的是 AIDL parcelable 的存在标记：AOSP 只判 != 0，上游只认 1。
+# 改动点在 vendor/rsbinder/src/{parcelable,macros}.rs。
 kmr-derive = { path = "derive" }
 kmr-common = { path = "common" }
 kmr-crypto-ommega = { path = "crypto" }
