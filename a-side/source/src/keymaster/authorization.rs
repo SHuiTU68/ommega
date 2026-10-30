@@ -1088,7 +1088,12 @@ mod tests {
 
     #[test]
     fn token_with_none_authenticator_type_is_still_rejected() {
-        let none = token(1000, 42, HardwareAuthenticatorType::NONE.0, AUTH_TOKEN_MAC_LEN);
+        let none = token(
+            1000,
+            42,
+            HardwareAuthenticatorType::NONE.0,
+            AUTH_TOKEN_MAC_LEN,
+        );
         assert!(validate_auth_token_shape(&none).is_err());
     }
 }
