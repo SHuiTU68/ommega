@@ -12,5 +12,6 @@
 - Fixed every ommega route turning into SYSTEM_ERROR 4 after a screen-off/on cycle:
   an identity-less auth token is no longer rejected, and one business rejection no
   longer fail-closes mirror recovery for every route (PR #10).
-- The per-uid SOTER ASKs now live in a single file
-  (/data/misc/keystore/ommega/soter_asks.json) instead of one pem per uid.
+- The per-uid SOTER ASKs and AuthKeys now live in a single file
+  (/data/misc/keystore/ommega/soter_asks.json) instead of one pem per key, and
+  AuthKeys survive a payload restart.
