@@ -15,3 +15,4 @@
 - The per-uid SOTER ASKs and AuthKeys now live in a single file
   (/data/misc/keystore/ommega/soter_asks.json) instead of one pem per key, and
   AuthKeys survive a payload restart.
+- The built-in SOTER ATTK has been rotated to a new self-signed key.
