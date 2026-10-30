@@ -129,15 +129,15 @@ impl Key {
 /// 不碰 TEE**，所以不会阻塞任何签名路径。失败只说明「这次没成」，不当成「这台机器
 /// 不能签」（跟 `SignState` 那套一个口径）。
 pub(crate) fn selftest() -> anyhow::Result<()> {
-    let state = state().ok_or_else(|| anyhow::anyhow!("soter local state unavailable"))?;
+    state().ok_or_else(|| anyhow::anyhow!("soter local state unavailable"))?;
     let message: &[u8] = b"ommega-soter-selftest";
-    let raw = state
-        .attk
+    let attk = current_attk().ok_or_else(|| anyhow::anyhow!("soter local ATTK unavailable"))?;
+    let raw = attk
         .sign(message)
         .ok_or_else(|| anyhow::anyhow!("the local ATTK could not sign"))?;
     let signature = rsa::pss::Signature::try_from(raw.as_slice())
         .map_err(|error| anyhow::anyhow!("malformed signature: {error}"))?;
-    let public = rsa::RsaPublicKey::from(&state.attk.private);
+    let public = rsa::RsaPublicKey::from(&attk.private);
     PssVerifyingKey::<PssSha256>::new(public)
         .verify(message, &signature)
         .map_err(|error| anyhow::anyhow!("the signature did not verify: {error}"))
@@ -155,7 +155,8 @@ struct SignSession {
 /// 后端状态。签发用的 key 一开始就加载好（编译进来的，失败就是编坏了）。
 struct State {
     /// 签名根（ATTK）。本地模式里它就是 `exportAttkPublicKey` 吐的那把，全设备只有一把。
-    attk: Key,
+    /// 外面用 [`current_attk`] 取，文件换了会现读，跟 keybox.xml 一个路子。
+    attk: Mutex<Key>,
     /// 对外导出的 ASK。真机是一把 ATTK 挂 N 把 ASK、每个 uid 一把，这里按 uid 存。
     asks: Mutex<HashMap<i32, Key>>,
     /// `{uid}|{alias}` -> AuthKey。
@@ -357,6 +358,39 @@ fn forget_uid_keys(uid: i32) {
     }
 }
 
+/// ATTK 文件的 mtime。换文件（WebUI 写新的、用户手放）时靠它判断要不要重读。
+static ATTK_STAMP: Mutex<Option<std::time::SystemTime>> = Mutex::new(None);
+
+fn attk_stamp() -> Option<std::time::SystemTime> {
+    ASK_FILE_PATHS
+        .iter()
+        .filter_map(|path| {
+            std::fs::metadata(path)
+                .and_then(|meta| meta.modified())
+                .ok()
+        })
+        .max()
+}
+
+/// 当前生效的 ATTK。文件没变就吃缓存，变了就现读 —— 换 key 不用重启 payload。
+fn current_attk() -> Option<Key> {
+    let state = state()?;
+    let stamp = attk_stamp();
+    let mut cached = state.attk.lock().ok()?;
+    if let Ok(mut known) = ATTK_STAMP.lock() {
+        if *known == stamp {
+            return Some(cached.clone());
+        }
+        if let Some((key, origin)) = load_ask_key() {
+            *cached = key.clone();
+            *known = stamp;
+            log::info!("event=soter ATTK hot-reloaded from {origin}");
+            return Some(key);
+        }
+    }
+    Some(cached.clone())
+}
+
 /// 取（必要时造）某个 uid 的 ASK。
 ///
 /// 真机的形状是一把 ATTK 下挂 N 把 ASK、每个 uid 一把，这里照做：
@@ -461,8 +495,11 @@ fn state() -> Option<&'static State> {
             let (attk, origin) = load_ask_key()?;
             log::info!("soter local ATTK loaded from {origin}");
             let _ = ATTK_ORIGIN.set(origin);
+            if let Ok(mut known) = ATTK_STAMP.lock() {
+                *known = attk_stamp();
+            }
             Some(State {
-                attk,
+                attk: Mutex::new(attk),
                 asks: Mutex::new(HashMap::new()),
                 auth: Mutex::new(HashMap::new()),
                 counters: Mutex::new(HashMap::new()),
@@ -836,7 +873,7 @@ fn answer_inner(call: &soter::SoterCall) -> Option<Answer> {
             let counter = bump_counter(state, uid);
             let ask = ask_for(state, uid)?;
             let document = ask_json(&ask.pem, uid, counter).ok()?;
-            let signature = state.attk.sign(&document)?;
+            let signature = current_attk()?.sign(&document)?;
             Some(Answer::Buffer {
                 code: OK,
                 data: Some(envelope(&document, &signature)),
@@ -1006,10 +1043,13 @@ pub(crate) fn ask_public_document(uid: i32) -> Vec<u8> {
         return Vec::new();
     };
     let counter = bump_counter(state, uid);
-    let Ok(document) = ask_json(&state.attk.pem, uid, counter) else {
+    let Some(attk) = current_attk() else {
         return Vec::new();
     };
-    let Some(signature) = state.attk.sign(&document) else {
+    let Ok(document) = ask_json(&attk.pem, uid, counter) else {
+        return Vec::new();
+    };
+    let Some(signature) = attk.sign(&document) else {
         return Vec::new();
     };
     envelope(&document, &signature)
@@ -1222,7 +1262,7 @@ mod tests {
         use rsa::pss::{Signature as PssSignature, VerifyingKey as PssVerifyingKey};
         use rsa::signature::Verifier;
         let verifying = PssVerifyingKey::<PssSha256>::new(rsa::RsaPublicKey::from(
-            &state().unwrap().attk.private,
+            &current_attk().unwrap().private,
         ));
         verifying
             .verify(
