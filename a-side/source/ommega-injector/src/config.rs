@@ -23,7 +23,7 @@ pub const DEFAULT_CONFIG_PATH: &str = "/data/misc/keystore/ommega/injector.toml"
 /// （`log_flag` 就是这个道理，另外这份配置里只有包名/开关，没有敏感材料）。
 pub const FALLBACK_CONFIG_PATH: &str = "/data/misc/ommega/injector.toml";
 /// Legacy A-side (client-a) per-app interception list.  Each non-comment line is
-/// a package name (optionally suffixed `!`/`?`, or a `[keybox.xml]` scope
+/// a package name (optionally suffixed `!`/`?`, or a `[keybox]` scope
 /// header).  These packages are merged into the effective scoop so apps selected
 /// in the webroot UI are intercepted exactly as under the old A-side module.
 ///

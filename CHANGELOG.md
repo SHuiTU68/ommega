@@ -4,7 +4,7 @@
 
 ## 1.7.11
 
-- 内置两把 keybox：主 `keybox.xml` 是 TEE 级别（001 那份三级链），`keybox_strongbox.xml` 是 StrongBox 级别，安装时都写入设备。两个级别不再共用一份密钥，TEE 请求不会再拿到 StrongBox 自签的那套。
+- 内置两把 keybox：主 `keybox_tee.xml` 是 TEE 级别（001 那份三级链），`keybox_strongbox.xml` 是 StrongBox 级别，安装时都写入设备。两个级别不再共用一份密钥，TEE 请求不会再拿到 StrongBox 自签的那套。
 - 在线源（服务器公开库、Yuri、AOSP）只更新 TEE 那份；StrongBox 那份只能在面板里选文件或恢复内置，没有在线来源。
 - 服务端出链：security level 2 的请求只认控制台钉死的 StrongBox 身份，没钉就明确拒绝，不再借用 TEE 身份；源采集也不会写 StrongBox 身份。
 

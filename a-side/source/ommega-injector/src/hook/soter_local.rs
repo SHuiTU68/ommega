@@ -58,7 +58,7 @@ const SALT_LEN: i32 = 32;
 /// 编译进来的那把私钥（PKCS#8 PEM）—— 候选文件都没有时才用它。
 const ASK_PEM: &[u8] = include_bytes!("../../assets/soter_ask.pem");
 /// 换本地兜底 ASK 用的文件（PKCS#8 PEM，`openssl genpkey -algorithm RSA` 那种）。
-/// 存在且解析得过就用它，跟 keybox.xml 一个路子：丢文件进去、重启 SOTER 宿主就生效。
+/// 存在且解析得过就用它，跟 keybox 一个路子：丢文件进去、重启 SOTER 宿主就生效。
 ///
 /// 两个位置对应两个域，谁在哪个域里读得到就认谁：
 /// - `/data/misc/ommega/`：payload 落进 app 域（SOTER 宿主是 uid 1000）时读得到；
@@ -180,7 +180,7 @@ struct SignSession {
 /// 后端状态。签发用的 key 一开始就加载好（编译进来的，失败就是编坏了）。
 struct State {
     /// 签名根（ATTK）。本地模式里它就是 `exportAttkPublicKey` 吐的那把，全设备只有一把。
-    /// 外面用 [`current_attk`] 取，文件换了会现读，跟 keybox.xml 一个路子。
+    /// 外面用 [`current_attk`] 取，文件换了会现读，跟 keybox 一个路子。
     attk: Mutex<Key>,
     /// 对外导出的 ASK。真机是一把 ATTK 挂 N 把 ASK、每个 uid 一把，这里按 uid 存。
     asks: Mutex<HashMap<i32, Key>>,

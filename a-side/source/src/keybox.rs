@@ -25,13 +25,13 @@ use regex::Regex;
 use x509_cert::der as x509_der;
 use x509_cert::Certificate;
 
-pub const KEYBOX_PATH: &str = "/data/misc/keystore/ommega/keybox.xml";
+pub const KEYBOX_PATH: &str = "/data/misc/keystore/ommega/keybox_tee.xml";
 
-/// StrongBox 级别单独的一份 keybox（可选）。文件不存在或解析不了就沿用 `KEYBOX_PATH`
-/// 那份 —— 跟以前一样，不会因为多了一层而少出链。
+/// StrongBox 级别单独的一份 keybox。文件不存在或解析不了就用内置的 StrongBox 那份，
+/// **不会**回落到 TEE 那份 —— 回落就是「StrongBox 请求拿 TEE 链」。
 pub const STRONGBOX_KEYBOX_PATH: &str = "/data/misc/keystore/ommega/keybox_strongbox.xml";
 
-const BUNDLED_KEYBOX_XML: &str = include_str!("../template/keybox.xml");
+const BUNDLED_KEYBOX_XML: &str = include_str!("../template/keybox_tee.xml");
 /// 内置的 StrongBox 级 keybox。文件丢了或读坏了就用它，不再退回 TEE 那份 ——
 /// 退回主 keybox 就是「StrongBox 请求拿 TEE 链」，证书标签和叶子级别直接对不上。
 const BUNDLED_STRONGBOX_KEYBOX_XML: &str = include_str!("../template/keybox_strongbox.xml");
@@ -82,7 +82,7 @@ struct ParsedKeyEntry {
 
 impl KeyBox {
     pub fn new() -> Self {
-        Self::from_xml_str(BUNDLED_KEYBOX_XML).expect("bundled keybox.xml must be valid")
+        Self::from_xml_str(BUNDLED_KEYBOX_XML).expect("bundled keybox_tee.xml must be valid")
     }
 
     pub fn from_xml_str(xml: &str) -> Result<Self> {
@@ -491,7 +491,7 @@ fn temp_keybox_path(path: &str) -> PathBuf {
     let file_name = target
         .file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or("keybox.xml");
+        .unwrap_or("keybox_tee.xml");
     let temp_name = format!(".{file_name}.tmp-{}", std::process::id());
     target
         .parent()
@@ -511,34 +511,21 @@ fn write_keybox_xml(path: &str, xml: &str) -> Result<()> {
             .write(true)
             .truncate(true)
             .open(&temp_path)
-            .with_context(|| {
-                format!(
-                    "failed to open temporary keybox.xml {}",
-                    temp_path.display()
-                )
-            })?;
-        file.write_all(xml.as_bytes()).with_context(|| {
-            format!(
-                "failed to write temporary keybox.xml {}",
-                temp_path.display()
-            )
-        })?;
-        file.sync_all().with_context(|| {
-            format!(
-                "failed to sync temporary keybox.xml {}",
-                temp_path.display()
-            )
-        })?;
+            .with_context(|| format!("failed to open temporary keybox {}", temp_path.display()))?;
+        file.write_all(xml.as_bytes())
+            .with_context(|| format!("failed to write temporary keybox {}", temp_path.display()))?;
+        file.sync_all()
+            .with_context(|| format!("failed to sync temporary keybox {}", temp_path.display()))?;
     }
 
     #[cfg(windows)]
     if Path::new(path).exists() {
         fs::remove_file(path)
-            .with_context(|| format!("failed to replace keybox.xml at {path} on Windows"))?;
+            .with_context(|| format!("failed to replace keybox at {path} on Windows"))?;
     }
 
     fs::rename(&temp_path, path)
-        .with_context(|| format!("failed to atomically replace keybox.xml at {path}"))
+        .with_context(|| format!("failed to atomically replace keybox at {path}"))
 }
 
 fn write_bundled_keybox(path: &str) -> Result<()> {
@@ -549,7 +536,10 @@ pub fn ensure_keybox_file(path: &str) -> Result<()> {
     if Path::new(path).exists() {
         return Ok(());
     }
-    info!("keybox.xml missing at {}; seeding bundled template", path);
+    info!(
+        "keybox_tee.xml missing at {}; seeding bundled template",
+        path
+    );
     write_bundled_keybox(path)
 }
 
@@ -657,7 +647,7 @@ fn load_keybox_with_fallback(path: &str) -> Result<(KeyBox, bool)> {
                 // to the bundled template in memory and leave the file untouched;
                 // a later `IN_CLOSE_WRITE` event re-reads the completed file.
                 warn!(
-                    "invalid keybox.xml at {}: {:#}; using bundled template in memory (file left intact)",
+                    "invalid keybox_tee.xml at {}: {:#}; using bundled template in memory (file left intact)",
                     path, error
                 );
                 Ok((KeyBox::new(), true))
@@ -665,12 +655,14 @@ fn load_keybox_with_fallback(path: &str) -> Result<(KeyBox, bool)> {
         },
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             info!(
-                "keybox.xml missing at {}; using bundled template in memory",
+                "keybox_tee.xml missing at {}; using bundled template in memory",
                 path
             );
             Ok((KeyBox::new(), true))
         }
-        Err(error) => Err(error).with_context(|| format!("failed to read keybox.xml from {path}")),
+        Err(error) => {
+            Err(error).with_context(|| format!("failed to read keybox_tee.xml from {path}"))
+        }
     }
 }
 
@@ -711,11 +703,11 @@ pub fn initialize() -> Result<()> {
             PathBuf::from(KEYBOX_PATH),
             |_trigger| {
                 if let Err(reload_error) = reload_from_disk() {
-                    error!("failed to reload keybox.xml after change: {reload_error:#}");
+                    error!("failed to reload keybox_tee.xml after change: {reload_error:#}");
                 }
             },
         ) {
-            error!("failed to watch keybox.xml: {error:#}");
+            error!("failed to watch keybox_tee.xml: {error:#}");
         }
         // StrongBox 那份同理：面板里选完文件就该生效，不该等下次开机。
         if let Err(error) = kmr_common::runtime::file_watch::spawn_path_watcher(

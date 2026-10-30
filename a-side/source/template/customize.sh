@@ -80,7 +80,7 @@ extract "$ZIPFILE" 'sepolicy.rule'   "$MODPATH"
 extract "$ZIPFILE" 'daemon'          "$MODPATH"
 extract "$ZIPFILE" 'daemon-injector' "$MODPATH"
 extract "$ZIPFILE" 'injector.toml'   "$MODPATH"
-extract "$ZIPFILE" 'keybox.xml'      "$MODPATH"
+extract "$ZIPFILE" 'keybox_tee.xml'  "$MODPATH"
 # TEE 和 StrongBox 各自一把，两个级别不共用密钥。包里一定有，缺了安装直接失败。
 extract "$ZIPFILE" 'keybox_strongbox.xml' "$MODPATH"
 extract "$ZIPFILE" 'uninstall.sh'    "$MODPATH"

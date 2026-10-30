@@ -5,7 +5,7 @@ LOG_FILE=$LOG_DIR/post-fs-data.log
 # app 域（SOTER 宿主 uid 1000）进不去 keystore 那个 0770 目录，payload 的日志
 # 得有个它写得动的位置：权限开到 system 组。
 APP_LOG_DIR=/data/misc/ommega/logs
-TARGET_KEYBOX=$TARGET_DIR/keybox.xml
+TARGET_KEYBOX=$TARGET_DIR/keybox_tee.xml
 TARGET_KEYBOX_SB=$TARGET_DIR/keybox_strongbox.xml
 TARGET_INJECTOR_CONFIG=$TARGET_DIR/injector.toml
 TARGET_CONF=$TARGET_DIR/config
@@ -121,7 +121,7 @@ chmod 0755 "$CLIENTA_DIR"
 if [ -L "$CLIENTA_DIR/ommegadata" ]; then
   : # already the symlink
 elif [ -d "$CLIENTA_DIR/ommegadata" ]; then
-  for f in config target.txt system_app keybox.xml keybox_strongbox.xml; do
+  for f in config target.txt system_app keybox_tee.xml keybox_strongbox.xml; do
     stray="$CLIENTA_DIR/ommegadata/$f"
     real="$TARGET_DIR/$f"
     [ -f "$stray" ] || continue
@@ -166,11 +166,11 @@ fi
 chmod 0644 "$TARGET_CONF" "$TARGET_TARGET_LIST" 2>/dev/null || true
 chown 1017:1017 "$TARGET_CONF" "$TARGET_TARGET_LIST" 2>/dev/null || true
 
-# Keybox: the webroot UI writes `/data/adb/ommega/ommegadata/keybox.xml` which IS
+# Keybox: the webroot UI writes `/data/adb/ommega/ommegadata/keybox_tee.xml` which IS
 # $TARGET_KEYBOX (via symlink).  Seed from the module keybox if absent.
 # TEE 和 StrongBox 两份各自独立：各用各的级别，不再共用一份 keybox。
-if [ ! -f "$TARGET_KEYBOX" ] && [ -f "$MODDIR/keybox.xml" ]; then
-  cp "$MODDIR/keybox.xml" "$TARGET_KEYBOX"
+if [ ! -f "$TARGET_KEYBOX" ] && [ -f "$MODDIR/keybox_tee.xml" ]; then
+  cp "$MODDIR/keybox_tee.xml" "$TARGET_KEYBOX"
 fi
 if [ ! -f "$TARGET_KEYBOX_SB" ] && [ -f "$MODDIR/keybox_strongbox.xml" ]; then
   cp "$MODDIR/keybox_strongbox.xml" "$TARGET_KEYBOX_SB"

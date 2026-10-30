@@ -48,7 +48,7 @@ migrate_ommega_layout() {
   KS_DIR=/data/misc/keystore/ommega
   if [ -d "$KS_DIR" ]; then
     mkdir -p "$KS_DIR/backups" 2>/dev/null
-    for f in "$KS_DIR"/config.bak* "$KS_DIR"/config.toml.bak "$KS_DIR"/keybox.xml.bak; do
+    for f in "$KS_DIR"/config.bak* "$KS_DIR"/config.toml.bak "$KS_DIR"/keybox_tee.xml.bak "$KS_DIR"/keybox_strongbox.xml.bak; do
       [ -f "$f" ] || continue
       mv -f "$f" "$KS_DIR/backups/" 2>/dev/null
     done

@@ -461,8 +461,8 @@ var DATA     = STATE + "/ommegadata";          // 指向 /data/misc/keystore/omm
 var CONF     = DATA + "/config";
 var TARGET   = DATA + "/target.txt";
 var SYSTEMAPP= DATA + "/system_app";
-var KEYBOX   = DATA + "/keybox.xml";
-/* StrongBox 级别的单独 keybox（可选）：文件不存在就沿用 KEYBOX。 */
+var KEYBOX   = DATA + "/keybox_tee.xml";
+/* StrongBox 级别那份 keybox：跟上面 TEE 那份互不共用，缺了就写内置的 StrongBox 自签。 */
 var KEYBOX_SB = DATA + "/keybox_strongbox.xml";
 var ASKPEM   = DATA + "/soter_ask.pem";
 var PROPS    = STATE + "/conf/props.conf";      // 面板写的伪装项（不写进模块脚本）
@@ -755,37 +755,37 @@ var TEEKB_TEXT = {
     autoHint: "依次试：服务器公开库 → Yuri 源 → 内置 TEE 自签；只更新这一份（TEE）",
     yuriHint: "从 GitHub 抓取，含镜像回退；只更新这一份（TEE）",
     ommegaHint: "取服务器上的公开密钥库；只更新这一份（TEE）",
-    pathHint: "写入 /data/misc/keystore/ommega/keybox.xml，TEE 级别专用。StrongBox 那份在下面的卡片里单独设，旧档会备份为 .bak。" },
+    pathHint: "写入 /data/misc/keystore/ommega/keybox_tee.xml，TEE 级别专用。StrongBox 那份在下面的卡片里单独设，旧档会备份为 .bak。" },
   "zh-TW": { title: "TEE 級別密鑰（主 keybox）", self: "內建 TEE 自簽",
     selfHint: "內建的 TEE 自簽三級鏈（DeviceID=c3315922…），跟本機 TEE 級別對應",
     autoHint: "依序試：伺服器公開庫 → Yuri 來源 → 內建 TEE 自簽；只更新這一份（TEE）",
     yuriHint: "從 GitHub 抓取，含鏡像回退；只更新這一份（TEE）",
     ommegaHint: "取伺服器上的公開金鑰庫；只更新這一份（TEE）",
-    pathHint: "寫入 /data/misc/keystore/ommega/keybox.xml，TEE 級別專用。StrongBox 那份在下面的卡片單獨設定，舊檔備份為 .bak。" },
+    pathHint: "寫入 /data/misc/keystore/ommega/keybox_tee.xml，TEE 級別專用。StrongBox 那份在下面的卡片單獨設定，舊檔備份為 .bak。" },
   "en": { title: "TEE keybox (primary)", self: "Built-in TEE",
     selfHint: "Bundled self-signed TEE chain (DeviceID=c3315922…), matching this device's TEE level",
     autoHint: "Tries in order: server public keybox → Yuri source → built-in TEE; updates only this one (TEE)",
     yuriHint: "Fetched from GitHub with a mirror fallback; updates only this one (TEE)",
     ommegaHint: "Fetches the public keybox from the server; updates only this one (TEE)",
-    pathHint: "Written to /data/misc/keystore/ommega/keybox.xml, TEE level only. The StrongBox keybox is set in the card below; the old file is kept as .bak." },
+    pathHint: "Written to /data/misc/keystore/ommega/keybox_tee.xml, TEE level only. The StrongBox keybox is set in the card below; the old file is kept as .bak." },
   "ja": { title: "TEE 用キーボックス（メイン）", self: "内蔵 TEE 自前署名",
     selfHint: "同梱の TEE 自前署名チェーン（DeviceID=c3315922…）。本機の TEE レベルに対応",
     autoHint: "サーバー公開庫 → Yuri ソース → 内蔵 TEE 自前署名の順に試し、この 1 つ（TEE）だけを更新します",
     yuriHint: "GitHub から取得（ミラーへ退避）。この 1 つ（TEE）だけを更新します",
     ommegaHint: "サーバーの公開キーボックスを取得。この 1 つ（TEE）だけを更新します",
-    pathHint: "/data/misc/keystore/ommega/keybox.xml に書き込み、TEE レベル専用。StrongBox は下のカードで別に設定します。" },
+    pathHint: "/data/misc/keystore/ommega/keybox_tee.xml に書き込み、TEE レベル専用。StrongBox は下のカードで別に設定します。" },
   "ko": { title: "TEE 키박스(기본)", self: "내장 TEE 자체 서명",
     selfHint: "내장 TEE 자체 서명 체인(DeviceID=c3315922…), 이 기기의 TEE 레벨에 대응",
     autoHint: "서버 공개 키박스 → Yuri 소스 → 내장 TEE 자체 서명 순으로 시도하며 이 파일(TEE)만 갱신합니다",
     yuriHint: "GitHub에서 가져옵니다(미러 대체). 이 파일(TEE)만 갱신합니다",
     ommegaHint: "서버의 공개 키박스를 가져옵니다. 이 파일(TEE)만 갱신합니다",
-    pathHint: "/data/misc/keystore/ommega/keybox.xml에 기록하며 TEE 레벨 전용입니다. StrongBox는 아래 카드에서 따로 설정합니다." },
+    pathHint: "/data/misc/keystore/ommega/keybox_tee.xml에 기록하며 TEE 레벨 전용입니다. StrongBox는 아래 카드에서 따로 설정합니다." },
   "ru": { title: "Keybox уровня TEE (основной)", self: "Встроенный TEE",
     selfHint: "Встроенная самоподписанная цепочка TEE (DeviceID=c3315922…), соответствует уровню TEE",
     autoHint: "По порядку: публичный keybox сервера → источник Yuri → встроенный TEE; обновляет только этот (TEE)",
     yuriHint: "Загружается с GitHub с зеркалом; обновляет только этот (TEE)",
     ommegaHint: "Берёт публичный keybox с сервера; обновляет только этот (TEE)",
-    pathHint: "Пишется в /data/misc/keystore/ommega/keybox.xml, только для уровня TEE. StrongBox задаётся в карточке ниже." }
+    pathHint: "Пишется в /data/misc/keystore/ommega/keybox_tee.xml, только для уровня TEE. StrongBox задаётся в карточке ниже." }
 };
 Object.keys(TEEKB_TEXT).forEach(function(code){
   if (!I18N[code]) return;
