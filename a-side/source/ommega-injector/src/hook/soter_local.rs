@@ -233,14 +233,71 @@ fn load_ask_key() -> Option<(Key, String)> {
     load_ask_key_with(None)
 }
 
-/// 再找一把「独立的 ASK」。找到就能把 ASK 和 ATTK 分开，找不到就返回 None
-/// （调用方拿 ATTK 自己顶）。
-/// 某个 uid 的 ASK 文件位置（keystore 域优先，app 域兜底）。
-fn ask_file_paths(uid: i32) -> [String; 2] {
+/// 旧版按 uid 散落的 ASK 文件位置（读到就迁进 store，然后把旧文件删掉）。
+fn legacy_ask_file_paths(uid: i32) -> [String; 2] {
     [
         format!("/data/misc/keystore/ommega/soter_ask_{uid}.pem"),
         format!("/data/misc/ommega/soter_ask_{uid}.pem"),
     ]
+}
+
+/// 所有 uid 的 ASK 存在这一个文件里，不要按 uid 散成一堆 pem。
+const ASK_STORE_PATHS: [&str; 2] = [
+    "/data/misc/keystore/ommega/soter_asks.json",
+    "/data/misc/ommega/soter_asks.json",
+];
+
+/// 落盘那一瞬间的互斥：读改写不是原子操作，两个 uid 同时进来会互相盖掉。
+static ASK_STORE_LOCK: std::sync::LazyLock<Mutex<()>> = std::sync::LazyLock::new(|| Mutex::new(()));
+
+fn read_ask_store() -> serde_json::Map<String, serde_json::Value> {
+    for path in ASK_STORE_PATHS {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        match serde_json::from_str::<serde_json::Value>(&text) {
+            Ok(serde_json::Value::Object(map)) => return map,
+            _ => log::warn!("soter local ask store at {path} is not a json object; ignoring it"),
+        }
+    }
+    serde_json::Map::new()
+}
+
+fn write_ask_store(map: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
+    let text = serde_json::to_string_pretty(map).ok()?;
+    for path in ASK_STORE_PATHS {
+        if let Some(dir) = std::path::Path::new(path).parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        // 写临时文件再 rename：中途掉电也不会留个半个 json。
+        let tmp = format!("{path}.tmp");
+        if std::fs::write(&tmp, text.as_bytes()).is_ok() && std::fs::rename(&tmp, path).is_ok() {
+            return Some(path.to_string());
+        }
+        let _ = std::fs::remove_file(&tmp);
+        log::warn!("soter local cannot write the ask store at {path}");
+    }
+    None
+}
+
+fn store_ask(uid: i32, pem: &str) -> Option<String> {
+    let _guard = ASK_STORE_LOCK.lock().ok()?;
+    let mut map = read_ask_store();
+    map.insert(uid.to_string(), serde_json::Value::String(pem.to_string()));
+    write_ask_store(&map)
+}
+
+fn forget_ask(uid: i32) {
+    let Ok(_guard) = ASK_STORE_LOCK.lock() else {
+        return;
+    };
+    let mut map = read_ask_store();
+    if map.remove(&uid.to_string()).is_some() {
+        write_ask_store(&map);
+    }
+    for path in legacy_ask_file_paths(uid) {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 /// 取（必要时造）某个 uid 的 ASK。
@@ -266,7 +323,8 @@ fn ask_for(state: &State, uid: i32) -> Option<Key> {
     Some(key)
 }
 
-/// 读某个 uid 的 ASK：环境变量 → per-uid 文件 → 旧的全文件 → 现生成并落盘。
+/// 读某个 uid 的 ASK：环境变量 → 单文件 store → 旧的 per-uid 文件（读到就迁走）→
+/// 旧的全局文件 → 现生成并写进 store。
 fn load_or_generate_ask(uid: i32) -> Option<(Key, String)> {
     if let Some(path) = std::env::var_os(ASK_KEY_FILE_ENV) {
         let path = std::path::PathBuf::from(path);
@@ -277,20 +335,38 @@ fn load_or_generate_ask(uid: i32) -> Option<(Key, String)> {
         }
     }
 
-    for path in ask_file_paths(uid) {
-        let Ok(pem) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+    if let Some(serde_json::Value::String(pem)) = read_ask_store().get(&uid.to_string()).cloned() {
         match Key::from_pem(&pem) {
-            Some(key) => return Some((key, path)),
+            Some(key) => return Some((key, format!("store:uid={uid}"))),
             None => log::warn!(
-                "soter local ask for uid {uid} at {path} is not a usable PKCS#8 PEM; ignoring it"
+                "soter local ask for uid {uid} in the store is not a usable PKCS#8 PEM; ignoring it"
             ),
         }
     }
 
-    // 兼容旧版：全局那一把（所有 uid 共用）。升级上来的设备先跑这里，
-    // 以后重新建料时自然收敛到 per-uid 文件。
+    // 旧版按 uid 散落的 pem：读到就迁进 store，然后把旧文件删掉，不再留一堆文件。
+    for path in legacy_ask_file_paths(uid) {
+        let Ok(pem) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Some(key) = Key::from_pem(&pem) else {
+            log::warn!(
+                "soter local ask for uid {uid} at {path} is not a usable PKCS#8 PEM; ignoring it"
+            );
+            continue;
+        };
+        let origin = match store_ask(uid, &pem) {
+            Some(store) => {
+                let _ = std::fs::remove_file(&path);
+                format!("migrated:{path}->{store}")
+            }
+            None => format!("file:{path}"),
+        };
+        return Some((key, origin));
+    }
+
+    // 兼容更旧的全局那一把（所有 uid 共用）。升级上来的设备先跑这里，
+    // 以后重新建料时自然收敛到 store 里的 per-uid 条目。
     for path in ASK_KEY_FILE_PATHS {
         let Ok(pem) = std::fs::read_to_string(path) else {
             continue;
@@ -306,21 +382,15 @@ fn load_or_generate_ask(uid: i32) -> Option<(Key, String)> {
     generate_ask_for(uid)
 }
 
-/// 给某个 uid 现生成一把 ASK，写进 [`ask_file_paths`] 里第一个可写的位置。
+/// 给某个 uid 现生成一把 ASK，写进 [`ASK_STORE_PATHS`] 的单文件 store。
 /// 落盘失败就只在内存里用（重启会换新，App 会当 ASK 变了把本地钥匙清掉），所以告警。
 fn generate_ask_for(uid: i32) -> Option<(Key, String)> {
     let key = Key::generate()?;
     let private_pem = key.private.to_pkcs8_pem(LineEnding::LF).ok()?;
 
-    for path in ask_file_paths(uid) {
-        if let Some(dir) = std::path::Path::new(&path).parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        if std::fs::write(&path, private_pem.as_bytes()).is_ok() {
-            log::info!("soter local generated a new ASK for uid {uid} at {path}");
-            return Some((key, format!("generated:{path}")));
-        }
-        log::warn!("soter local cannot persist the generated ASK at {path}");
+    if let Some(store) = store_ask(uid, &private_pem) {
+        log::info!("soter local generated a new ASK for uid {uid} in {store}");
+        return Some((key, format!("generated:{store}#uid={uid}")));
     }
 
     log::warn!("soter local is using an in-memory ASK for uid {uid}; it changes after restart");
@@ -849,9 +919,7 @@ fn answer_inner(call: &soter::SoterCall) -> Option<Answer> {
             if let Ok(mut map) = ASK_ORIGINS.lock() {
                 map.remove(&uid);
             }
-            for path in ask_file_paths(uid) {
-                let _ = std::fs::remove_file(path);
-            }
+            forget_ask(uid);
             if let Ok(mut set) = state.ask_built.lock() {
                 set.remove(&uid);
             }
