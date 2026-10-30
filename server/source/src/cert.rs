@@ -894,6 +894,56 @@ pub fn chain_rdn_shape(chain_pem: &str) -> RdnShape {
     RdnShape::Unknown
 }
 
+/// 链上各级证书标的级别，去重（保持出现顺序）。
+///
+/// 真机 keybox 整条链只会有一个值；出现两个就是拼出来的（比如 TEE 的中间 CA 配了
+/// StrongBox 的根），这种链自己就矛盾，不该发出去。没标（AOSP 软件链、自签链）返回空。
+pub fn chain_security_levels(chain_pem: &str) -> Vec<String> {
+    let Ok(ders) = parse_chain_pem(chain_pem) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = Vec::new();
+    for der in ders.iter() {
+        let Ok((_, cert)) = x509_parser::parse_x509_certificate(der) else {
+            continue;
+        };
+        for rdn in cert.subject().iter() {
+            for attr in rdn.iter() {
+                if attr.attr_type().to_id_string() != "2.5.4.12" {
+                    continue;
+                }
+                let Ok(value) = attr.as_str() else {
+                    continue;
+                };
+                let value = value.trim();
+                if !value.is_empty() && !out.iter().any(|v| v.eq_ignore_ascii_case(value)) {
+                    out.push(value.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// 整条链只标了一种级别时返回它（0/1/2）；没标或者标了两种都返回 `None`。
+pub fn chain_security_level(chain_pem: &str) -> Option<i64> {
+    let levels = chain_security_levels(chain_pem);
+    if levels.len() != 1 {
+        return None;
+    }
+    level_from_title(&levels[0])
+}
+
+/// `title` 的字面值 → KeyMint 级别。大小写、前后空格都不计较。
+fn level_from_title(title: &str) -> Option<i64> {
+    match title.trim().to_ascii_lowercase().as_str() {
+        "strongbox" => Some(2),
+        "tee" => Some(1),
+        "software" => Some(0),
+        _ => None,
+    }
+}
+
 fn sign_tbs(key: &KeyMaterial, tbs: &[u8]) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
     match key {
         KeyMaterial::Ec(EcKey::P224(sk)) => {
@@ -2459,6 +2509,24 @@ mod tests {
         assert_eq!(name_rdn_shape(&default_name()), None);
         assert_eq!(chain_rdn_shape(MOCK_LEAF), RdnShape::Unknown);
         assert!(!RdnShape::Unknown.is_legacy());
+    }
+
+    /// 链上标的级别（title 属性）→ KeyMint 数字，没标就是 None。
+    ///
+    /// 真机 keybox 的中间证书 subject 写 `title=TEE` / `title=StrongBox`，
+    /// 铸造时要拿它跟叶子里的 `attestationSecurityLevel` 对一遍。
+    #[test]
+    fn title_maps_to_the_keymint_level() {
+        assert_eq!(level_from_title("TEE"), Some(1));
+        assert_eq!(level_from_title(" StrongBox "), Some(2));
+        assert_eq!(level_from_title("software"), Some(0));
+        assert_eq!(level_from_title(""), None);
+        assert_eq!(level_from_title("Keymaster"), None);
+        // AOSP 的 Software 链靠 CN 认，subject 里没有 title，判不出级别。
+        assert_eq!(
+            chain_security_level(&format!("{MOCK_LEAF}{MOCK_ROOT}")),
+            None
+        );
     }
 
     // -----------------------------------------------------------------

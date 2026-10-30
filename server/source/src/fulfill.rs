@@ -872,6 +872,16 @@ impl Fulfill {
         challenge: &[u8],
     ) -> anyhow::Result<(String, String)> {
         let params = self.parse_ctx(ctx, challenge, &identity.device_id);
+        // 一条链只能有一个级别标签。链里的 CA 是 TEE 就全 TEE，是 StrongBox 就全
+        // StrongBox；同时出现两种说明这份材料是拼的（比如 TEE 的中间 CA 配了
+        // StrongBox 的根），发出去就是一条自己矛盾的链。只留痕，不拦请求。
+        let tagged = cert::chain_security_levels(&identity.certificate_chain_pem);
+        if tagged.len() > 1 {
+            tracing::warn!(
+                "attest_and_cache: device={} alias={alias} 链上标了多个级别 {tagged:?}，这份身份是拼的",
+                identity.device_id
+            );
+        }
         // 调用方带了证明密钥（App AttestKey 委派）：若那把 key 就在本服务端
         // （serverbox 模式下的 session），就用它自己签发子证书；不在本端则交给
         // 下一层（真机 B），**不**改用身份自带的签发密钥冒充。
